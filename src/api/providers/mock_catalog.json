@@ -1,0 +1,73 @@
+[
+  {
+    "slug": "film-a",
+    "title": "Film A",
+    "poster_url": "https://picsum.photos/seed/film-a/300/450",
+    "rating": 4.8,
+    "popularity": 120,
+    "genres": [
+      "Horror"
+    ],
+    "synopsis": "A horror story.",
+    "cast": [
+      "Actor One"
+    ]
+  },
+  {
+    "slug": "film-b",
+    "title": "Film B",
+    "poster_url": "https://picsum.photos/seed/film-b/300/450",
+    "rating": 4.6,
+    "popularity": 80,
+    "genres": [
+      "Drama"
+    ],
+    "synopsis": "A drama story.",
+    "cast": [
+      "Actor Two"
+    ]
+  },
+  {
+    "slug": "film-c",
+    "title": "Film C",
+    "poster_url": "https://picsum.photos/seed/film-c/300/450",
+    "rating": 4.2,
+    "popularity": 30,
+    "genres": [
+      "Horror",
+      "Thriller"
+    ],
+    "synopsis": "A thriller story.",
+    "cast": [
+      "Actor Three"
+    ]
+  },
+  {
+    "slug": "film-d",
+    "title": "Film D",
+    "poster_url": "https://picsum.photos/seed/film-d/300/450",
+    "rating": 3.9,
+    "popularity": 15,
+    "genres": [
+      "Comedy"
+    ],
+    "synopsis": "A comedy story.",
+    "cast": [
+      "Actor Four"
+    ]
+  },
+  {
+    "slug": "film-e",
+    "title": "Film E",
+    "poster_url": "https://picsum.photos/seed/film-e/300/450",
+    "rating": 4.9,
+    "popularity": 8,
+    "genres": [
+      "Horror"
+    ],
+    "synopsis": "An arthouse horror.",
+    "cast": [
+      "Actor Five"
+    ]
+  }
+]
