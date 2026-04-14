@@ -4,7 +4,7 @@ version = "0.3.0"
 description = "Runnable discovery app baseline"
 requires-python = ">=3.11"
 dependencies = [
-  "fastapi>=0.116.0",
+  "fastapi>=0.135.3",
   "cryptography>=45.0.0",
   "uvicorn>=0.35.0",
   "httpx>=0.28.0",
