@@ -1,0 +1,24 @@
+[project]
+name = "codebase_api"
+version = "0.3.0"
+description = "Runnable discovery app baseline"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.116.0",
+  "cryptography>=45.0.0",
+  "uvicorn>=0.35.0",
+  "httpx>=0.28.0",
+  "beautifulsoup4>=4.12.0"
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0.0"
+]
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
