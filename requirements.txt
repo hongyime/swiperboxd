@@ -1,0 +1,5 @@
+fastapi>=0.116.0
+uvicorn>=0.35.0
+cryptography>=45.0.0
+httpx>=0.28.0
+beautifulsoup4>=4.12.0

@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>CineSwipe</title>
+    <link rel="stylesheet" href="/web/styles.css" />
+  </head>
+  <body>
+    <main>
+      <h1>CineSwipe · Discovery Mode</h1>
+      <section class="controls">
+        <input id="userId" placeholder="Letterboxd username" value="demo-user" />
+        <select id="profile"></select>
+        <button id="loadDeck">Load Deck</button>
+      </section>
+      <section id="progressBox">Ingest progress: <span id="progress">0</span>%</section>
+      <section id="skeleton" class="skeleton hidden"></section>
+      <section id="card" class="card hidden">
+        <img id="poster" alt="poster" />
+        <h2 id="title"></h2>
+        <p id="meta"></p>
+        <div id="details" class="details"></div>
+        <div class="actions">
+          <button data-action="dismiss">Swipe Left</button>
+          <button data-action="watchlist">Swipe Right</button>
+          <button data-action="log">Swipe Up</button>
+        </div>
+      </section>
+      <p id="message"></p>
+    </main>
+    <script type="module" src="/web/app.js"></script>
+  </body>
+</html>
