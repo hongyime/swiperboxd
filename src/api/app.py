@@ -16,6 +16,7 @@ from .security import encrypt_session_cookie
 from .store import SupabaseStore
 from .providers.letterboxd import HttpLetterboxdScraper, MockLetterboxdScraper
 from .database import is_supabase_configured
+from .auth import get_auth_service
 
 PROFILES = {
     "gold-standard": lambda m: m["rating"] >= 4.5,
@@ -60,6 +61,24 @@ class SwipeActionRequest(BaseModel):
     action: Literal["watchlist", "dismiss", "log"]
 
 
+# Supabase Auth models
+class UserRegisterRequest(BaseModel):
+    email: str = Field(min_length=1, regex=r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
+    password: str = Field(min_length=8, max_length=100)
+
+
+class UserLoginRequest(BaseModel):
+    email: str = Field(min_length=1)
+    password: str = Field(min_length=1)
+
+
+class AuthTokenResponse(BaseModel):
+    status: Literal["ok"]
+    access_token: str
+    user_id: str
+    email: str
+
+
 @app.get("/health")
 def health():
     return {"status": "ok", "app": "cineswipe"}
@@ -93,6 +112,64 @@ def create_auth_session(payload: AuthSessionRequest):
 
     encrypted_cookie = encrypt_session_cookie(upstream_session_cookie, master_key)
     return AuthSessionResponse(status="ok", encrypted_session_cookie=encrypted_cookie)
+
+
+# Supabase Auth endpoints
+@app.post("/auth/register", response_model=AuthTokenResponse)
+async def register_user(payload: UserRegisterRequest):
+    """Register a new user with Supabase Auth."""
+    auth_service = get_auth_service()
+
+    try:
+        result = await auth_service.register_user(payload.email, payload.password)
+
+        return AuthTokenResponse(
+            status="ok",
+            access_token=result["access_token"],
+            user_id=result["user_id"],
+            email=result["email"]
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail={"code": "registration_failed", "reason": str(exc)}) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail={"code": "server_error", "reason": str(exc)}) from exc
+
+
+@app.post("/auth/login", response_model=AuthTokenResponse)
+async def login_user(payload: UserLoginRequest):
+    """Login a user with Supabase Auth."""
+    auth_service = get_auth_service()
+
+    try:
+        result = await auth_service.login_user(payload.email, payload.password)
+
+        return AuthTokenResponse(
+            status="ok",
+            access_token=result["access_token"],
+            user_id=result["user_id"],
+            email=result["email"]
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=401, detail={"code": "login_failed", "reason": str(exc)}) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail={"code": "server_error", "reason": str(exc)}) from exc
+
+
+@app.get("/auth/me")
+async def get_current_user(request: Request):
+    """Get current authenticated user info."""
+    auth_service = get_auth_service()
+
+    user = await auth_service.get_user_from_request(request)
+
+    if not user:
+        raise HTTPException(status_code=401, detail={"code": "unauthorized"})
+
+    return {
+        "status": "ok",
+        "user_id": user["user_id"],
+        "email": user["email"]
+    }
 
 
 def _filter_first_pipeline(user_id: str, source: str, depth_pages: int) -> list[dict]:
