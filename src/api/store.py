@@ -40,6 +40,8 @@ class Store(Protocol):
 
     def record_genre_preference(self, user_id: str, genres: list[str]) -> None: ...
 
+    def get_genre_weights(self, user_id: str) -> dict[str, int]: ...
+
     def weighted_shuffle(self, user_id: str, movies: list[dict]) -> list[dict]: ...
 
 
@@ -137,6 +139,11 @@ class InMemoryStore:
             for genre in genres:
                 bucket[genre] = bucket.get(genre, 0) + 1
 
+    def get_genre_weights(self, user_id: str) -> dict[str, int]:
+        """Get user's genre weights from in-memory store."""
+        with self.lock:
+            return dict(self.genre_weights.get(user_id, {}))
+
     def weighted_shuffle(self, user_id: str, movies: list[dict]) -> list[dict]:
         with self.lock:
             weights = self.genre_weights.get(user_id, {})
@@ -211,22 +218,38 @@ class SupabaseStore:
         return {row["movie_slug"] for row in response.data}
 
     def add_watchlist(self, user_id: str, slug: str) -> None:
-        """Add a movie to user's watchlist (not yet persisted to Supabase)."""
-        with self.lock:
-            self.genre_weights.setdefault(user_id, {})
+        """Add a movie to user's watchlist in Supabase."""
+        try:
+            self.client.table("user_watchlist").insert({
+                "user_id": user_id,
+                "movie_slug": slug
+            }).execute()
+        except Exception as e:
+            # Ignore duplicate key errors (movie already in watchlist)
+            if "duplicate key" not in str(e).lower():
+                raise e
 
     def get_watchlist(self, user_id: str) -> set[str]:
-        """Get user's watchlist (not yet persisted to Supabase)."""
-        return set()
+        """Get user's watchlist from Supabase."""
+        response = self.client.table("user_watchlist").select("movie_slug").eq("user_id", user_id).execute()
+        return {row["movie_slug"] for row in response.data}
 
     def add_diary(self, user_id: str, slug: str) -> None:
-        """Add a movie to user's diary (not yet persisted to Supabase)."""
-        with self.lock:
-            self.genre_weights.setdefault(user_id, {})
+        """Add a movie to user's diary in Supabase."""
+        try:
+            self.client.table("user_diary").insert({
+                "user_id": user_id,
+                "movie_slug": slug
+            }).execute()
+        except Exception as e:
+            # Ignore duplicate key errors (movie already in diary)
+            if "duplicate key" not in str(e).lower():
+                raise e
 
     def get_diary(self, user_id: str) -> set[str]:
-        """Get user's diary (not yet persisted to Supabase)."""
-        return set()
+        """Get user's diary from Supabase."""
+        response = self.client.table("user_diary").select("movie_slug").eq("user_id", user_id).execute()
+        return {row["movie_slug"] for row in response.data}
 
     def upsert_movie(self, movie: dict) -> None:
         """Upsert movie metadata to Supabase cache."""
@@ -287,16 +310,40 @@ class SupabaseStore:
             return True, 0.0
 
     def record_genre_preference(self, user_id: str, genres: list[str]) -> None:
-        """Record user's genre preferences (in-memory only)."""
-        with self.lock:
-            bucket = self.genre_weights.setdefault(user_id, {})
-            for genre in genres:
-                bucket[genre] = bucket.get(genre, 0) + 1
+        """Record user's genre preferences in Supabase."""
+        for genre in genres:
+            try:
+                # Try to update existing preference
+                existing = self.client.table("genre_preferences").select("id", "weight").eq("user_id", user_id).eq("genre", genre).execute()
+
+                if existing.data:
+                    # Update existing preference
+                    new_weight = existing.data[0]["weight"] + 1
+                    self.client.table("genre_preferences").update({
+                        "weight": new_weight,
+                        "updated_at": time.time()
+                    }).eq("id", existing.data[0]["id"]).execute()
+                else:
+                    # Insert new preference
+                    self.client.table("genre_preferences").insert({
+                        "user_id": user_id,
+                        "genre": genre,
+                        "weight": 1
+                    }).execute()
+
+            except Exception as e:
+                # Log error but don't fail
+                print(f"Error recording genre preference: {e}")
+
+    def get_genre_weights(self, user_id: str) -> dict[str, int]:
+        """Get user's genre weights from Supabase."""
+        response = self.client.table("genre_preferences").select("genre", "weight").eq("user_id", user_id).execute()
+        return {row["genre"]: row["weight"] for row in response.data}
 
     def weighted_shuffle(self, user_id: str, movies: list[dict]) -> list[dict]:
-        """Shuffle movies with genre bias (same as InMemoryStore)."""
-        with self.lock:
-            weights = self.genre_weights.get(user_id, {})
+        """Shuffle movies with genre bias using persisted genre weights."""
+        # Get weights from Supabase
+        weights = self.get_genre_weights(user_id)
 
         if not weights:
             random.shuffle(movies)

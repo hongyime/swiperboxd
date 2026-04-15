@@ -17,6 +17,7 @@ from .store import SupabaseStore
 from .providers.letterboxd import HttpLetterboxdScraper, MockLetterboxdScraper
 from .database import is_supabase_configured
 from .auth import get_auth_service
+from .auth_deps import get_authenticated_user, AuthenticatedUser, validate_user_id_match
 
 PROFILES = {
     "gold-standard": lambda m: m["rating"] >= 4.5,
@@ -63,7 +64,7 @@ class SwipeActionRequest(BaseModel):
 
 # Supabase Auth models
 class UserRegisterRequest(BaseModel):
-    email: str = Field(min_length=1, regex=r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
+    email: str = Field(min_length=1, pattern=r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
     password: str = Field(min_length=8, max_length=100)
 
 
@@ -160,7 +161,11 @@ async def get_current_user(request: Request):
     """Get current authenticated user info."""
     auth_service = get_auth_service()
 
-    user = await auth_service.get_user_from_request(request)
+    try:
+        user = await auth_service.get_user_from_request(request)
+    except Exception as e:
+        print(f"Auth error: {e}")
+        raise HTTPException(status_code=401, detail={"code": "unauthorized", "reason": str(e)})
 
     if not user:
         raise HTTPException(status_code=401, detail={"code": "unauthorized"})
@@ -254,40 +259,52 @@ async def handle_ingest_webhook(request: Request):
 
 
 @app.post("/ingest/start")
-def start_ingest(payload: IngestStartRequest):
-    allowed, retry_after = store.allow_scrape_request(payload.user_id, min_interval_seconds=1.0)
+async def start_ingest(payload: IngestStartRequest, user: AuthenticatedUser):
+    # SECURITY: Validate that request user_id matches JWT token
+    user_id = validate_user_id_match(user.user_id, payload.user_id)
+    
+    allowed, retry_after = store.allow_scrape_request(user_id, min_interval_seconds=1.0)
     if not allowed:
         raise HTTPException(status_code=429, detail={"code": "scrape_rate_limited", "retry_after": retry_after})
 
-    if payload.user_id in store.ingest_running:
-        return {"status": "already_running", "user_id": payload.user_id}
+    if user_id in store.ingest_running:
+        return {"status": "already_running", "user_id": user_id}
 
-    store.ingest_running.add(payload.user_id)
-    queue.enqueue("ingest-history", payload.model_dump())
-    threading.Thread(target=_run_ingest_worker, args=(payload.user_id, payload.source, payload.depth_pages), daemon=True).start()
-    return {"status": "queued", "user_id": payload.user_id}
+    store.ingest_running.add(user_id)
+    queue.enqueue("ingest-history", {"user_id": user_id, "source": payload.source, "depth_pages": payload.depth_pages})
+    threading.Thread(target=_run_ingest_worker, args=(user_id, payload.source, payload.depth_pages), daemon=True).start()
+    return {"status": "queued", "user_id": user_id}
 
 
 @app.get("/ingest/progress")
-def ingest_progress(user_id: str = Query(min_length=1)):
+async def ingest_progress(user: AuthenticatedUser, user_id: str | None = Query(default=None)):
+    # SECURITY: Validate that request user_id matches JWT token (if provided)
+    validated_user_id = validate_user_id_match(user.user_id, user_id)
     return {
         "status": "ok",
-        "user_id": user_id,
-        "progress": store.get_ingest_progress(user_id),
-        "running": user_id in store.ingest_running,
+        "user_id": validated_user_id,
+        "progress": store.get_ingest_progress(validated_user_id),
+        "running": validated_user_id in store.ingest_running,
     }
 
 
 @app.get("/discovery/deck")
-def get_discovery_deck(
-    user_id: str = Query(min_length=1),
+async def get_discovery_deck(
     profile: str = Query(default="gold-standard"),
+    user: AuthenticatedUser = None,
+    user_id: str | None = Query(default=None),
 ):
+    # SECURITY: Validate that request user_id matches JWT token (if provided)
+    if user:
+        validated_user_id = validate_user_id_match(user.user_id, user_id)
+    else:
+        validated_user_id = user_id
+    
     if profile not in PROFILES:
         raise HTTPException(status_code=400, detail={"code": "invalid_profile"})
 
     movies = [m for m in store.get_movies() if PROFILES[profile](m)]
-    movies = store.weighted_shuffle(user_id, movies)
+    movies = store.weighted_shuffle(validated_user_id, movies)
     return {"status": "ok", "profile": profile, "results": movies[:20]}
 
 
@@ -306,20 +323,23 @@ def get_discovery_details(slug: str = Query(min_length=1)):
 
 
 @app.post("/actions/swipe")
-def submit_swipe_action(payload: SwipeActionRequest):
-    limited, retry_after_ms = store.should_rate_limit(payload.user_id, lock_ms=500)
+async def submit_swipe_action(payload: SwipeActionRequest, user: AuthenticatedUser):
+    # SECURITY: Validate that request user_id matches JWT token
+    user_id = validate_user_id_match(user.user_id, payload.user_id)
+    
+    limited, retry_after_ms = store.should_rate_limit(user_id, lock_ms=500)
     if limited:
         raise HTTPException(status_code=429, detail={"code": "sync_lock", "retry_after_ms": retry_after_ms})
 
     movie = store.get_movie(payload.movie_slug)
     
     if payload.action == "dismiss":
-        store.add_exclusion(payload.user_id, payload.movie_slug)
+        store.add_exclusion(user_id, payload.movie_slug)
     elif payload.action == "watchlist":
-        store.add_watchlist(payload.user_id, payload.movie_slug)
+        store.add_watchlist(user_id, payload.movie_slug)
         if movie:
-            store.record_genre_preference(payload.user_id, movie.get("genres", []))
+            store.record_genre_preference(user_id, movie.get("genres", []))
     elif payload.action == "log":
-        store.add_diary(payload.user_id, payload.movie_slug)
+        store.add_diary(user_id, payload.movie_slug)
 
     return {"status": "accepted", "action": payload.action, "movie_slug": payload.movie_slug}

@@ -44,26 +44,26 @@ def test_jwt_secret_format():
 
     print(f"JWT Secret: {jwt_secret[:50]}...")
 
-    # Check if it's a proper JWT format (3 parts separated by dots)
+    # Legacy JWT secrets are base64-encoded strings (not JWT tokens)
+    # They should NOT have the typical JWT format (3 parts separated by dots)
+    # They look like: sKxW9rUq0rF0I2Zo7EkjzWikM298wV0YPSlpP1J3OXyqjG75UhlShcdqjowuy4ZcXmadcpORUZaV+TH1uFsXVQ==
+
+    # Check if it's NOT a JWT token format (which would be wrong)
     if jwt_secret.count('.') == 2:
-        print("✓ JWT Secret appears to be a valid JWT token format")
+        print("❌ JWT Secret appears to be a JWT token format")
+        print("   The Legacy JWT Secret should be a base64-encoded string, not a JWT token")
+        print("   Example: sKxW9rUq0rF0I2Zo7EkjzWikM298wV0YPSlpP1J3OXyqjG75UhlShcdqjowuy4ZcXmadcpORUZaV+TH1uFsXVQ==")
+        return False
 
-        # Try to decode the payload
-        payload = decode_jwt_payload(jwt_secret)
-        if "error" not in payload:
-            print(f"  - Issuer (iss): {payload.get('iss', 'N/A')}")
-            print(f"  - Subject (sub): {payload.get('sub', 'N/A')}")
-            print(f"  - Role: {payload.get('role', 'N/A')}")
-            print(f"  - Issued at (iat): {payload.get('iat', 'N/A')}")
-            print(f"  - Expires (exp): {payload.get('exp', 'N/A')}")
-        else:
-            print(f"  ⚠️ Could not decode payload: {payload['error']}")
-
+    # Check if it's a valid base64 string
+    try:
+        import base64
+        decoded = base64.b64decode(jwt_secret)
+        print("✓ JWT Secret is a valid base64-encoded Legacy JWT Secret")
+        print(f"  - Decoded length: {len(decoded)} bytes")
         return True
-    else:
-        print("❌ JWT Secret does not appear to be a valid JWT token")
-        print("   It should look like: eyJhbGciOiJIUzI1NiIs...signature")
-        print("   You can find it at: Supabase Dashboard → Settings → API → JWT Secret")
+    except Exception:
+        print("❌ JWT Secret does not appear to be valid base64")
         return False
 
 
