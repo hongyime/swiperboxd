@@ -4,6 +4,7 @@ import json
 import os
 import threading
 import time
+from pathlib import Path
 from typing import Callable, Literal
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
@@ -21,9 +22,12 @@ PROFILES = {
     "fresh-picks": lambda m: m["rating"] >= 3.8,
 }
 
+# src/api/app.py → parent = src/api, parent.parent = src, / "web" = src/web
+_WEB_DIR = Path(__file__).parent.parent / "web"
+
 SCRAPER_BACKEND = os.getenv("SCRAPER_BACKEND", "http").lower()
 if SCRAPER_BACKEND == "mock" and os.getenv("APP_ENV", "development") != "development":
-    print("WARNING: SCRAPER_BACKEND=mock in non-development environment", flush=True)
+    print("[startup] WARNING: SCRAPER_BACKEND=mock in non-development environment", flush=True)
 scraper = HttpLetterboxdScraper() if SCRAPER_BACKEND == "http" else MockLetterboxdScraper()
 app = FastAPI(title="Swiperboxd API", version="0.5.0")
 
@@ -31,9 +35,13 @@ app = FastAPI(title="Swiperboxd API", version="0.5.0")
 if is_supabase_configured():
     from .store import SupabaseStore
     store = SupabaseStore()
+    print("[startup] store=SupabaseStore", flush=True)
 else:
     from .store import InMemoryStore
     store = InMemoryStore()
+    print("[startup] store=InMemoryStore (Supabase not configured)", flush=True)
+
+print(f"[startup] scraper={SCRAPER_BACKEND} web_dir={_WEB_DIR}", flush=True)
 
 queue = InMemoryQueue()
 
@@ -103,12 +111,16 @@ def migrate_database():
 
 @app.get("/")
 def root():
-    return FileResponse("src/web/index.html")
+    return FileResponse(str(_WEB_DIR / "index.html"))
 
 
 @app.get("/web/{path:path}")
 def web_assets(path: str):
-    return FileResponse(f"src/web/{path}")
+    # Resolve and verify the path stays within the web directory
+    target = (_WEB_DIR / path).resolve()
+    if not str(target).startswith(str(_WEB_DIR.resolve())):
+        raise HTTPException(status_code=404)
+    return FileResponse(str(target))
 
 
 @app.get("/discovery/profiles")
@@ -126,9 +138,12 @@ def create_auth_session(payload: AuthSessionRequest):
     if not master_key:
         raise HTTPException(status_code=500, detail={"code": "missing_master_key"})
 
+    print(f"[auth] login attempt scraper={SCRAPER_BACKEND}", flush=True)
     try:
         upstream_session_cookie = scraper.login(payload.username, payload.password)
+        print("[auth] login success, session cookie obtained", flush=True)
     except Exception as exc:
+        print(f"[auth] login failed: {exc}", flush=True)
         raise HTTPException(status_code=502, detail={"code": "upstream_login_failed", "reason": str(exc)}) from exc
 
     encrypted_cookie = encrypt_session_cookie(upstream_session_cookie, master_key)
@@ -140,13 +155,16 @@ async def start_ingest(payload: IngestStartRequest, _session: str = Depends(veri
     """Start ingest process for a user (username)."""
     allowed, retry_after = store.allow_scrape_request(payload.user_id, min_interval_seconds=1.0)
     if not allowed:
+        print(f"[ingest] rate limited for user, retry_after={retry_after:.1f}s", flush=True)
         raise HTTPException(status_code=429, detail={"code": "scrape_rate_limited", "retry_after": retry_after})
 
     if payload.user_id in store.ingest_running:
+        print("[ingest] already running, skipping duplicate start", flush=True)
         return {"status": "already_running", "user_id": payload.user_id}
 
     store.ingest_running.add(payload.user_id)
     queue.enqueue("ingest-history", {"user_id": payload.user_id, "source": payload.source, "depth_pages": payload.depth_pages})
+    print(f"[ingest] starting worker source={payload.source} depth={payload.depth_pages}", flush=True)
     threading.Thread(target=_run_ingest_worker, args=(payload.user_id, payload.source, payload.depth_pages), daemon=True).start()
     return {"status": "queued", "user_id": payload.user_id}
 

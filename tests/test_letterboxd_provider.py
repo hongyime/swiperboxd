@@ -21,10 +21,18 @@ def test_http_scraper_ignores_invalid_timeout(monkeypatch):
 def test_http_scraper_login_uses_configured_base_url_and_timeout(monkeypatch):
     called = {}
 
+    class FakeCookies:
+        """Simulates the httpx client cookie jar."""
+        def get(self, key, default=None):
+            return "cookie-123" if key == "letterboxd.session" else default
+        def keys(self):
+            return ["letterboxd.session"]
+
     class FakeClient:
         def __init__(self, follow_redirects: bool, timeout: float):
             called["follow_redirects"] = follow_redirects
             called["timeout"] = timeout
+            self.cookies = FakeCookies()
 
         def __enter__(self):
             return self
@@ -34,17 +42,20 @@ def test_http_scraper_login_uses_configured_base_url_and_timeout(monkeypatch):
 
         def get(self, url: str):
             called["get_url"] = url
-            return type("Response", (), {"text": '<input name="__csrf" value="token"/>'})()
+            return type("Response", (), {
+                "status_code": 200,
+                "text": '<input name="__csrf" value="token"/>',
+            })()
 
         def post(self, url: str, data: dict, headers: dict):
             called["post_url"] = url
             called["post_data"] = data
             called["post_headers"] = headers
-            return type(
-                "Response",
-                (),
-                {"status_code": 200, "cookies": type("Cookies", (), {"get": lambda self, key: "cookie-123"})()},
-            )()
+            return type("Response", (), {
+                "status_code": 200,
+                "url": url,
+                "cookies": FakeCookies(),
+            })()
 
     monkeypatch.setattr(httpx, "Client", FakeClient)
     scraper = HttpLetterboxdScraper(base_url="https://example.test", timeout_seconds=9)

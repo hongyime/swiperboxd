@@ -100,10 +100,13 @@ class HttpLetterboxdScraper:
     def login(self, username: str, password: str) -> str:
         with httpx.Client(follow_redirects=True, timeout=self.timeout_seconds) as client:
             page = client.get(f"{self.base_url}/sign-in/")
+            print(f"[auth] sign-in page status={page.status_code}", flush=True)
+
             soup = BeautifulSoup(page.text, "html.parser")
             csrf_input = soup.select_one('input[name="__csrf"]')
             auth_code_input = soup.select_one('input[name="authenticationCode"]')
             if not csrf_input or not csrf_input.get("value"):
+                print("[auth] csrf token not found in sign-in page", flush=True)
                 raise RuntimeError("csrf_token_missing")
 
             payload = {
@@ -119,11 +122,25 @@ class HttpLetterboxdScraper:
                 "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
             }
             response = client.post(f"{self.base_url}/user/login.do", data=payload, headers=headers)
-            cookie = response.cookies.get("letterboxd.session")
+            print(
+                f"[auth] login.do status={response.status_code} "
+                f"final_url={response.url} "
+                f"jar_keys={list(client.cookies.keys())}",
+                flush=True,
+            )
+
+            # The session cookie is set during a redirect — check the full cookie
+            # jar (client.cookies), not just the final response cookies.
+            cookie = client.cookies.get("letterboxd.session")
             if not cookie:
                 if response.status_code in {401, 403, 429}:
                     raise RuntimeError("auth_rejected_or_challenge")
-                raise RuntimeError("session_cookie_missing")
+                # Surface enough context to diagnose without exposing credentials
+                raise RuntimeError(
+                    f"session_cookie_missing "
+                    f"(status={response.status_code}, "
+                    f"final_url={response.url})"
+                )
             return cookie
 
     def pull_watchlist_slugs(self, session_cookie: str) -> set[str]:
