@@ -1,6 +1,6 @@
 {
-  "name": "CineSwipe",
-  "short_name": "CineSwipe",
+  "name": "Swiperboxd",
+  "short_name": "Swiperboxd",
   "description": "Swipe to discover your next favorite movie",
   "start_url": "/",
   "display": "standalone",

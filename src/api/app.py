@@ -23,7 +23,7 @@ PROFILES = {
 
 SCRAPER_BACKEND = os.getenv("SCRAPER_BACKEND", "mock").lower()
 scraper = HttpLetterboxdScraper() if SCRAPER_BACKEND == "http" else MockLetterboxdScraper()
-app = FastAPI(title="CineSwipe API", version="0.4.0")
+app = FastAPI(title="Swiperboxd API", version="0.4.0")
 
 # Conditional store selection
 if is_supabase_configured():
@@ -60,7 +60,7 @@ class SwipeActionRequest(BaseModel):
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "app": "cineswipe"}
+    return {"status": "ok", "app": "swiperboxd"}
 
 
 @app.get("/")

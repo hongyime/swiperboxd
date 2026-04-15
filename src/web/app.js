@@ -1,5 +1,5 @@
 /**
- * CineSwipe - Movie Discovery App
+ * Swiperboxd - Movie Discovery App
  * Uses Letterboxd authentication (username/password)
  */
 
@@ -65,8 +65,8 @@ function initLetterboxdAuth() {
       state.encryptedSession = res.encrypted_session_cookie;
       
       // Save to localStorage
-      localStorage.setItem('cineswipe_username', username);
-      localStorage.setItem('cineswipe_session', res.encrypted_session_cookie);
+      localStorage.setItem('swiperboxd_username', username);
+      localStorage.setItem('swiperboxd_token', res.encrypted_session_cookie);
       
       showSuccess('Connected to Letterboxd!');
       setTimeout(() => showDiscovery(), 1000);
@@ -77,8 +77,8 @@ function initLetterboxdAuth() {
 
   // Logout
   $('#logout-btn')?.addEventListener('click', () => {
-    localStorage.removeItem('cineswipe_username');
-    localStorage.removeItem('cineswipe_session');
+    localStorage.removeItem('swiperboxd_username');
+    localStorage.removeItem('swiperboxd_token');
     state.username = null;
     state.encryptedSession = null;
     showAuth();
@@ -86,8 +86,8 @@ function initLetterboxdAuth() {
 }
 
 function checkSavedSession() {
-  const username = localStorage.getItem('cineswipe_username');
-  const session = localStorage.getItem('cineswipe_session');
+  const username = localStorage.getItem('swiperboxd_username');
+  const session = localStorage.getItem('swiperboxd_token');
   
   if (username && session) {
     state.username = username;
@@ -223,7 +223,7 @@ async function loadDeck() {
 
   cardStack.classList.add('hidden');
   emptyState.classList.add('hidden');
-  loadingSkeleton.classList.remove('hidden');
+  loadingSkeleton.classList.add('hidden'); // Hide skeleton, use progress bar instead
 
   try {
     // Start ingest (using username as user_id for Letterboxd)
@@ -232,8 +232,8 @@ async function loadDeck() {
       body: { user_id: state.username, source: 'trending', depth_pages: 2 }
     });
 
-    // Wait for ingest to progress
-    await delay(1000);
+    // Poll progress until complete
+    await pollProgress();
 
     // Get deck
     const res = await api(`/discovery/deck?user_id=${encodeURIComponent(state.username)}&profile=${encodeURIComponent(state.currentProfile)}`);
@@ -241,7 +241,8 @@ async function loadDeck() {
     state.deck = res.results || [];
     state.currentIndex = 0;
     
-    loadingSkeleton.classList.add('hidden');
+    // Hide progress, show deck
+    hideProgress();
     
     if (state.deck.length > 0) {
       renderDeck();
@@ -252,6 +253,72 @@ async function loadDeck() {
     console.error('Failed to load deck:', err);
     loadingSkeleton.classList.add('hidden');
     emptyState.classList.remove('hidden');
+    hideProgress();
+  }
+}
+
+let progressPollInterval = null;
+
+async function pollProgress() {
+  showProgress('Loading your Letterboxd data...');
+  
+  while (true) {
+    try {
+      const res = await api(`/ingest/progress?user_id=${encodeURIComponent(state.username)}`);
+      const progress = res.progress;
+      const running = res.running;
+      
+      updateProgressBar(progress);
+      
+      // Stop when ingest is complete or failed
+      if (progress >= 100 || progress === -1) {
+        break;
+      }
+      
+      // Poll every 500ms
+      await delay(500);
+    } catch (err) {
+      console.error('Progress poll error:', err);
+      break;
+    }
+  }
+}
+
+function showProgress(message) {
+  const progressOverlay = document.createElement('div');
+  progressOverlay.id = 'ingest-progress-overlay';
+  progressOverlay.className = 'ingest-progress-container';
+  progressOverlay.innerHTML = `
+    <div class="ingest-progress">
+      <div class="progress-logo">
+        <img src="/web/logo.svg" alt="Swiperboxd" />
+      </div>
+      <h3>${message}</h3>
+      <div class="progress-bar-container">
+        <div class="progress-bar">
+          <div class="progress-fill" style="width: 0%"></div>
+        </div>
+      </div>
+      <p class="progress-percent">0%</p>
+    </div>
+  `;
+  document.body.appendChild(progressOverlay);
+}
+
+function hideProgress() {
+  const overlay = $('#ingest-progress-overlay');
+  if (overlay) {
+    overlay.classList.add('hidden');
+    setTimeout(() => overlay.remove(), 300);
+  }
+}
+
+function updateProgressBar(progress) {
+  const fill = $('.progress-fill');
+  const percent = $('.progress-percent');
+  if (fill && percent) {
+    fill.style.width = `${Math.min(100, Math.max(0, progress))}%`;
+    percent.textContent = `${Math.min(100, Math.max(0, progress))}%`;
   }
 }
 
