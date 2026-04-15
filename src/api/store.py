@@ -215,62 +215,95 @@ class SupabaseStore:
         self.genre_weights = {}
         self.lock = threading.Lock()
 
+    def _get_or_create_user_id(self, letterboxd_username: str) -> str:
+        """Get user ID from Supabase or create new user."""
+        # Try to find existing user by letterboxd_username
+        response = self.client.table("users").select("id").eq("letterboxd_username", letterboxd_username).execute()
+        
+        if response.data:
+            return response.data[0]["id"]
+        
+        # Create new user
+        new_user = self.client.table("users").insert({
+            "letterboxd_username": letterboxd_username
+        }).execute()
+        
+        return new_user.data[0]["id"]
+
     def add_exclusion(self, user_id: str, slug: str) -> None:
         """Add a movie to user's exclusion list in Supabase."""
-        self.client.table("user_exclusions").insert({"user_id": user_id, "movie_slug": slug}).execute()
+        actual_user_id = self._get_or_create_user_id(user_id)
+        try:
+            self.client.table("exclusions").insert({"user_id": actual_user_id, "movie_slug": slug}).execute()
+        except Exception as e:
+            # Ignore duplicate key errors
+            if "duplicate" not in str(e).lower() and "unique" not in str(e).lower():
+                raise
 
     def get_exclusions(self, user_id: str) -> set[str]:
         """Get user's exclusion list from Supabase."""
-        response = self.client.table("user_exclusions").select("movie_slug").eq("user_id", user_id).execute()
+        actual_user_id = self._get_or_create_user_id(user_id)
+        response = self.client.table("exclusions").select("movie_slug").eq("user_id", actual_user_id).execute()
         return {row["movie_slug"] for row in response.data}
 
     def add_watchlist(self, user_id: str, slug: str) -> None:
         """Add a movie to user's watchlist in Supabase."""
+        actual_user_id = self._get_or_create_user_id(user_id)
         try:
-            self.client.table("user_watchlist").insert({
-                "user_id": user_id,
+            self.client.table("watchlist").insert({
+                "user_id": actual_user_id,
                 "movie_slug": slug
             }).execute()
         except Exception as e:
-            # Ignore duplicate key errors (movie already in watchlist)
-            if "duplicate key" not in str(e).lower():
-                raise e
+            # Ignore duplicate key errors
+            if "duplicate" not in str(e).lower() and "unique" not in str(e).lower():
+                raise
 
     def get_watchlist(self, user_id: str) -> set[str]:
         """Get user's watchlist from Supabase."""
-        response = self.client.table("user_watchlist").select("movie_slug").eq("user_id", user_id).execute()
+        actual_user_id = self._get_or_create_user_id(user_id)
+        response = self.client.table("watchlist").select("movie_slug").eq("user_id", actual_user_id).execute()
         return {row["movie_slug"] for row in response.data}
 
     def add_diary(self, user_id: str, slug: str) -> None:
         """Add a movie to user's diary in Supabase."""
+        actual_user_id = self._get_or_create_user_id(user_id)
         try:
-            self.client.table("user_diary").insert({
-                "user_id": user_id,
+            self.client.table("diary").insert({
+                "user_id": actual_user_id,
                 "movie_slug": slug
             }).execute()
         except Exception as e:
-            # Ignore duplicate key errors (movie already in diary)
-            if "duplicate key" not in str(e).lower():
-                raise e
+            # Ignore duplicate key errors
+            if "duplicate" not in str(e).lower() and "unique" not in str(e).lower():
+                raise
 
     def get_diary(self, user_id: str) -> set[str]:
         """Get user's diary from Supabase."""
-        response = self.client.table("user_diary").select("movie_slug").eq("user_id", user_id).execute()
+        actual_user_id = self._get_or_create_user_id(user_id)
+        response = self.client.table("diary").select("movie_slug").eq("user_id", actual_user_id).execute()
         return {row["movie_slug"] for row in response.data}
 
     def upsert_movie(self, movie: dict) -> None:
         """Upsert movie metadata to Supabase cache."""
-        self.client.table("movies").upsert({
+        record = {
             "slug": movie["slug"],
             "title": movie["title"],
-            "poster_url": movie["poster_url"],
-            "rating": movie["rating"],
-            "popularity": movie["popularity"],
-            "genres": movie["genres"],
+            "poster_url": movie.get("poster_url"),
+            "rating": movie.get("rating"),
+            "popularity": movie.get("popularity", 0),
+            "genres": movie.get("genres", []),
             "synopsis": movie.get("synopsis", ""),
             "cast": movie.get("cast", []),
-            "updated_at": time.time()
-        }).execute()
+        }
+        
+        # Add optional fields
+        if "year" in movie:
+            record["year"] = movie["year"]
+        if "director" in movie:
+            record["director"] = movie["director"]
+            
+        self.client.table("movies").upsert(record).execute()
 
     def get_movie(self, slug: str) -> dict | None:
         """Get movie metadata from Supabase cache."""
@@ -285,7 +318,7 @@ class SupabaseStore:
         return response.data
 
     def set_ingest_progress(self, user_id: str, value: int) -> None:
-        """Set ingest progress (in-memory only)."""
+        """Set ingest progress (in-memory only - for performance)."""
         with self.lock:
             self.ingest_progress[user_id] = max(0, min(100, value))
 
@@ -318,34 +351,31 @@ class SupabaseStore:
 
     def record_genre_preference(self, user_id: str, genres: list[str]) -> None:
         """Record user's genre preferences in Supabase."""
+        actual_user_id = self._get_or_create_user_id(user_id)
+        
+        # Load current weights from DB
+        weights = self.get_genre_weights(user_id)
+        
+        # Update weights
         for genre in genres:
+            weights[genre] = weights.get(genre, 0) + 1
+            
+            # Update in database
             try:
-                # Try to update existing preference
-                existing = self.client.table("genre_preferences").select("id", "weight").eq("user_id", user_id).eq("genre", genre).execute()
-
-                if existing.data:
-                    # Update existing preference
-                    new_weight = existing.data[0]["weight"] + 1
-                    self.client.table("genre_preferences").update({
-                        "weight": new_weight,
-                        "updated_at": time.time()
-                    }).eq("id", existing.data[0]["id"]).execute()
-                else:
-                    # Insert new preference
-                    self.client.table("genre_preferences").insert({
-                        "user_id": user_id,
-                        "genre": genre,
-                        "weight": 1
-                    }).execute()
-
+                self.client.table("genre_preferences").upsert({
+                    "user_id": actual_user_id,
+                    "genre": genre,
+                    "score": weights[genre],
+                    "updated_at": time.time()
+                }).execute()
             except Exception as e:
-                # Log error but don't fail
                 print(f"Error recording genre preference: {e}")
 
     def get_genre_weights(self, user_id: str) -> dict[str, int]:
         """Get user's genre weights from Supabase."""
-        response = self.client.table("genre_preferences").select("genre", "weight").eq("user_id", user_id).execute()
-        return {row["genre"]: row["weight"] for row in response.data}
+        actual_user_id = self._get_or_create_user_id(user_id)
+        response = self.client.table("genre_preferences").select("genre", "score").eq("user_id", actual_user_id).execute()
+        return {row["genre"]: int(row["score"]) for row in response.data}
 
     def weighted_shuffle(self, user_id: str, movies: list[dict]) -> list[dict]:
         """Shuffle movies with genre bias using persisted genre weights."""

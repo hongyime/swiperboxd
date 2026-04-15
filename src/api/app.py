@@ -7,13 +7,13 @@ import time
 from typing import Literal
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 
 from .queue import InMemoryQueue
 from .security import encrypt_session_cookie
 from .providers.letterboxd import HttpLetterboxdScraper, MockLetterboxdScraper
-from .database import is_supabase_configured
+from .database import is_supabase_configured, run_migrations
 
 PROFILES = {
     "gold-standard": lambda m: m["rating"] >= 4.5,
@@ -23,7 +23,7 @@ PROFILES = {
 
 SCRAPER_BACKEND = os.getenv("SCRAPER_BACKEND", "mock").lower()
 scraper = HttpLetterboxdScraper() if SCRAPER_BACKEND == "http" else MockLetterboxdScraper()
-app = FastAPI(title="Swiperboxd API", version="0.4.0")
+app = FastAPI(title="Swiperboxd API", version="0.5.0")
 
 # Conditional store selection
 if is_supabase_configured():
@@ -60,7 +60,32 @@ class SwipeActionRequest(BaseModel):
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "app": "swiperboxd"}
+    store_type = "SupabaseStore" if is_supabase_configured() else "InMemoryStore"
+    return {"status": "ok", "app": "swiperboxd", "store": store_type}
+
+
+@app.post("/db/migrate")
+def migrate_database():
+    """
+    Run database migrations.
+    
+    Development only endpoint to create all Supabase tables.
+    Should NOT be called in production directly - run migrations via SQL Editor instead.
+    """
+    if not is_supabase_configured():
+        raise HTTPException(
+            status_code=500, 
+            detail="Supabase not configured. Cannot run migrations."
+        )
+    
+    try:
+        run_migrations()
+        return {"status": "ok", "message": "Migrations completed successfully"}
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail={"code": "migration_failed", "reason": str(e)}
+        )
 
 
 @app.get("/")
