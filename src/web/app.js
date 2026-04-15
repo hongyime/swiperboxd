@@ -3,6 +3,10 @@
  * Uses Letterboxd authentication (username/password)
  */
 
+import { createSuppressionStore } from './state.js';
+
+const suppression = createSuppressionStore(() => Date.now());
+
 // State
 const state = {
   username: null,
@@ -237,8 +241,9 @@ async function loadDeck() {
 
     // Get deck
     const res = await api(`/discovery/deck?user_id=${encodeURIComponent(state.username)}&profile=${encodeURIComponent(state.currentProfile)}`);
-    
-    state.deck = res.results || [];
+
+    // Filter out locally suppressed (dismissed within last 24h) films
+    state.deck = (res.results || []).filter(m => !suppression.isSuppressed(m.slug));
     state.currentIndex = 0;
     
     // Hide progress, show deck
@@ -443,12 +448,17 @@ async function executeSwipe(action) {
     // Send to backend
     await api('/actions/swipe', {
       method: 'POST',
-      body: { 
-        user_id: state.username, 
-        movie_slug: movie.slug, 
-        action 
+      body: {
+        user_id: state.username,
+        movie_slug: movie.slug,
+        action
       }
     });
+
+    // Suppress dismissed films locally for 24 hours
+    if (action === 'dismiss') {
+      suppression.dismiss(movie.slug);
+    }
 
     // Move to next card
     state.currentIndex++;
@@ -489,11 +499,13 @@ async function executeSwipe(action) {
 // ==================== API ====================
 
 async function api(path, options = {}) {
+  const headers = { 'Content-Type': 'application/json' };
+  if (state.encryptedSession) {
+    headers['X-Session-Token'] = state.encryptedSession;
+  }
   const res = await fetch(path, {
     method: options.method || 'GET',
-    headers: {
-      'Content-Type': 'application/json'
-    },
+    headers,
     ...(options.body ? { body: JSON.stringify(options.body) } : {})
   });
 

@@ -1,6 +1,6 @@
 import httpx
 
-from api.providers.letterboxd import HttpLetterboxdScraper
+from src.api.providers.letterboxd import HttpLetterboxdScraper
 
 
 def test_http_scraper_uses_env_config(monkeypatch):

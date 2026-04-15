@@ -66,6 +66,21 @@ class MockLetterboxdScraper:
         return [lookup[slug] for slug in slugs if slug in lookup]
 
 
+def _parse_member_count(text: str) -> int:
+    """Parse Letterboxd member count strings like '1.2M', '45K', '1,234' → int."""
+    text = text.strip().replace(",", "").replace("\xa0", "")
+    if not text:
+        return 0
+    try:
+        if text.upper().endswith("M"):
+            return int(float(text[:-1]) * 1_000_000)
+        if text.upper().endswith("K"):
+            return int(float(text[:-1]) * 1_000)
+        return int(float(text))
+    except (ValueError, TypeError):
+        return 0
+
+
 class HttpLetterboxdScraper:
     def __init__(self, base_url: str | None = None, timeout_seconds: float | None = None):
         self.base_url = (base_url or os.getenv("TARGET_PLATFORM_BASE_URL") or "https://letterboxd.com").rstrip("/")
@@ -288,13 +303,28 @@ class HttpLetterboxdScraper:
                         cast_tags = soup.select("span.cast a")
                         cast = [tag.get_text().strip() for tag in cast_tags[:5]] if cast_tags else []
 
+                        # Extract member/watch count as popularity proxy.
+                        # Letterboxd renders this as a stat link containing a numeric text
+                        # (e.g. "1.2M", "45K"). Try known selectors in priority order.
+                        popularity = 0
+                        for sel in [
+                            "a.has-icon.icon-watched span",
+                            "li.filmstat-watches a",
+                            "a[href$='/members/']",
+                        ]:
+                            tag = soup.select_one(sel)
+                            if tag:
+                                popularity = _parse_member_count(tag.get_text())
+                                if popularity:
+                                    break
+
                         movies.append(
                             LetterboxdMovie(
                                 slug=slug,
                                 title=title,
                                 poster_url=poster_url,
                                 rating=rating,
-                                popularity=0,
+                                popularity=popularity,
                                 genres=genres,
                                 synopsis=synopsis,
                                 cast=cast,

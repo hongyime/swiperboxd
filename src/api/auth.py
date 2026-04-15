@@ -164,39 +164,23 @@ class AuthService:
     async def verify_token(self, token: str) -> Optional[dict]:
         """
         Verify a JWT token and return the user info.
-        
-        For Supabase, tokens are signed with ES256. We decode without 
-        cryptographic verification (Supabase already verified it).
-        We validate the basic claims manually.
+        Validates signature using SUPABASE_JWT_SECRET (HS256).
         """
         try:
-            import jwt
+            import jwt as pyjwt
 
-            # Decode without verification - Supabase has already verified the signature
-            # We just need to extract and validate basic claims
-            payload = jwt.decode(
+            payload = pyjwt.decode(
                 token,
-                options={"verify_signature": False}
+                self.supabase_jwt_secret,
+                algorithms=["HS256"],
+                audience=["authenticated"],
             )
 
-            # Validate basic claims
-            exp = payload.get("exp")
-            if exp and exp < __import__("time").time():
-                print("Token expired")
-                return None
-
-            # Validate issuer matches our Supabase project
-            iss = payload.get("iss", "")
-            if self.supabase_url and self.supabase_url not in iss:
-                print(f"Invalid issuer: {iss}")
-                return None
-
-            # Extract user info
             return {
                 "user_id": payload.get("sub"),
                 "email": payload.get("email"),
-                "exp": exp,
-                "iat": payload.get("iat")
+                "exp": payload.get("exp"),
+                "iat": payload.get("iat"),
             }
 
         except Exception as e:

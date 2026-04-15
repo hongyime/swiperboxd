@@ -8,7 +8,7 @@ CREATE TABLE IF NOT EXISTS movies (
     poster_url TEXT,
     synopsis TEXT,
     genres JSONB DEFAULT '[]',
-    cast JSONB DEFAULT '[]',
+    "cast" JSONB DEFAULT '[]',
     year INTEGER,
     director TEXT,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),

@@ -4,14 +4,14 @@ import json
 import os
 import threading
 import time
-from typing import Literal
+from typing import Callable, Literal
 
-from fastapi import Depends, FastAPI, HTTPException, Query, Request
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 
 from .queue import InMemoryQueue
-from .security import encrypt_session_cookie
+from .security import decrypt_session_cookie, encrypt_session_cookie
 from .providers.letterboxd import HttpLetterboxdScraper, MockLetterboxdScraper
 from .database import is_supabase_configured, run_migrations
 
@@ -21,7 +21,9 @@ PROFILES = {
     "fresh-picks": lambda m: m["rating"] >= 3.8,
 }
 
-SCRAPER_BACKEND = os.getenv("SCRAPER_BACKEND", "mock").lower()
+SCRAPER_BACKEND = os.getenv("SCRAPER_BACKEND", "http").lower()
+if SCRAPER_BACKEND == "mock" and os.getenv("APP_ENV", "development") != "development":
+    print("WARNING: SCRAPER_BACKEND=mock in non-development environment", flush=True)
 scraper = HttpLetterboxdScraper() if SCRAPER_BACKEND == "http" else MockLetterboxdScraper()
 app = FastAPI(title="Swiperboxd API", version="0.5.0")
 
@@ -34,6 +36,17 @@ else:
     store = InMemoryStore()
 
 queue = InMemoryQueue()
+
+
+def verify_session(x_session_token: str = Header(..., alias="X-Session-Token")) -> str:
+    """Require a valid encrypted session token on mutating endpoints."""
+    master_key = os.getenv("MASTER_ENCRYPTION_KEY")
+    if not master_key:
+        raise HTTPException(status_code=500, detail={"code": "server_misconfigured"})
+    try:
+        return decrypt_session_cookie(x_session_token, master_key)
+    except Exception:
+        raise HTTPException(status_code=401, detail={"code": "invalid_session"})
 
 
 class AuthSessionRequest(BaseModel):
@@ -67,11 +80,11 @@ def health():
 @app.post("/db/migrate")
 def migrate_database():
     """
-    Run database migrations.
-    
-    Development only endpoint to create all Supabase tables.
-    Should NOT be called in production directly - run migrations via SQL Editor instead.
+    Run database migrations. Development only — blocked in production.
     """
+    if os.getenv("APP_ENV", "development") == "production":
+        raise HTTPException(status_code=403, detail={"code": "not_available_in_production"})
+
     if not is_supabase_configured():
         raise HTTPException(
             status_code=500, 
@@ -123,7 +136,7 @@ def create_auth_session(payload: AuthSessionRequest):
 
 
 @app.post("/ingest/start")
-async def start_ingest(payload: IngestStartRequest):
+async def start_ingest(payload: IngestStartRequest, _session: str = Depends(verify_session)):
     """Start ingest process for a user (username)."""
     allowed, retry_after = store.allow_scrape_request(payload.user_id, min_interval_seconds=1.0)
     if not allowed:
@@ -179,7 +192,7 @@ def get_discovery_details(slug: str = Query(min_length=1)):
 
 
 @app.post("/actions/swipe")
-async def submit_swipe_action(payload: SwipeActionRequest):
+async def submit_swipe_action(payload: SwipeActionRequest, _session: str = Depends(verify_session)):
     """Submit a swipe action."""
     limited, retry_after_ms = store.should_rate_limit(payload.user_id, lock_ms=500)
     if limited:
@@ -199,9 +212,20 @@ async def submit_swipe_action(payload: SwipeActionRequest):
     return {"status": "accepted", "action": payload.action, "movie_slug": payload.movie_slug}
 
 
-def _filter_first_pipeline(user_id: str, source: str, depth_pages: int) -> list[dict]:
+def _filter_first_pipeline(
+    user_id: str,
+    source: str,
+    depth_pages: int,
+    progress_callback: Callable[[int], None] | None = None,
+) -> list[dict]:
     """Filter pipeline: pull source → exclude seen → fetch metadata → upsert to cache."""
+    def _emit(pct: int) -> None:
+        if progress_callback:
+            progress_callback(pct)
+
     source_slugs = scraper.pull_source_slugs(source=source, depth_pages=depth_pages)
+    _emit(20)
+
     watchlist = store.get_watchlist(user_id)
     diary = store.get_diary(user_id)
     exclusions = store.get_exclusions(user_id)
@@ -209,27 +233,35 @@ def _filter_first_pipeline(user_id: str, source: str, depth_pages: int) -> list[
     unique = [slug for slug in source_slugs if slug not in watchlist]
     unique = [slug for slug in unique if slug not in diary]
     unique = [slug for slug in unique if slug not in exclusions]
+    _emit(40)
 
-    metadata = [m.__dict__ for m in scraper.metadata_for_slugs(unique)]
-    for movie in metadata:
+    movies_raw = scraper.metadata_for_slugs(unique)
+    n = max(len(movies_raw), 1)
+    metadata = []
+    for i, m in enumerate(movies_raw):
+        movie = m.__dict__
         store.upsert_movie(movie)
+        metadata.append(movie)
+        _emit(40 + int((i + 1) / n * 55))
 
     return metadata
 
 
 def _run_ingest_worker(user_id: str, source: str, depth_pages: int) -> None:
-    """Background worker for ingest processing with error handling."""
+    """Background worker for ingest processing with real progress events."""
+
+    def _set_progress(pct: int) -> None:
+        store.set_ingest_progress(user_id, pct)
 
     try:
-        store.set_ingest_progress(user_id, 5)
-        for value in [20, 35, 50, 70]:
-            time.sleep(0.1)
-            store.set_ingest_progress(user_id, value)
-
-        # Filter pipeline
-        _filter_first_pipeline(user_id=user_id, source=source, depth_pages=depth_pages)
-
-        store.set_ingest_progress(user_id, 100)
+        _set_progress(5)
+        _filter_first_pipeline(
+            user_id=user_id,
+            source=source,
+            depth_pages=depth_pages,
+            progress_callback=_set_progress,
+        )
+        _set_progress(100)
 
     except Exception as exc:
         store.set_ingest_progress(user_id, -1)

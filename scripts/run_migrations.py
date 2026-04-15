@@ -47,17 +47,14 @@ def run_migrations():
     print("Running migrations...")
 
     migrations_dir = Path(__file__).parent.parent / "db" / "migrations"
-    migration_files = sorted(migrations_dir.glob("*.sql"))
+    migration_files = sorted(f for f in migrations_dir.glob("*.sql") if not f.name.startswith("LEGACY_"))
 
-    # Only run new migrations (003-008)
-    new_migrations = [f for f in migration_files if int(f.stem.split('_')[0]) >= 3]
-
-    if not new_migrations:
-        print("No new migrations to run")
+    if not migration_files:
+        print("No migrations to run")
         return True
 
     success = True
-    for migration_file in new_migrations:
+    for migration_file in migration_files:
         sql_content = migration_file.read_text()
         filename = migration_file.name
 
