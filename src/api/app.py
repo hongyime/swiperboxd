@@ -1,18 +1,21 @@
 from __future__ import annotations
 
+import json
 import os
 import threading
 import time
 from typing import Literal
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from .queue import InMemoryQueue
+from .qstash_queue import QStashQueue
 from .security import encrypt_session_cookie
-from .store import InMemoryStore
+from .store import SupabaseStore
 from .providers.letterboxd import HttpLetterboxdScraper, MockLetterboxdScraper
+from .database import is_supabase_configured
 
 PROFILES = {
     "gold-standard": lambda m: m["rating"] >= 4.5,
@@ -23,7 +26,15 @@ PROFILES = {
 SCRAPER_BACKEND = os.getenv("SCRAPER_BACKEND", "mock").lower()
 scraper = HttpLetterboxdScraper() if SCRAPER_BACKEND == "http" else MockLetterboxdScraper()
 app = FastAPI(title="CineSwipe API", version="0.3.0")
-store = InMemoryStore()
+
+# Conditional store selection: SupabaseStore if configured, otherwise InMemoryStore (for fallback and tests)
+if is_supabase_configured():
+    from .store import SupabaseStore
+    store = SupabaseStore()
+else:
+    from .store import InMemoryStore
+    store = InMemoryStore()
+
 queue = InMemoryQueue()
 
 
@@ -85,9 +96,10 @@ def create_auth_session(payload: AuthSessionRequest):
 
 
 def _filter_first_pipeline(user_id: str, source: str, depth_pages: int) -> list[dict]:
+    """Filter pipeline: pull source → exclude seen → fetch metadata → upsert to cache."""
     source_slugs = scraper.pull_source_slugs(source=source, depth_pages=depth_pages)
-    watchlist = store.watchlist.get(user_id, set())
-    diary = store.diary.get(user_id, set())
+    watchlist = store.get_watchlist(user_id)
+    diary = store.get_diary(user_id)
     exclusions = store.get_exclusions(user_id)
 
     unique = [slug for slug in source_slugs if slug not in watchlist]
@@ -101,15 +113,67 @@ def _filter_first_pipeline(user_id: str, source: str, depth_pages: int) -> list[
     return metadata
 
 
-def _simulate_ingest(user_id: str, source: str, depth_pages: int) -> None:
-    store.set_ingest_progress(user_id, 5)
-    for value in [20, 35, 50, 70]:
-        time.sleep(0.1)
-        store.set_ingest_progress(user_id, value)
+def _run_ingest_worker(user_id: str, source: str, depth_pages: int) -> None:
+    """Background worker for ingest processing with error handling."""
 
-    _filter_first_pipeline(user_id=user_id, source=source, depth_pages=depth_pages)
-    store.set_ingest_progress(user_id, 100)
-    store.ingest_running.discard(user_id)
+    try:
+        store.set_ingest_progress(user_id, 5)
+        for value in [20, 35, 50, 70]:
+            time.sleep(0.1)
+            store.set_ingest_progress(user_id, value)
+
+        # Import scraper here to avoid circular dependency
+        _filter_first_pipeline(user_id=user_id, source=source, depth_pages=depth_pages)
+
+        store.set_ingest_progress(user_id, 100)
+
+    except Exception as exc:
+        # Log error and set progress to error state
+        store.set_ingest_progress(user_id, -1)
+        # In production, this would go to a proper logging system
+        print(f"Ingest worker error for user {user_id}: {exc}")
+    finally:
+        store.ingest_running.discard(user_id)
+
+
+async def ingest_webhook(request: Request):
+    """Webhook endpoint for QStash callbacks when ingest jobs complete."""
+    body_bytes = await request.body()
+    body = body_bytes.decode()
+
+    try:
+        from .qstash_queue import QStashQueue
+        queue_client = QStashQueue()
+        is_valid = queue_client.verify_webhook(dict(request.headers), body)
+        if not is_valid:
+            raise HTTPException(status_code=401, detail={"code": "invalid_signature"})
+    except ValueError:
+        pass  # QStash not configured
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail={"code": "signature_verification_failed", "reason": str(exc)}) from exc
+
+    try:
+        payload = json.loads(body)
+        user_id = payload.get("user_id")
+        source = payload.get("source", "trending")
+        depth_pages = payload.get("depth_pages", 2)
+        if not user_id:
+            raise HTTPException(status_code=400, detail={"code": "invalid_payload"})
+        
+        # Call existing _run_ingest_worker (need to rename _simulate_ingest first)
+        _run_ingest_worker(user_id, source, depth_pages)
+        return {"status": "accepted", "user_id": user_id}
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=400, detail={"code": "invalid_json"}) from exc
+
+
+@app.post("/webhooks/ingest")
+async def handle_ingest_webhook(request: Request):
+    return await ingest_webhook(request)
+
+
+
+
 
 
 @app.post("/ingest/start")
@@ -123,7 +187,7 @@ def start_ingest(payload: IngestStartRequest):
 
     store.ingest_running.add(payload.user_id)
     queue.enqueue("ingest-history", payload.model_dump())
-    threading.Thread(target=_simulate_ingest, args=(payload.user_id, payload.source, payload.depth_pages), daemon=True).start()
+    threading.Thread(target=_run_ingest_worker, args=(payload.user_id, payload.source, payload.depth_pages), daemon=True).start()
     return {"status": "queued", "user_id": payload.user_id}
 
 
@@ -171,8 +235,7 @@ def submit_swipe_action(payload: SwipeActionRequest):
         raise HTTPException(status_code=429, detail={"code": "sync_lock", "retry_after_ms": retry_after_ms})
 
     movie = store.get_movie(payload.movie_slug)
-    store.actions.append(payload.model_dump())
-
+    
     if payload.action == "dismiss":
         store.add_exclusion(payload.user_id, payload.movie_slug)
     elif payload.action == "watchlist":
