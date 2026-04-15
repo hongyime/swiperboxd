@@ -4,9 +4,9 @@ import json
 import os
 import threading
 import time
-from typing import Literal
+from typing import Literal, Optional
 
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
@@ -17,7 +17,7 @@ from .store import SupabaseStore
 from .providers.letterboxd import HttpLetterboxdScraper, MockLetterboxdScraper
 from .database import is_supabase_configured
 from .auth import get_auth_service
-from .auth_deps import get_authenticated_user, AuthenticatedUser, validate_user_id_match
+from .auth_deps import get_authenticated_user, get_optional_auth_user, AuthenticatedUser, validate_user_id_match
 
 PROFILES = {
     "gold-standard": lambda m: m["rating"] >= 4.5,
@@ -259,7 +259,7 @@ async def handle_ingest_webhook(request: Request):
 
 
 @app.post("/ingest/start")
-async def start_ingest(payload: IngestStartRequest, user: AuthenticatedUser):
+async def start_ingest(payload: IngestStartRequest, user: AuthenticatedUser = Depends(get_authenticated_user)):
     # SECURITY: Validate that request user_id matches JWT token
     user_id = validate_user_id_match(user.user_id, payload.user_id)
     
@@ -277,9 +277,16 @@ async def start_ingest(payload: IngestStartRequest, user: AuthenticatedUser):
 
 
 @app.get("/ingest/progress")
-async def ingest_progress(user: AuthenticatedUser, user_id: str | None = Query(default=None)):
-    # SECURITY: Validate that request user_id matches JWT token (if provided)
-    validated_user_id = validate_user_id_match(user.user_id, user_id)
+async def ingest_progress(user: AuthenticatedUser = Depends(get_optional_auth_user), user_id: str | None = Query(default=None)):
+    # If authenticated, validate that request user_id matches JWT token
+    if user:
+        validated_user_id = validate_user_id_match(user.user_id, user_id)
+    elif user_id:
+        # For unauthenticated requests, require user_id parameter
+        validated_user_id = user_id
+    else:
+        raise HTTPException(status_code=400, detail={"code": "user_id required"})
+    
     return {
         "status": "ok",
         "user_id": validated_user_id,
@@ -291,14 +298,16 @@ async def ingest_progress(user: AuthenticatedUser, user_id: str | None = Query(d
 @app.get("/discovery/deck")
 async def get_discovery_deck(
     profile: str = Query(default="gold-standard"),
-    user: AuthenticatedUser = None,
+    user: Optional[AuthenticatedUser] = Depends(get_optional_auth_user),
     user_id: str | None = Query(default=None),
 ):
-    # SECURITY: Validate that request user_id matches JWT token (if provided)
+    # If authenticated, validate that request user_id matches JWT token
     if user:
         validated_user_id = validate_user_id_match(user.user_id, user_id)
-    else:
+    elif user_id:
         validated_user_id = user_id
+    else:
+        validated_user_id = None  # Anonymous user
     
     if profile not in PROFILES:
         raise HTTPException(status_code=400, detail={"code": "invalid_profile"})
@@ -323,7 +332,7 @@ def get_discovery_details(slug: str = Query(min_length=1)):
 
 
 @app.post("/actions/swipe")
-async def submit_swipe_action(payload: SwipeActionRequest, user: AuthenticatedUser):
+async def submit_swipe_action(payload: SwipeActionRequest, user: AuthenticatedUser = Depends(get_authenticated_user)):
     # SECURITY: Validate that request user_id matches JWT token
     user_id = validate_user_id_match(user.user_id, payload.user_id)
     

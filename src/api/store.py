@@ -198,15 +198,22 @@ class InMemoryStore:
 class SupabaseStore:
     """Supabase-based implementation of Store for production persistence."""
 
-    ingest_progress: dict[str, int] = field(default_factory=dict)
-    last_action_at: dict[str, float] = field(default_factory=dict)
-    last_scrape_at: dict[str, float] = field(default_factory=dict)
-    ingest_running: set[str] = field(default_factory=set)
-    genre_weights: dict[str, dict[str, int]] = field(default_factory=dict)
+    ingest_progress: dict = field(default_factory=dict)
+    last_action_at: dict = field(default_factory=dict)
+    last_scrape_at: dict = field(default_factory=dict)
+    ingest_running: set = field(default_factory=set)
+    genre_weights: dict = field(default_factory=dict)
     lock: threading.Lock = field(default_factory=threading.Lock)
 
     def __init__(self):
         self.client = get_supabase_client()
+        # Initialize fields that require runtime initialization
+        self.ingest_progress = {}
+        self.last_action_at = {}
+        self.last_scrape_at = {}
+        self.ingest_running = set()
+        self.genre_weights = {}
+        self.lock = threading.Lock()
 
     def add_exclusion(self, user_id: str, slug: str) -> None:
         """Add a movie to user's exclusion list in Supabase."""

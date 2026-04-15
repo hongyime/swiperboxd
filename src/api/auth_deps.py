@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Optional
+
 from fastapi import Depends, HTTPException, Request
 from pydantic import BaseModel
 
@@ -44,6 +46,18 @@ async def get_authenticated_user(request: Request) -> AuthenticatedUser:
         user_id=user["user_id"],
         email=user.get("email", "")
     )
+
+
+async def get_optional_auth_user(request: Request) -> Optional[AuthenticatedUser]:
+    """
+    Optional authentication dependency - returns None if no valid auth.
+    
+    Use this for endpoints that support both authenticated and unauthenticated access.
+    """
+    try:
+        return await get_authenticated_user(request)
+    except HTTPException:
+        return None
 
 
 def require_user_id(user: AuthenticatedUser) -> str:

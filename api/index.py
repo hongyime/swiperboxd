@@ -1,5 +1,4 @@
-"""Vercel entrypoint for ASGI app."""
-
-from api.app import app
+"""Vercel entrypoint - exports the FastAPI app."""
+from src.api.app import app
 
 __all__ = ["app"]
