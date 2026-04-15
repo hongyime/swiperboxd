@@ -59,6 +59,12 @@ body {
   background: linear-gradient(135deg, #0a0a0a 0%, #1a1a2e 100%);
 }
 
+.logo-img {
+  width: 80px;
+  height: 80px;
+  margin-bottom: 1rem;
+}
+
 .logo {
   text-align: center;
   margin-bottom: 2.5rem;
@@ -209,11 +215,24 @@ body {
   border: 1px solid var(--accent-green);
 }
 
+.auth-note {
+  color: var(--text-secondary);
+  font-size: 0.8rem;
+  text-align: center;
+  margin-top: 1.5rem;
+  line-height: 1.4;
+}
+
 .hidden { display: none !important; }
 
 /* ==================== DISCOVERY SCREEN ==================== */
 #discovery-screen {
   background: var(--bg-primary);
+}
+
+.header-logo {
+  width: 32px;
+  height: 32px;
 }
 
 .header {
