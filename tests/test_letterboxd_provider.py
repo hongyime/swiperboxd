@@ -29,7 +29,7 @@ def test_http_scraper_login_uses_configured_base_url_and_timeout(monkeypatch):
             return ["letterboxd.session"]
 
     class FakeClient:
-        def __init__(self, follow_redirects: bool, timeout: float):
+        def __init__(self, follow_redirects: bool, timeout: float, headers: dict = None):
             called["follow_redirects"] = follow_redirects
             called["timeout"] = timeout
             self.cookies = FakeCookies()

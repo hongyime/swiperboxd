@@ -97,10 +97,29 @@ class HttpLetterboxdScraper:
             follow_redirects=True
         )
 
+    # Browser headers sent on every request to avoid bot detection.
+    _BROWSER_HEADERS = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/124.0.0.0 Safari/537.36"
+        ),
+        "Accept-Language": "en-US,en;q=0.9",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+        "Sec-Fetch-Site": "same-origin",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Dest": "document",
+        "Upgrade-Insecure-Requests": "1",
+    }
+
     def login(self, username: str, password: str) -> str:
-        with httpx.Client(follow_redirects=True, timeout=self.timeout_seconds) as client:
+        with httpx.Client(
+            follow_redirects=True,
+            timeout=self.timeout_seconds,
+            headers=self._BROWSER_HEADERS,
+        ) as client:
             page = client.get(f"{self.base_url}/sign-in/")
-            print(f"[auth] sign-in page status={page.status_code}", flush=True)
+            print(f"[auth] sign-in page status={page.status_code} cookies={list(client.cookies.keys())}", flush=True)
 
             soup = BeautifulSoup(page.text, "html.parser")
             csrf_input = soup.select_one('input[name="__csrf"]')
@@ -109,6 +128,8 @@ class HttpLetterboxdScraper:
                 print("[auth] csrf token not found in sign-in page", flush=True)
                 raise RuntimeError("csrf_token_missing")
 
+            print(f"[auth] csrf found, authCode present={auth_code_input is not None}", flush=True)
+
             payload = {
                 "username": username,
                 "password": password,
@@ -116,12 +137,19 @@ class HttpLetterboxdScraper:
                 "authenticationCode": auth_code_input.get("value", "") if auth_code_input else "",
                 "remember": "true",
             }
-            headers = {
+            # /user/login.do is an XHR endpoint — requires these extra headers.
+            login_headers = {
                 "Referer": f"{self.base_url}/sign-in/",
                 "Origin": self.base_url,
-                "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+                "X-Requested-With": "XMLHttpRequest",
+                "Accept": "application/json, text/javascript, */*; q=0.01",
+                "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
             }
-            response = client.post(f"{self.base_url}/user/login.do", data=payload, headers=headers)
+            response = client.post(
+                f"{self.base_url}/user/login.do",
+                data=payload,
+                headers=login_headers,
+            )
             print(
                 f"[auth] login.do status={response.status_code} "
                 f"final_url={response.url} "
@@ -133,13 +161,16 @@ class HttpLetterboxdScraper:
             # jar (client.cookies), not just the final response cookies.
             cookie = client.cookies.get("letterboxd.session")
             if not cookie:
-                if response.status_code in {401, 403, 429}:
-                    raise RuntimeError("auth_rejected_or_challenge")
-                # Surface enough context to diagnose without exposing credentials
+                status = response.status_code
+                if status == 401:
+                    raise RuntimeError("invalid_credentials (401)")
+                if status == 403:
+                    raise RuntimeError("access_forbidden — server may be blocking this IP (403)")
+                if status == 429:
+                    raise RuntimeError("rate_limited — too many attempts, wait before retrying (429)")
                 raise RuntimeError(
                     f"session_cookie_missing "
-                    f"(status={response.status_code}, "
-                    f"final_url={response.url})"
+                    f"(status={status}, final_url={response.url})"
                 )
             return cookie
 
