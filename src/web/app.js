@@ -54,15 +54,15 @@ function initLetterboxdAuth() {
   loginForm.addEventListener('submit', async (e) => {
     e.preventDefault();
     const username = $('#letterboxd-username').value.trim();
-    const password = $('#letterboxd-password').value;
+    const sessionCookie = $('#letterboxd-session-cookie').value.trim();
 
-    if (!username || !password) return;
+    if (!username || !sessionCookie) return;
 
-    console.log('[auth] attempting login for user:', username);
+    console.log('[auth] attempting session validation for user:', username);
     try {
       const res = await api('/auth/session', {
         method: 'POST',
-        body: { username, password }
+        body: { username, session_cookie: sessionCookie }
       });
 
       state.username = username;

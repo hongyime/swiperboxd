@@ -26,8 +26,10 @@ def test_encrypt_roundtrip():
     assert plain == "session::abc"
 
 
-def test_auth_session_endpoint():
-    response = client.post("/auth/session", json={"username": "u", "password": "p"})
+def test_auth_session_endpoint(monkeypatch):
+    import src.api.app as app_module
+    monkeypatch.setattr(app_module, "_validate_letterboxd_session", lambda username, cookie: None)
+    response = client.post("/auth/session", json={"username": "u", "session_cookie": "fake-session-value"})
     assert response.status_code == 200
     body = response.json()
     assert body["status"] == "ok"

@@ -218,9 +218,39 @@ body {
 .auth-note {
   color: var(--text-secondary);
   font-size: 0.8rem;
-  text-align: center;
+  text-align: left;
   margin-top: 1.5rem;
   line-height: 1.4;
+}
+
+.auth-note summary {
+  cursor: pointer;
+  text-align: center;
+  list-style: none;
+}
+
+.auth-note summary::after {
+  content: ' ▾';
+}
+
+.auth-note[open] summary::after {
+  content: ' ▴';
+}
+
+.auth-note ol {
+  margin: 0.75rem 0 0 1rem;
+  padding: 0;
+}
+
+.auth-note li {
+  margin-bottom: 0.4rem;
+}
+
+.auth-note code {
+  background: rgba(255,255,255,0.1);
+  padding: 0 4px;
+  border-radius: 3px;
+  font-family: monospace;
 }
 
 .hidden { display: none !important; }

@@ -46,6 +46,37 @@ print(f"[startup] scraper={SCRAPER_BACKEND} web_dir={_WEB_DIR}", flush=True)
 queue = InMemoryQueue()
 
 
+def _validate_letterboxd_session(username: str, session_cookie: str) -> None:
+    """Validate a Letterboxd session cookie by hitting the user's profile page.
+
+    Raises RuntimeError if the cookie is invalid or the request fails.
+    """
+    import httpx as _httpx
+    base_url = os.getenv("TARGET_PLATFORM_BASE_URL", "https://letterboxd.com").rstrip("/")
+    url = f"{base_url}/{username}/"
+    try:
+        with _httpx.Client(
+            cookies={"letterboxd.session": session_cookie},
+            timeout=15.0,
+            follow_redirects=False,
+        ) as client:
+            resp = client.get(url)
+            print(f"[auth] profile check status={resp.status_code} url={url}", flush=True)
+            # A valid session loads the profile (200) or may redirect to the same page (301/302 to same path).
+            # An invalid/expired session redirects to /sign-in/.
+            if resp.status_code in {301, 302}:
+                location = resp.headers.get("location", "")
+                if "sign-in" in location:
+                    raise RuntimeError("session_expired_or_invalid")
+                # Some other redirect — treat as OK (e.g. www → non-www canonical)
+            elif resp.status_code == 404:
+                raise RuntimeError(f"username_not_found: {username}")
+            elif resp.status_code >= 400:
+                raise RuntimeError(f"unexpected_status: {resp.status_code}")
+    except _httpx.RequestError as exc:
+        raise RuntimeError(f"network_error: {exc}") from exc
+
+
 def verify_session(x_session_token: str = Header(..., alias="X-Session-Token")) -> str:
     """Require a valid encrypted session token on mutating endpoints."""
     master_key = os.getenv("MASTER_ENCRYPTION_KEY")
@@ -59,7 +90,7 @@ def verify_session(x_session_token: str = Header(..., alias="X-Session-Token")) 
 
 class AuthSessionRequest(BaseModel):
     username: str = Field(min_length=1)
-    password: str = Field(min_length=1)
+    session_cookie: str = Field(min_length=1)
 
 
 class AuthSessionResponse(BaseModel):
@@ -138,15 +169,15 @@ def create_auth_session(payload: AuthSessionRequest):
     if not master_key:
         raise HTTPException(status_code=500, detail={"code": "missing_master_key"})
 
-    print(f"[auth] login attempt scraper={SCRAPER_BACKEND}", flush=True)
+    print(f"[auth] validating session cookie for user={payload.username}", flush=True)
     try:
-        upstream_session_cookie = scraper.login(payload.username, payload.password)
-        print("[auth] login success, session cookie obtained", flush=True)
+        _validate_letterboxd_session(payload.username, payload.session_cookie)
+        print("[auth] session cookie valid", flush=True)
     except Exception as exc:
-        print(f"[auth] login failed: {exc}", flush=True)
-        raise HTTPException(status_code=502, detail={"code": "upstream_login_failed", "reason": str(exc)}) from exc
+        print(f"[auth] session validation failed: {exc}", flush=True)
+        raise HTTPException(status_code=401, detail={"code": "invalid_session_cookie", "reason": str(exc)}) from exc
 
-    encrypted_cookie = encrypt_session_cookie(upstream_session_cookie, master_key)
+    encrypted_cookie = encrypt_session_cookie(payload.session_cookie, master_key)
     return AuthSessionResponse(status="ok", encrypted_session_cookie=encrypted_cookie)
 
 

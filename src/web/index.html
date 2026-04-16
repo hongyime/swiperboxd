@@ -23,14 +23,20 @@
       </div>
       <form id="letterboxd-login-form" class="auth-form">
         <input type="text" id="letterboxd-username" placeholder="Letterboxd username" required />
-        <input type="password" id="letterboxd-password" placeholder="Letterboxd password" required />
+        <input type="text" id="letterboxd-session-cookie" placeholder="Letterboxd session cookie" required autocomplete="off" />
         <button type="submit" class="btn-primary">Connect to Letterboxd</button>
       </form>
       <div id="auth-error" class="error-msg hidden"></div>
       <div id="auth-success" class="success-msg hidden"></div>
-      <p class="auth-note">
-        Your password is never stored. We use it only to establish a secure session.
-      </p>
+      <details class="auth-note">
+        <summary>How to get your session cookie</summary>
+        <ol>
+          <li>Log in to <strong>letterboxd.com</strong> in your browser</li>
+          <li>Open DevTools → Application → Cookies → <code>https://letterboxd.com</code></li>
+          <li>Copy the value of <code>letterboxd.session</code></li>
+          <li>Paste it above</li>
+        </ol>
+      </details>
     </div>
 
     <!-- Main Discovery Screen -->
