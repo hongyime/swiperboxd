@@ -597,6 +597,34 @@ body {
   background: var(--accent-pink);
 }
 
+.list-search-shell {
+  padding: 0.5rem 0.5rem 0.75rem;
+}
+
+.list-search-input {
+  width: 100%;
+  padding: 0.7rem 0.85rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid rgba(255,255,255,0.12);
+  background: var(--bg-card);
+  color: var(--text-primary);
+}
+
+.list-search-input:focus {
+  outline: none;
+  border-color: var(--accent-pink);
+}
+
+.list-option-title {
+  font-weight: 600;
+}
+
+.list-option-meta {
+  margin-top: 0.2rem;
+  color: rgba(255,255,255,0.75);
+  font-size: 0.82rem;
+}
+
 /* Skeleton Loading */
 .skeleton-stack {
   width: 100%;

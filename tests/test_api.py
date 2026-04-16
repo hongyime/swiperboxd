@@ -56,6 +56,85 @@ def test_discovery_details():
     assert "genres" in details.json()
 
 
+def test_list_catalog_returns_mixed_lists():
+    response = client.get("/lists/catalog")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["results"]
+    assert any(item["is_official"] for item in payload["results"])
+    assert any(not item["is_official"] for item in payload["results"])
+
+
+def test_list_detail_returns_preview():
+    response = client.get("/lists/official-best-picture")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["list"]["list_id"] == "official-best-picture"
+    assert isinstance(payload["movie_slugs"], list)
+    assert isinstance(payload["preview"], list)
+
+
+def test_list_deck_returns_movies():
+    response = client.get("/lists/official-best-picture/deck", params={"user_id": "list-user"})
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["list"]["list_id"] == "official-best-picture"
+    assert isinstance(payload["results"], list)
+    assert payload["results"]
+
+
+def test_discovery_deck_tolerates_invalid_movie_records(monkeypatch):
+    import src.api.app as app_module
+
+    app_module.store.upsert_movie({
+        "slug": "broken-film",
+        "title": "Broken Film",
+        "poster_url": "",
+        "rating": None,
+        "popularity": None,
+        "genres": None,
+    })
+    app_module.store.upsert_movie({
+        "slug": "good-film",
+        "title": "Good Film",
+        "poster_url": "",
+        "rating": 4.7,
+        "popularity": 12,
+        "genres": ["Drama"],
+    })
+
+    deck = client.get("/discovery/deck", params={"user_id": "deck-safe", "profile": "gold-standard"})
+    assert deck.status_code == 200
+    body = deck.json()
+    assert isinstance(body["results"], list)
+    assert any(movie["slug"] == "good-film" for movie in body["results"])
+    assert body["meta"]["matched_count"] >= 1
+
+
+def test_ingest_progress_returns_error_details(monkeypatch):
+    import src.api.app as app_module
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("upstream exploded")
+
+    monkeypatch.setattr(app_module.scraper, "pull_source_slugs", boom)
+
+    response = client.post(
+        "/ingest/start",
+        headers=_AUTH_HEADERS,
+        json={"user_id": "u-ingest-error", "source": "trending", "depth_pages": 1},
+    )
+    assert response.status_code == 200
+
+    time.sleep(0.15)
+    progress = client.get("/ingest/progress", params={"user_id": "u-ingest-error"})
+    assert progress.status_code == 200
+    payload = progress.json()
+    assert payload["progress"] == -1
+    assert payload["error"]["code"] == "ingest_worker_failed"
+    assert "upstream exploded" in payload["error"]["reason"]
+
+
 def test_ingest_rate_limit():
     first = client.post("/ingest/start", headers=_AUTH_HEADERS, json={"user_id": "u-rate", "source": "trending", "depth_pages": 1})
     assert first.status_code == 200

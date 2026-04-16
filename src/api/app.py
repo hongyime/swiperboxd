@@ -15,6 +15,7 @@ from .queue import InMemoryQueue
 from .security import decrypt_session_cookie, encrypt_session_cookie
 from .providers.letterboxd import HttpLetterboxdScraper, MockLetterboxdScraper
 from .database import is_supabase_configured, run_migrations
+from .store import normalize_movie_record
 
 PROFILES = {
     "gold-standard": lambda m: m["rating"] >= 4.5,
@@ -41,12 +42,24 @@ else:
     store = InMemoryStore()
     print("[startup] store=InMemoryStore (Supabase not configured)", flush=True)
 
+for entry in scraper.discover_site_lists(page=1):
+    store.upsert_list_summary(entry.__dict__)
+
 print(f"[startup] scraper={SCRAPER_BACKEND} web_dir={_WEB_DIR}", flush=True)
 
 queue = InMemoryQueue()
 
 
 _SESSION_COOKIE_NAME = "letterboxd.user.CURRENT"
+
+
+def _matches_profile(profile: str, movie: dict) -> bool:
+    movie = normalize_movie_record(movie)
+    try:
+        return PROFILES[profile](movie)
+    except Exception as exc:
+        print(f"[deck] skipping invalid movie slug={movie.get('slug', 'unknown')} profile={profile} error={exc}", flush=True)
+        return False
 
 
 def _validate_letterboxd_session(username: str, session_cookie: str) -> None:
@@ -165,6 +178,64 @@ def discovery_profiles():
     return {"profiles": list(PROFILES.keys())}
 
 
+@app.get("/lists/catalog")
+def list_catalog(q: str | None = None, page: int = Query(default=1, ge=1)):
+    discovered = scraper.discover_site_lists(query=q, page=page)
+    for entry in discovered:
+        store.upsert_list_summary(entry.__dict__)
+
+    items = [summary for summary in store.get_lists() if not q or q.lower() in summary.get("title", "").lower() or q.lower() in summary.get("description", "").lower()]
+    items.sort(key=lambda item: (not item.get("is_official", False), -item.get("like_count", 0), item.get("title", "")))
+    return {"status": "ok", "query": q or "", "page": page, "results": items}
+
+
+@app.get("/lists/{list_id}")
+def list_detail(list_id: str):
+    summary = store.get_list_summary(list_id)
+    if not summary:
+        discovered = scraper.discover_site_lists(page=1)
+        for entry in discovered:
+            store.upsert_list_summary(entry.__dict__)
+        summary = store.get_list_summary(list_id)
+
+    if not summary:
+        raise HTTPException(status_code=404, detail={"code": "list_not_found"})
+
+    movie_slugs = scraper.fetch_list_movie_slugs(list_id)
+    store.replace_list_memberships(list_id, movie_slugs)
+    preview = [store.get_movie(slug) for slug in movie_slugs[:4]]
+    preview = [movie for movie in preview if movie]
+    return {
+        "status": "ok",
+        "list": summary,
+        "movie_slugs": movie_slugs,
+        "preview": preview,
+    }
+
+
+@app.get("/lists/{list_id}/deck")
+def list_deck(list_id: str, user_id: str = Query(min_length=1)):
+    summary = store.get_list_summary(list_id)
+    if not summary:
+        raise HTTPException(status_code=404, detail={"code": "list_not_found"})
+
+    movie_slugs = scraper.fetch_list_movie_slugs(list_id)
+    store.replace_list_memberships(list_id, movie_slugs)
+
+    missing = [slug for slug in movie_slugs if not store.get_movie(slug)]
+    for movie in scraper.metadata_for_slugs(missing):
+        store.upsert_movie(movie.__dict__)
+
+    movies = [store.get_movie(slug) for slug in store.get_list_memberships(list_id)]
+    movies = [movie for movie in movies if movie]
+    movies = store.weighted_shuffle(user_id, movies)
+    return {
+        "status": "ok",
+        "list": summary,
+        "results": movies[:20],
+    }
+
+
 @app.post("/auth/session", response_model=AuthSessionResponse)
 def create_auth_session(payload: AuthSessionRequest):
     """
@@ -199,6 +270,7 @@ async def start_ingest(payload: IngestStartRequest, _session: str = Depends(veri
         print("[ingest] already running, skipping duplicate start", flush=True)
         return {"status": "already_running", "user_id": payload.user_id}
 
+    store.set_ingest_error(payload.user_id, None)
     store.ingest_running.add(payload.user_id)
     queue.enqueue("ingest-history", {"user_id": payload.user_id, "source": payload.source, "depth_pages": payload.depth_pages})
     print(f"[ingest] starting worker source={payload.source} depth={payload.depth_pages}", flush=True)
@@ -214,6 +286,7 @@ def ingest_progress(user_id: str = Query(min_length=1)):
         "user_id": user_id,
         "progress": store.get_ingest_progress(user_id),
         "running": user_id in store.ingest_running,
+        "error": store.get_ingest_error(user_id),
     }
 
 
@@ -226,9 +299,26 @@ async def get_discovery_deck(
     if profile not in PROFILES:
         raise HTTPException(status_code=400, detail={"code": "invalid_profile"})
 
-    movies = [m for m in store.get_movies() if PROFILES[profile](m)]
-    movies = store.weighted_shuffle(user_id, movies)
-    return {"status": "ok", "profile": profile, "results": movies[:20]}
+    matched = []
+    skipped_invalid = 0
+    for movie in store.get_movies():
+        normalized = normalize_movie_record(movie)
+        before_slug = normalized.get("slug", "")
+        if _matches_profile(profile, normalized):
+            matched.append(normalized)
+        elif not before_slug:
+            skipped_invalid += 1
+
+    movies = store.weighted_shuffle(user_id, matched)
+    return {
+        "status": "ok",
+        "profile": profile,
+        "results": movies[:20],
+        "meta": {
+            "matched_count": len(matched),
+            "skipped_invalid_count": skipped_invalid,
+        },
+    }
 
 
 @app.get("/discovery/details")
@@ -278,7 +368,9 @@ def _filter_first_pipeline(
         if progress_callback:
             progress_callback(pct)
 
+    print(f"[ingest] stage=source_fetch source={source} depth_pages={depth_pages}", flush=True)
     source_slugs = scraper.pull_source_slugs(source=source, depth_pages=depth_pages)
+    print(f"[ingest] stage=source_fetch_complete count={len(source_slugs)}", flush=True)
     _emit(20)
 
     watchlist = store.get_watchlist(user_id)
@@ -288,15 +380,19 @@ def _filter_first_pipeline(
     unique = [slug for slug in source_slugs if slug not in watchlist]
     unique = [slug for slug in unique if slug not in diary]
     unique = [slug for slug in unique if slug not in exclusions]
+    print(f"[ingest] stage=filter_seen remaining={len(unique)} watchlist={len(watchlist)} diary={len(diary)} exclusions={len(exclusions)}", flush=True)
     _emit(40)
 
+    print(f"[ingest] stage=metadata_fetch count={len(unique)}", flush=True)
     movies_raw = scraper.metadata_for_slugs(unique)
+    print(f"[ingest] stage=metadata_fetch_complete count={len(movies_raw)}", flush=True)
     n = max(len(movies_raw), 1)
     metadata = []
     for i, m in enumerate(movies_raw):
         movie = m.__dict__
         store.upsert_movie(movie)
         metadata.append(movie)
+        print(f"[ingest] stage=store_upsert slug={movie.get('slug', 'unknown')} index={i + 1}/{n}", flush=True)
         _emit(40 + int((i + 1) / n * 55))
 
     return metadata
@@ -309,6 +405,7 @@ def _run_ingest_worker(user_id: str, source: str, depth_pages: int) -> None:
         store.set_ingest_progress(user_id, pct)
 
     try:
+        store.set_ingest_error(user_id, None)
         _set_progress(5)
         _filter_first_pipeline(
             user_id=user_id,
@@ -320,6 +417,7 @@ def _run_ingest_worker(user_id: str, source: str, depth_pages: int) -> None:
 
     except Exception as exc:
         store.set_ingest_progress(user_id, -1)
-        print(f"Ingest worker error for user {user_id}: {exc}")
+        store.set_ingest_error(user_id, {"code": "ingest_worker_failed", "reason": str(exc)})
+        print(f"[ingest] worker_error user_id={user_id} error={exc}", flush=True)
     finally:
         store.ingest_running.discard(user_id)

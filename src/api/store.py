@@ -4,9 +4,45 @@ import random
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Protocol
+from typing import Any, Protocol
 
 from .database import get_supabase_client
+
+
+def normalize_movie_record(movie: dict) -> dict:
+    """Normalize movie payloads so deck building can tolerate partial/legacy records."""
+    rating = movie.get("rating", 0.0)
+    popularity = movie.get("popularity", 0)
+
+    try:
+        rating = float(rating if rating is not None else 0.0)
+    except (TypeError, ValueError):
+        rating = 0.0
+
+    try:
+        popularity = int(popularity if popularity is not None else 0)
+    except (TypeError, ValueError):
+        popularity = 0
+
+    genres = movie.get("genres")
+    if not isinstance(genres, list):
+        genres = []
+
+    cast = movie.get("cast")
+    if not isinstance(cast, list):
+        cast = []
+
+    return {
+        **movie,
+        "slug": movie.get("slug", ""),
+        "title": movie.get("title", ""),
+        "poster_url": movie.get("poster_url", ""),
+        "rating": rating,
+        "popularity": popularity,
+        "genres": genres,
+        "synopsis": movie.get("synopsis", "") or "",
+        "cast": cast,
+    }
 
 
 class Store(Protocol):
@@ -34,6 +70,10 @@ class Store(Protocol):
 
     def get_ingest_progress(self, user_id: str) -> int: ...
 
+    def set_ingest_error(self, user_id: str, error: dict | None) -> None: ...
+
+    def get_ingest_error(self, user_id: str) -> dict | None: ...
+
     def should_rate_limit(self, user_id: str, lock_ms: int = 500) -> tuple[bool, int]: ...
 
     def allow_scrape_request(self, user_id: str, min_interval_seconds: float = 1.0) -> tuple[bool, float]: ...
@@ -43,6 +83,16 @@ class Store(Protocol):
     def get_genre_weights(self, user_id: str) -> dict[str, int]: ...
 
     def weighted_shuffle(self, user_id: str, movies: list[dict]) -> list[dict]: ...
+
+    def upsert_list_summary(self, list_summary: dict) -> None: ...
+
+    def get_list_summary(self, list_id: str) -> dict | None: ...
+
+    def get_lists(self) -> list[dict]: ...
+
+    def replace_list_memberships(self, list_id: str, movie_slugs: list[str]) -> None: ...
+
+    def get_list_memberships(self, list_id: str) -> list[str]: ...
 
 
 @dataclass
@@ -56,10 +106,13 @@ class InMemoryStore:
     actions: list[dict] = field(default_factory=list)
     ingest_progress: dict[str, int] = field(default_factory=dict)
     ingest_progress_updated_at: dict[str, float] = field(default_factory=dict)
+    ingest_errors: dict[str, dict] = field(default_factory=dict)
     last_action_at: dict[str, float] = field(default_factory=dict)
     last_scrape_at: dict[str, float] = field(default_factory=dict)
     ingest_running: set[str] = field(default_factory=set)
     genre_weights: dict[str, dict[str, int]] = field(default_factory=dict)
+    list_summaries: dict[str, dict[str, Any]] = field(default_factory=dict)
+    list_memberships: dict[str, list[str]] = field(default_factory=dict)
     lock: threading.Lock = field(default_factory=threading.Lock)
 
     def add_exclusion(self, user_id: str, slug: str) -> None:
@@ -93,16 +146,19 @@ class InMemoryStore:
             return set(self.diary.get(user_id, set()))
 
     def upsert_movie(self, movie: dict) -> None:
+        normalized = normalize_movie_record(movie)
         with self.lock:
-            self.movies[movie["slug"]] = movie
+            self.movies[normalized["slug"]] = normalized
 
     def get_movie(self, slug: str) -> dict | None:
         with self.lock:
-            return self.movies.get(slug)
+            movie = self.movies.get(slug)
+        return normalize_movie_record(movie) if movie else None
 
     def get_movies(self) -> list[dict]:
         with self.lock:
-            return list(self.movies.values())
+            movies = list(self.movies.values())
+        return [normalize_movie_record(movie) for movie in movies]
 
     def set_ingest_progress(self, user_id: str, value: int) -> None:
         with self.lock:
@@ -113,6 +169,18 @@ class InMemoryStore:
     def get_ingest_progress(self, user_id: str) -> int:
         with self.lock:
             return self.ingest_progress.get(user_id, 0)
+
+    def set_ingest_error(self, user_id: str, error: dict | None) -> None:
+        with self.lock:
+            if error is None:
+                self.ingest_errors.pop(user_id, None)
+            else:
+                self.ingest_errors[user_id] = dict(error)
+
+    def get_ingest_error(self, user_id: str) -> dict | None:
+        with self.lock:
+            error = self.ingest_errors.get(user_id)
+        return dict(error) if error else None
 
     def should_rate_limit(self, user_id: str, lock_ms: int = 500) -> tuple[bool, int]:
         now = time.time() * 1000
@@ -162,6 +230,49 @@ class InMemoryStore:
         random.shuffle(tail)
         return head + tail
 
+    def upsert_list_summary(self, list_summary: dict) -> None:
+        normalized = {
+            "list_id": list_summary.get("list_id", ""),
+            "slug": list_summary.get("slug", ""),
+            "url": list_summary.get("url", ""),
+            "title": list_summary.get("title", ""),
+            "owner_name": list_summary.get("owner_name", ""),
+            "owner_slug": list_summary.get("owner_slug", ""),
+            "description": list_summary.get("description", "") or "",
+            "film_count": int(list_summary.get("film_count", 0) or 0),
+            "like_count": int(list_summary.get("like_count", 0) or 0),
+            "comment_count": int(list_summary.get("comment_count", 0) or 0),
+            "is_official": bool(list_summary.get("is_official", False)),
+            "tags": list_summary.get("tags", []) if isinstance(list_summary.get("tags", []), list) else [],
+        }
+        with self.lock:
+            self.list_summaries[normalized["list_id"]] = normalized
+
+    def get_list_summary(self, list_id: str) -> dict | None:
+        with self.lock:
+            summary = self.list_summaries.get(list_id)
+        return dict(summary) if summary else None
+
+    def get_lists(self) -> list[dict]:
+        with self.lock:
+            summaries = list(self.list_summaries.values())
+        return [dict(summary) for summary in summaries]
+
+    def replace_list_memberships(self, list_id: str, movie_slugs: list[str]) -> None:
+        with self.lock:
+            seen = set()
+            deduped = []
+            for slug in movie_slugs:
+                if slug and slug not in seen:
+                    seen.add(slug)
+                    deduped.append(slug)
+            self.list_memberships[list_id] = deduped
+
+    def get_list_memberships(self, list_id: str) -> list[str]:
+        with self.lock:
+            memberships = self.list_memberships.get(list_id, [])
+        return list(memberships)
+
     def cleanup_expired_progress(self, ttl_seconds: float = 3600.0) -> int:
         """Remove ingest progress entries older than TTL. Returns count removed."""
         cutoff = time.time() - ttl_seconds
@@ -200,20 +311,26 @@ class SupabaseStore:
     """Supabase-based implementation of Store for production persistence."""
 
     ingest_progress: dict = field(default_factory=dict)
+    ingest_errors: dict = field(default_factory=dict)
     last_action_at: dict = field(default_factory=dict)
     last_scrape_at: dict = field(default_factory=dict)
     ingest_running: set = field(default_factory=set)
     genre_weights: dict = field(default_factory=dict)
+    list_summaries: dict = field(default_factory=dict)
+    list_memberships: dict = field(default_factory=dict)
     lock: threading.Lock = field(default_factory=threading.Lock)
 
     def __init__(self):
         self.client = get_supabase_client()
         # Initialize fields that require runtime initialization
         self.ingest_progress = {}
+        self.ingest_errors = {}
         self.last_action_at = {}
         self.last_scrape_at = {}
         self.ingest_running = set()
         self.genre_weights = {}
+        self.list_summaries = {}
+        self.list_memberships = {}
         self.lock = threading.Lock()
 
     def _get_or_create_user_id(self, letterboxd_username: str) -> str:
@@ -287,15 +404,16 @@ class SupabaseStore:
 
     def upsert_movie(self, movie: dict) -> None:
         """Upsert movie metadata to Supabase cache."""
+        normalized = normalize_movie_record(movie)
         record = {
-            "slug": movie["slug"],
-            "title": movie["title"],
-            "poster_url": movie.get("poster_url"),
-            "rating": movie.get("rating"),
-            "popularity": movie.get("popularity", 0),
-            "genres": movie.get("genres", []),
-            "synopsis": movie.get("synopsis", ""),
-            "cast": movie.get("cast", []),
+            "slug": normalized["slug"],
+            "title": normalized["title"],
+            "poster_url": normalized.get("poster_url"),
+            "rating": normalized.get("rating"),
+            "popularity": normalized.get("popularity", 0),
+            "genres": normalized.get("genres", []),
+            "synopsis": normalized.get("synopsis", ""),
+            "cast": normalized.get("cast", []),
         }
         
         # Add optional fields
@@ -310,13 +428,13 @@ class SupabaseStore:
         """Get movie metadata from Supabase cache."""
         response = self.client.table("movies").select("*").eq("slug", slug).execute()
         if response.data:
-            return response.data[0]
+            return normalize_movie_record(response.data[0])
         return None
 
     def get_movies(self) -> list[dict]:
         """Get all movies from Supabase cache."""
         response = self.client.table("movies").select("*").execute()
-        return response.data
+        return [normalize_movie_record(row) for row in response.data]
 
     def set_ingest_progress(self, user_id: str, value: int) -> None:
         """Set ingest progress (in-memory only - for performance)."""
@@ -327,6 +445,18 @@ class SupabaseStore:
         """Get ingest progress (in-memory only)."""
         with self.lock:
             return self.ingest_progress.get(user_id, 0)
+
+    def set_ingest_error(self, user_id: str, error: dict | None) -> None:
+        with self.lock:
+            if error is None:
+                self.ingest_errors.pop(user_id, None)
+            else:
+                self.ingest_errors[user_id] = dict(error)
+
+    def get_ingest_error(self, user_id: str) -> dict | None:
+        with self.lock:
+            error = self.ingest_errors.get(user_id)
+        return dict(error) if error else None
 
     def should_rate_limit(self, user_id: str, lock_ms: int = 500) -> tuple[bool, int]:
         """Check if user should be rate-limited (in-memory only)."""
@@ -395,3 +525,46 @@ class SupabaseStore:
         tail = boosted[8:]
         random.shuffle(tail)
         return head + tail
+
+    def upsert_list_summary(self, list_summary: dict) -> None:
+        normalized = {
+            "list_id": list_summary.get("list_id", ""),
+            "slug": list_summary.get("slug", ""),
+            "url": list_summary.get("url", ""),
+            "title": list_summary.get("title", ""),
+            "owner_name": list_summary.get("owner_name", ""),
+            "owner_slug": list_summary.get("owner_slug", ""),
+            "description": list_summary.get("description", "") or "",
+            "film_count": int(list_summary.get("film_count", 0) or 0),
+            "like_count": int(list_summary.get("like_count", 0) or 0),
+            "comment_count": int(list_summary.get("comment_count", 0) or 0),
+            "is_official": bool(list_summary.get("is_official", False)),
+            "tags": list_summary.get("tags", []) if isinstance(list_summary.get("tags", []), list) else [],
+        }
+        with self.lock:
+            self.list_summaries[normalized["list_id"]] = normalized
+
+    def get_list_summary(self, list_id: str) -> dict | None:
+        with self.lock:
+            summary = self.list_summaries.get(list_id)
+        return dict(summary) if summary else None
+
+    def get_lists(self) -> list[dict]:
+        with self.lock:
+            summaries = list(self.list_summaries.values())
+        return [dict(summary) for summary in summaries]
+
+    def replace_list_memberships(self, list_id: str, movie_slugs: list[str]) -> None:
+        with self.lock:
+            seen = set()
+            deduped = []
+            for slug in movie_slugs:
+                if slug and slug not in seen:
+                    seen.add(slug)
+                    deduped.append(slug)
+            self.list_memberships[list_id] = deduped
+
+    def get_list_memberships(self, list_id: str) -> list[str]:
+        with self.lock:
+            memberships = self.list_memberships.get(list_id, [])
+        return list(memberships)

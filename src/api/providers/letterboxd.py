@@ -27,6 +27,22 @@ class LetterboxdMovie:
     cast: list[str]
 
 
+@dataclass
+class LetterboxdListSummary:
+    list_id: str
+    slug: str
+    url: str
+    title: str
+    owner_name: str
+    owner_slug: str
+    description: str
+    film_count: int
+    like_count: int
+    comment_count: int
+    is_official: bool
+    tags: list[str]
+
+
 class Scraper(Protocol):
     def login(self, username: str, password: str) -> str: ...
 
@@ -38,12 +54,63 @@ class Scraper(Protocol):
 
     def metadata_for_slugs(self, slugs: list[str]) -> list[LetterboxdMovie]: ...
 
+    def discover_site_lists(self, query: str | None = None, page: int = 1) -> list[LetterboxdListSummary]: ...
+
+    def fetch_list_movie_slugs(self, list_id: str) -> list[str]: ...
+
 
 @lru_cache(maxsize=1)
 def _load_mock_catalog() -> dict[str, LetterboxdMovie]:
     catalog_path = Path(__file__).with_name("mock_catalog.json")
     rows = json.loads(catalog_path.read_text())
     return {row["slug"]: LetterboxdMovie(**row) for row in rows}
+
+
+def _load_mock_lists() -> list[LetterboxdListSummary]:
+    return [
+        LetterboxdListSummary(
+            list_id="official-best-picture",
+            slug="official-best-picture",
+            url="https://letterboxd.com/official/list/best-picture/",
+            title="Oscar-winning films: Best Picture",
+            owner_name="Oscars",
+            owner_slug="oscars",
+            description="Official awards list for Best Picture winners.",
+            film_count=5,
+            like_count=9800,
+            comment_count=420,
+            is_official=True,
+            tags=["awards", "official"],
+        ),
+        LetterboxdListSummary(
+            list_id="community-hidden-gems",
+            slug="community-hidden-gems",
+            url="https://letterboxd.com/community/list/hidden-gems/",
+            title="Hidden Gems You Need to Watch",
+            owner_name="Letterboxd Community",
+            owner_slug="community",
+            description="Community-curated favorites beyond the canon.",
+            film_count=5,
+            like_count=6400,
+            comment_count=128,
+            is_official=False,
+            tags=["community", "discover"],
+        ),
+        LetterboxdListSummary(
+            list_id="official-top-500",
+            slug="official-top-500",
+            url="https://letterboxd.com/official/list/top-500/",
+            title="Letterboxd's Top 500 Films",
+            owner_name="Official Lists",
+            owner_slug="official",
+            description="Top-rated narrative features on Letterboxd.",
+            film_count=5,
+            like_count=12000,
+            comment_count=510,
+            is_official=True,
+            tags=["official", "top-rated"],
+        ),
+    ]
 
 
 class MockLetterboxdScraper:
@@ -64,6 +131,24 @@ class MockLetterboxdScraper:
     def metadata_for_slugs(self, slugs: list[str]) -> list[LetterboxdMovie]:
         lookup = _load_mock_catalog()
         return [lookup[slug] for slug in slugs if slug in lookup]
+
+    def discover_site_lists(self, query: str | None = None, page: int = 1) -> list[LetterboxdListSummary]:
+        lists = _load_mock_lists()
+        if query:
+            query_lower = query.lower()
+            lists = [item for item in lists if query_lower in item.title.lower() or query_lower in item.description.lower()]
+        page_size = 12
+        start = max(page - 1, 0) * page_size
+        end = start + page_size
+        return lists[start:end]
+
+    def fetch_list_movie_slugs(self, list_id: str) -> list[str]:
+        mapping = {
+            "official-best-picture": ["film-c", "film-d", "film-e", "film-a"],
+            "community-hidden-gems": ["film-d", "film-e", "film-c"],
+            "official-top-500": ["film-c", "film-a", "film-d", "film-e"],
+        }
+        return mapping.get(list_id, ["film-c", "film-d"])
 
 
 def _parse_member_count(text: str) -> int:
@@ -395,6 +480,12 @@ class HttpLetterboxdScraper:
                 pass
 
         return movies
+
+    def discover_site_lists(self, query: str | None = None, page: int = 1) -> list[LetterboxdListSummary]:
+        raise NotImplementedError("discover_site_lists is not yet implemented for HTTP scraper")
+
+    def fetch_list_movie_slugs(self, list_id: str) -> list[str]:
+        raise NotImplementedError("fetch_list_movie_slugs is not yet implemented for HTTP scraper")
 
     def _get_proxy_url(self) -> str | None:
         """Get rotating proxy URL if configured."""

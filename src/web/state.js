@@ -1,5 +1,15 @@
 const DAY_MS = 24 * 60 * 60 * 1000;
 
+export function getIngestPollingState(progress) {
+  if (progress >= 100) {
+    return { status: 'completed' };
+  }
+  if (progress === -1) {
+    return { status: 'failed', reason: 'server_reported_failure' };
+  }
+  return { status: 'pending' };
+}
+
 export function createProgressState() {
   return {
     progress: 0,

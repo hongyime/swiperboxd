@@ -61,7 +61,7 @@
         <div id="empty-state" class="empty-state hidden">
           <span class="empty-icon">🎭</span>
           <h2>No More Movies</h2>
-          <p>You've seen everything in this profile. Try another!</p>
+          <p>You've seen everything in this list. Try another!</p>
           <button id="refresh-btn" class="btn-secondary">Refresh Deck</button>
         </div>
       </div>
@@ -82,16 +82,19 @@
         </button>
       </div>
 
-      <!-- Profile Selector -->
+      <!-- List Selector -->
       <div class="profile-selector" id="profile-selector">
         <button class="profile-btn" id="profile-btn">
-          <span id="current-profile">Gold Standard</span>
+          <span id="current-profile">Choose a List</span>
           <span class="chevron">▼</span>
         </button>
       </div>
 
-      <!-- Profile Dropdown -->
+      <!-- List Dropdown -->
       <div id="profile-dropdown" class="profile-dropdown hidden">
+        <div class="list-search-shell">
+          <input id="list-search-input" class="list-search-input" type="text" placeholder="Search Letterboxd lists" />
+        </div>
         <div class="profile-options" id="profile-options"></div>
       </div>
 

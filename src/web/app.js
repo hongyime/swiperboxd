@@ -3,7 +3,7 @@
  * Uses Letterboxd authentication (username/password)
  */
 
-import { createSuppressionStore } from './state.js';
+import { createSuppressionStore, getIngestPollingState } from './state.js';
 
 const suppression = createSuppressionStore(() => Date.now());
 
@@ -15,8 +15,10 @@ const state = {
   currentIndex: 0,
   isSyncing: false,
   flipped: false,
-  profiles: [],
-  currentProfile: 'gold-standard'
+  lists: [],
+  selectedListId: null,
+  selectedListTitle: 'Choose a List',
+  listSearchQuery: ''
 };
 
 // DOM Elements
@@ -40,6 +42,7 @@ const syncOverlay = $('#sync-overlay');
 const profileOptions = $('#profile-options');
 const profileDropdown = $('#profile-dropdown');
 const currentProfileSpan = $('#current-profile');
+const listSearchInput = $('#list-search-input');
 
 // Initialize
 document.addEventListener('DOMContentLoaded', () => {
@@ -113,8 +116,8 @@ function showAuth() {
 function showDiscovery() {
   authScreen.classList.remove('active');
   discoveryScreen.classList.add('active');
-  // loadProfiles resolves first, then loadDeck auto-starts
-  loadProfiles();
+  // Load list catalog first, then auto-load deck for the first list
+  loadLists();
 }
 
 function showError(msg) {
@@ -134,6 +137,11 @@ function showSuccess(msg) {
 function initDiscovery() {
   $('#profile-btn')?.addEventListener('click', () => {
     profileDropdown.classList.toggle('hidden');
+  });
+
+  listSearchInput?.addEventListener('input', async (e) => {
+    state.listSearchQuery = e.target.value.trim();
+    await loadLists(state.listSearchQuery);
   });
 
   $$('.action-btn[data-action]').forEach(btn => {
@@ -170,45 +178,48 @@ function initDiscovery() {
   initTouchSwipe();
 }
 
-async function loadProfiles() {
-  console.log('[profiles] fetching available profiles');
+async function loadLists(query = '') {
+  console.log('[lists] fetching available lists');
   try {
-    const res = await api('/discovery/profiles');
-    state.profiles = res.profiles;
-    console.log('[profiles] loaded:', state.profiles);
-    renderProfiles();
+    const res = await api(`/lists/catalog?q=${encodeURIComponent(query)}`);
+    state.lists = res.results || [];
+    console.log('[lists] loaded:', state.lists);
+    renderLists();
   } catch (err) {
-    console.error('[profiles] failed to load:', err.message);
-    // Still attempt deck load even if profile fetch fails
+    console.error('[lists] failed to load:', err.message);
   }
-  // Always auto-start deck load after profiles resolve (success or failure)
-  loadDeck();
+
+  if (!state.selectedListId && state.lists.length > 0) {
+    state.selectedListId = state.lists[0].list_id;
+    state.selectedListTitle = state.lists[0].title;
+    currentProfileSpan.textContent = state.selectedListTitle;
+    loadDeck();
+  }
 }
 
-function renderProfiles() {
-  profileOptions.innerHTML = state.profiles.map(p => `
-    <div class="profile-option ${p === state.currentProfile ? 'active' : ''}" data-profile="${p}">
-      ${formatProfileName(p)}
+function renderLists() {
+  profileOptions.innerHTML = state.lists.map(item => `
+    <div class="profile-option ${item.list_id === state.selectedListId ? 'active' : ''}" data-list-id="${item.list_id}">
+      <div class="list-option-title">${item.title}</div>
+      <div class="list-option-meta">${item.owner_name} · ${item.film_count} films</div>
     </div>
   `).join('');
 
   profileOptions.querySelectorAll('.profile-option').forEach(opt => {
     opt.addEventListener('click', () => {
-      state.currentProfile = opt.dataset.profile;
-      currentProfileSpan.textContent = formatProfileName(state.currentProfile);
+      const selected = state.lists.find(item => item.list_id === opt.dataset.listId);
+      state.selectedListId = opt.dataset.listId;
+      state.selectedListTitle = selected?.title || 'Choose a List';
+      currentProfileSpan.textContent = state.selectedListTitle;
       profileDropdown.classList.add('hidden');
       $$('.profile-option').forEach(p => p.classList.remove('active'));
       opt.classList.add('active');
-      console.log('[profiles] switched to:', state.currentProfile);
+      console.log('[lists] switched to:', state.selectedListId);
       loadDeck();
     });
   });
 
-  currentProfileSpan.textContent = formatProfileName(state.currentProfile);
-}
-
-function formatProfileName(name) {
-  return name.split('-').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+  currentProfileSpan.textContent = state.selectedListTitle;
 }
 
 async function loadDeck() {
@@ -221,7 +232,12 @@ async function loadDeck() {
     return;
   }
 
-  console.log('[deck] starting load for profile:', state.currentProfile);
+  if (!state.selectedListId) {
+    console.warn('[deck] loadDeck called with no selected list, aborting');
+    return;
+  }
+
+  console.log('[deck] starting load for list:', state.selectedListId);
   cardStack.classList.add('hidden');
   emptyState.classList.add('hidden');
   loadingSkeleton.classList.add('hidden');
@@ -233,10 +249,17 @@ async function loadDeck() {
       body: { user_id: state.username, source: 'trending', depth_pages: 2 }
     });
 
-    await pollProgress();
+    const ingestResult = await pollProgress();
+    if (ingestResult.status !== 'completed') {
+      const reason = ingestResult.reason || 'ingest_failed';
+      console.error('[deck] aborting deck fetch due to ingest status:', ingestResult.status, reason);
+      throw new Error(reason === 'server_reported_failure'
+        ? 'Letterboxd sync failed before deck load.'
+        : 'Unable to complete ingest before deck load.');
+    }
 
-    console.log('[deck] fetching discovery deck...');
-    const res = await api(`/discovery/deck?user_id=${encodeURIComponent(state.username)}&profile=${encodeURIComponent(state.currentProfile)}`);
+    console.log('[deck] fetching list deck...');
+    const res = await api(`/lists/${encodeURIComponent(state.selectedListId)}/deck?user_id=${encodeURIComponent(state.username)}`);
 
     const raw = res.results || [];
     state.deck = raw.filter(m => !suppression.isSuppressed(m.slug));
@@ -271,23 +294,24 @@ async function pollProgress() {
     try {
       const res = await api(`/ingest/progress?user_id=${encodeURIComponent(state.username)}`);
       const progress = res.progress;
+      const ingestState = getIngestPollingState(progress);
 
       updateProgressBar(progress);
       console.log(`[ingest] progress=${progress}%`);
 
-      if (progress >= 100) {
+      if (ingestState.status === 'completed') {
         console.log('[ingest] complete');
-        break;
+        return ingestState;
       }
-      if (progress === -1) {
+      if (ingestState.status === 'failed') {
         console.error('[ingest] server reported ingest failure');
-        break;
+        return ingestState;
       }
 
       await delay(500);
     } catch (err) {
       console.error('[ingest] progress poll error:', err.message);
-      break;
+      return { status: 'interrupted', reason: err.message };
     }
   }
 }
