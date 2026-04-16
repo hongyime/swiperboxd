@@ -137,13 +137,14 @@ class HttpLetterboxdScraper:
                 "authenticationCode": auth_code_input.get("value", "") if auth_code_input else "",
                 "remember": "true",
             }
-            # /user/login.do is an XHR endpoint — requires these extra headers.
+            # Plain browser form POST — NOT XHR.
+            # Success: Letterboxd 302-redirects to the user profile, setting the
+            # session cookie during the redirect chain.
+            # Failure (wrong creds / challenge): stays on /user/login.do with 200.
             login_headers = {
                 "Referer": f"{self.base_url}/sign-in/",
                 "Origin": self.base_url,
-                "X-Requested-With": "XMLHttpRequest",
-                "Accept": "application/json, text/javascript, */*; q=0.01",
-                "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             }
             response = client.post(
                 f"{self.base_url}/user/login.do",
@@ -157,21 +158,27 @@ class HttpLetterboxdScraper:
                 flush=True,
             )
 
-            # The session cookie is set during a redirect — check the full cookie
-            # jar (client.cookies), not just the final response cookies.
+            # Successful login: follow_redirects=True chases the 302 → profile page,
+            # and the session cookie lands in client.cookies during that chain.
             cookie = client.cookies.get("letterboxd.session")
             if not cookie:
                 status = response.status_code
-                if status == 401:
-                    raise RuntimeError("invalid_credentials (401)")
-                if status == 403:
-                    raise RuntimeError("access_forbidden — server may be blocking this IP (403)")
-                if status == 429:
-                    raise RuntimeError("rate_limited — too many attempts, wait before retrying (429)")
-                raise RuntimeError(
-                    f"session_cookie_missing "
-                    f"(status={status}, final_url={response.url})"
-                )
+                if status in {401, 403, 429}:
+                    raise RuntimeError(f"upstream_rejected (status={status})")
+
+                # status=200 + still on login page = wrong credentials or CAPTCHA
+                if "login.do" in str(response.url):
+                    error_soup = BeautifulSoup(response.text, "html.parser")
+                    msg_tag = (
+                        error_soup.select_one(".form-error")
+                        or error_soup.select_one('[class*="error"]')
+                        or error_soup.select_one(".alert")
+                    )
+                    hint = msg_tag.get_text(" ", strip=True)[:120] if msg_tag else "no error element found in page"
+                    print(f"[auth] login page returned — hint: {hint}", flush=True)
+                    raise RuntimeError(f"wrong_credentials_or_captcha — {hint}")
+
+                raise RuntimeError(f"session_cookie_missing (status={status}, final_url={response.url})")
             return cookie
 
     def pull_watchlist_slugs(self, session_cookie: str) -> set[str]:
