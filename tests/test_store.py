@@ -8,7 +8,7 @@ import pytest
 
 # Ensure we use InMemoryStore for testing
 os.environ.pop("SUPABASE_URL", None)
-os.environ.pop("SUPABASE_KEY", None)
+os.environ.pop("SUPABASE_ANON_KEY", None)
 
 from src.api.store import InMemoryStore
 
@@ -248,7 +248,7 @@ def test_in_memory_store_concurrent_add_exclusion(in_memory_store):
 
 # SupabaseStore integration tests (only run if Supabase is configured)
 @pytest.mark.skipif(
-    not os.getenv("SUPABASE_URL") or not os.getenv("SUPABASE_KEY"),
+    not os.getenv("SUPABASE_URL") or not os.getenv("SUPABASE_ANON_KEY"),
     reason="Supabase not configured"
 )
 def test_supabase_store_basic_operations():
@@ -282,7 +282,7 @@ def test_supabase_store_basic_operations():
 
 
 @pytest.mark.skipif(
-    not os.getenv("SUPABASE_URL") or not os.getenv("SUPABASE_KEY"),
+    not os.getenv("SUPABASE_URL") or not os.getenv("SUPABASE_ANON_KEY"),
     reason="Supabase not configured"
 )
 def test_supabase_store_concurrent_operations():

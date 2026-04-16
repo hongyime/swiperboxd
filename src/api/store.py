@@ -316,21 +316,16 @@ class SupabaseStore:
     last_scrape_at: dict = field(default_factory=dict)
     ingest_running: set = field(default_factory=set)
     genre_weights: dict = field(default_factory=dict)
-    list_summaries: dict = field(default_factory=dict)
-    list_memberships: dict = field(default_factory=dict)
     lock: threading.Lock = field(default_factory=threading.Lock)
 
     def __init__(self):
         self.client = get_supabase_client()
-        # Initialize fields that require runtime initialization
         self.ingest_progress = {}
         self.ingest_errors = {}
         self.last_action_at = {}
         self.last_scrape_at = {}
         self.ingest_running = set()
         self.genre_weights = {}
-        self.list_summaries = {}
-        self.list_memberships = {}
         self.lock = threading.Lock()
 
     def _get_or_create_user_id(self, letterboxd_username: str) -> str:
@@ -510,7 +505,6 @@ class SupabaseStore:
 
     def weighted_shuffle(self, user_id: str, movies: list[dict]) -> list[dict]:
         """Shuffle movies with genre bias using persisted genre weights."""
-        # Get weights from Supabase
         weights = self.get_genre_weights(user_id)
 
         if not weights:
@@ -541,30 +535,39 @@ class SupabaseStore:
             "is_official": bool(list_summary.get("is_official", False)),
             "tags": list_summary.get("tags", []) if isinstance(list_summary.get("tags", []), list) else [],
         }
-        with self.lock:
-            self.list_summaries[normalized["list_id"]] = normalized
+        if normalized["list_id"]:
+            self.client.table("list_summaries").upsert(normalized, on_conflict="list_id").execute()
 
     def get_list_summary(self, list_id: str) -> dict | None:
-        with self.lock:
-            summary = self.list_summaries.get(list_id)
-        return dict(summary) if summary else None
+        response = self.client.table("list_summaries").select("*").eq("list_id", list_id).execute()
+        return response.data[0] if response.data else None
 
     def get_lists(self) -> list[dict]:
-        with self.lock:
-            summaries = list(self.list_summaries.values())
-        return [dict(summary) for summary in summaries]
+        response = self.client.table("list_summaries").select("*").execute()
+        return list(response.data)
 
     def replace_list_memberships(self, list_id: str, movie_slugs: list[str]) -> None:
-        with self.lock:
-            seen = set()
-            deduped = []
-            for slug in movie_slugs:
-                if slug and slug not in seen:
-                    seen.add(slug)
-                    deduped.append(slug)
-            self.list_memberships[list_id] = deduped
+        seen: set[str] = set()
+        deduped: list[str] = []
+        for slug in movie_slugs:
+            if slug and slug not in seen:
+                seen.add(slug)
+                deduped.append(slug)
+
+        self.client.table("list_memberships").delete().eq("list_id", list_id).execute()
+        if deduped:
+            rows = [
+                {"list_id": list_id, "movie_slug": slug, "position": i}
+                for i, slug in enumerate(deduped)
+            ]
+            self.client.table("list_memberships").insert(rows).execute()
 
     def get_list_memberships(self, list_id: str) -> list[str]:
-        with self.lock:
-            memberships = self.list_memberships.get(list_id, [])
-        return list(memberships)
+        response = (
+            self.client.table("list_memberships")
+            .select("movie_slug")
+            .eq("list_id", list_id)
+            .order("position")
+            .execute()
+        )
+        return [row["movie_slug"] for row in response.data]

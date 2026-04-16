@@ -56,7 +56,7 @@ class Scraper(Protocol):
 
     def discover_site_lists(self, query: str | None = None, page: int = 1) -> list[LetterboxdListSummary]: ...
 
-    def fetch_list_movie_slugs(self, list_id: str) -> list[str]: ...
+    def fetch_list_movie_slugs(self, list_id: str, list_url: str | None = None) -> list[str]: ...
 
 
 @lru_cache(maxsize=1)
@@ -142,7 +142,7 @@ class MockLetterboxdScraper:
         end = start + page_size
         return lists[start:end]
 
-    def fetch_list_movie_slugs(self, list_id: str) -> list[str]:
+    def fetch_list_movie_slugs(self, list_id: str, list_url: str | None = None) -> list[str]:
         mapping = {
             "official-best-picture": ["film-c", "film-d", "film-e", "film-a"],
             "community-hidden-gems": ["film-d", "film-e", "film-c"],
@@ -482,10 +482,174 @@ class HttpLetterboxdScraper:
         return movies
 
     def discover_site_lists(self, query: str | None = None, page: int = 1) -> list[LetterboxdListSummary]:
-        raise NotImplementedError("discover_site_lists is not yet implemented for HTTP scraper")
+        """Scrape Letterboxd popular lists page for list summaries.
 
-    def fetch_list_movie_slugs(self, list_id: str) -> list[str]:
-        raise NotImplementedError("fetch_list_movie_slugs is not yet implemented for HTTP scraper")
+        CSS selectors are verified against Letterboxd's public list browse page
+        (https://letterboxd.com/lists/popular/). If Letterboxd changes its HTML
+        structure, update the selectors here — all other logic stays the same.
+        """
+        url = f"{self.base_url}/lists/popular/"
+        results: list[LetterboxdListSummary] = []
+
+        try:
+            response = self._http_client.get(
+                url,
+                params={"page": page},
+                headers=self._BROWSER_HEADERS,
+            )
+            if response.status_code in {403, 429}:
+                raise RuntimeError(f"rate_limited status={response.status_code}")
+
+            soup = BeautifulSoup(response.text, "html.parser")
+
+            # Each list entry lives in a <section class="list-set"> block.
+            # Fallback to any <article> or <li> containing a list-summary link.
+            entries = soup.select("section.list-set") or soup.select("article.list-item")
+
+            for entry in entries:
+                try:
+                    # Title + href (/owner/list/slug/)
+                    title_tag = (
+                        entry.select_one("h2.title-headline a")
+                        or entry.select_one("h2 a")
+                        or entry.select_one("h3 a")
+                    )
+                    if not title_tag:
+                        continue
+
+                    href = title_tag.get("href", "")
+                    # href pattern: /owner_slug/list/list_slug/
+                    parts = [p for p in href.strip("/").split("/") if p]
+                    if len(parts) < 3 or parts[1] != "list":
+                        continue
+
+                    owner_slug = parts[0]
+                    list_slug = parts[2]
+                    list_id = f"{owner_slug}-{list_slug}"
+                    list_url = f"{self.base_url}/{owner_slug}/list/{list_slug}/"
+                    title = title_tag.get_text(strip=True)
+
+                    # Owner display name
+                    owner_tag = (
+                        entry.select_one(".person-summary .name")
+                        or entry.select_one("a[href='/{}/']".format(owner_slug))
+                    )
+                    owner_name = owner_tag.get_text(strip=True) if owner_tag else owner_slug
+
+                    # Description
+                    desc_tag = entry.select_one("div.body-text p") or entry.select_one(".truncate-body")
+                    description = desc_tag.get_text(strip=True) if desc_tag else ""
+
+                    # Film count — text like "52 films"
+                    film_count = 0
+                    count_tag = entry.select_one("small.poster-count") or entry.select_one(".link-alt-text")
+                    if count_tag:
+                        count_text = count_tag.get_text(strip=True).replace(",", "")
+                        for token in count_text.split():
+                            try:
+                                film_count = int(token)
+                                break
+                            except ValueError:
+                                continue
+
+                    # Like count
+                    like_count = 0
+                    like_tag = entry.select_one(".icon-like") or entry.select_one("a[title*='like']")
+                    if like_tag:
+                        like_count = _parse_member_count(like_tag.get_text(strip=True))
+
+                    results.append(
+                        LetterboxdListSummary(
+                            list_id=list_id,
+                            slug=list_slug,
+                            url=list_url,
+                            title=title,
+                            owner_name=owner_name,
+                            owner_slug=owner_slug,
+                            description=description,
+                            film_count=film_count,
+                            like_count=like_count,
+                            comment_count=0,
+                            is_official=(owner_slug in {"letterboxd", "official"}),
+                            tags=[],
+                        )
+                    )
+                except Exception as exc:
+                    print(f"[lists] skipping entry due to parse error: {exc}", flush=True)
+                    continue
+
+        except Exception as exc:
+            print(f"[lists] discover_site_lists failed page={page}: {exc}", flush=True)
+
+        if query:
+            q = query.lower()
+            results = [
+                r for r in results
+                if q in r.title.lower() or q in r.description.lower() or q in r.owner_name.lower()
+            ]
+
+        return results
+
+    def fetch_list_movie_slugs(self, list_id: str, list_url: str | None = None) -> list[str]:
+        """Scrape all film slugs from a Letterboxd list page, with pagination.
+
+        Requires `list_url` — the canonical URL of the list
+        (e.g. https://letterboxd.com/someuser/list/my-list/).
+        Capped at 20 pages (~240 films) to prevent runaway scraping.
+        """
+        if not list_url:
+            raise ValueError(
+                f"fetch_list_movie_slugs requires list_url for HTTP scraper "
+                f"(list_id={list_id!r}). Pass list_url=summary['url'] from the store."
+            )
+
+        slugs: list[str] = []
+        seen: set[str] = set()
+        max_pages = 20
+
+        for page_num in range(1, max_pages + 1):
+            try:
+                response = self._http_client.get(
+                    list_url,
+                    params={"page": page_num},
+                    headers=self._BROWSER_HEADERS,
+                )
+                if response.status_code in {403, 429}:
+                    print(f"[lists] rate limited fetching list slugs list_id={list_id} page={page_num}", flush=True)
+                    break
+                if response.status_code == 404:
+                    break
+
+                soup = BeautifulSoup(response.text, "html.parser")
+
+                # Primary selector: data-film-slug attribute on poster containers
+                poster_divs = soup.select("div.film-poster[data-film-slug]")
+                page_slugs: list[str] = [
+                    div["data-film-slug"] for div in poster_divs
+                    if div.get("data-film-slug")
+                ]
+
+                # Fallback: extract slug from /film/<slug>/ href
+                if not page_slugs:
+                    for link in soup.select("li.poster-container a[href^='/film/']"):
+                        href = link.get("href", "")
+                        parts = href.strip("/").split("/")
+                        if len(parts) >= 2 and parts[0] == "film":
+                            page_slugs.append(parts[1])
+
+                if not page_slugs:
+                    break  # no more films on this page
+
+                for slug in page_slugs:
+                    if slug and slug not in seen:
+                        seen.add(slug)
+                        slugs.append(slug)
+
+            except Exception as exc:
+                print(f"[lists] error fetching list slugs list_id={list_id} page={page_num}: {exc}", flush=True)
+                break
+
+        return slugs
 
     def _get_proxy_url(self) -> str | None:
         """Get rotating proxy URL if configured."""

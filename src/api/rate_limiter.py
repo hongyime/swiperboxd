@@ -1,3 +1,7 @@
+# STATUS: IMPLEMENTED BUT NOT WIRED
+# This module is not imported by app.py. Rate limiting is currently handled in-memory by
+# InMemoryStore/SupabaseStore. Retained for future Upstash Redis integration.
+# Do not assume this code is active or enforced at runtime.
 """Redis-based rate limiter for Upstash integration."""
 
 from __future__ import annotations

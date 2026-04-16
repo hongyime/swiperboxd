@@ -63,7 +63,10 @@ def run_migrations() -> None:
         print(f"⚠️  Migrations directory not found: {migrations_dir}")
         return
     
-    migration_files = sorted(migrations_dir.glob("*.sql"))
+    migration_files = sorted(
+        f for f in migrations_dir.glob("*.sql")
+        if not f.name.startswith("LEGACY_")
+    )
     
     for migration_file in migration_files:
         with open(migration_file, 'r') as f:
@@ -73,10 +76,14 @@ def run_migrations() -> None:
         print(f"📝 Running migration: {migration_name}")
         
         try:
-            # Use Supabase SQL function to execute migration
-            # This is a simplified version - production should use proper migration tool
-            result = client.rpc('exec_sql', {'sql': sql}).execute()
-            print(f"✅ Completed: {migration_name}")
+            # Requires a custom `exec_sql(sql TEXT)` RPC function in Supabase.
+            # Create it once via the Supabase SQL editor:
+            #   create or replace function exec_sql(sql text) returns void
+            #   language plpgsql security definer as $$ begin execute sql; end; $$;
+            client.rpc('exec_sql', {'sql': sql}).execute()
+            print(f"[migrate] completed: {migration_name}")
         except Exception as e:
-            # Check if migration already ran (shouldn't fail with CREATE TABLE IF NOT EXISTS)
-            print(f"⚠️  Migration error (might have run already): {e}")
+            print(
+                f"[migrate] error on {migration_name}: {e}\n"
+                "  Hint: ensure the exec_sql(sql TEXT) RPC function exists in Supabase."
+            )

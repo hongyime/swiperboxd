@@ -1,212 +1,260 @@
-# design.md — Implementation Design
+# design.md — Implementation Design (Cycle 2)
 
-> Architecture decisions and interface contracts for the remediation cycle.
+> Architecture decisions and interface contracts for this execution cycle.
 > Read this before executing any task in `tasks.md`.
+> Bugs addressed: BUG-C01 through BUG-M05
 
 ---
 
 ## 1. SCOPE
 
-This document covers remediations for all `Open` items in `bugfix.md`. It is organized by subsystem. Items marked **DEFERRED** are acknowledged but not scheduled for this cycle.
+This cycle fixes all `Open` items from `bugfix.md`. Items marked **DEFERRED** are acknowledged but not scheduled.
 
 ---
 
-## 2. SECURITY SUBSYSTEM
+## 2. STARTUP CRASH FIX (BUG-C01)
 
-### 2.1 Credential Hygiene (BUG-S01, BUG-S07)
+**Decision:** Wrap the startup `discover_site_lists` call in a `try/except` that catches `NotImplementedError` and logs a warning. Do not remove the call — it remains valid for mock mode and will be valid once BUG-C02 is fixed.
 
-**Decision:** `.env` must be removed from git tracking. All secrets must be referenced only via `.env.template` (documentation) and loaded from environment at runtime.
-
-**Changes:**
-- Verify `.env` is excluded by `.gitignore` (it is — confirmed in file). No code change needed.
-- Remove hardcoded Supabase project URL from `scripts/print_migrations.py:38` — replace with `os.getenv("SUPABASE_URL", "<YOUR_SUPABASE_URL>")` in the instruction string.
-- User must rotate all credentials externally (out of scope for automated fix).
-
-### 2.2 JWT Signature Verification (BUG-S02)
-
-**Decision:** Restore proper HS256 signature verification in `verify_token()`.
-
-**Change in `src/api/auth.py`:**
+**Change in `src/api/app.py`:**
 ```python
-# Before (broken)
-payload = jwt.decode(token, options={"verify_signature": False}, algorithms=["HS256"])
-
-# After
-payload = jwt.decode(token, key=self.jwt_secret, algorithms=["HS256"])
+try:
+    for entry in scraper.discover_site_lists(page=1):
+        store.upsert_list_summary(entry.__dict__)
+except NotImplementedError:
+    print("[startup] WARNING: scraper does not support list discovery; catalog will be empty until first /lists/catalog request", flush=True)
 ```
-`self.jwt_secret` is already available as `AuthService.jwt_secret` (set from `SUPABASE_JWT_SECRET` env var).
 
-### 2.3 Endpoint Authentication (BUG-S03)
+---
 
-**Decision:** For this cycle, implement a lightweight **shared-secret guard** on state-mutating endpoints. Full JWT auth wiring (`Depends(get_authenticated_user)`) is architecturally correct but requires resolving the dual-auth system first (see §5). The shared secret is a net security improvement over the current zero-auth state.
+## 3. HTTP SCRAPER — LIST CATALOG (BUG-C02)
 
-**Approach:**
-- Add `API_SECRET_KEY` env var (document in `.env.template`).
-- Add `verify_api_key(x_api_key: str = Header(...))` FastAPI dependency in `app.py`.
-- Apply to: `/ingest/start`, `/actions/swipe`, `/db/migrate`.
-- `/discovery/deck`, `/discovery/details`, `/ingest/progress`, `/auth/session` remain open (read-only or auth-initiation flows).
-- `/db/migrate` gets an additional `APP_ENV != "production"` guard.
+**Decision:** Scrape `https://letterboxd.com/lists/` with `?page=N` for pagination.
 
-**Note:** This is not a substitute for user-scoped auth. It prevents anonymous abuse from external callers.
+**HTML target (Letterboxd public list browse page):**
+- List container: `section.list-set` — one per list entry
+- Title + URL: `h2.title-headline a` — href is the canonical list path e.g. `/username/list/list-slug/`
+- Description: `div.body-text p` (first `p`) — may be absent
+- Film count: `small.poster-count` text — e.g. "52 films"
+- Like count: `a.icon-like` adjacent text, OR `span.icon-likes-count`
+- Owner: extracted from the href path component (first segment = owner_slug)
 
-### 2.4 `/db/migrate` Production Guard (BUG-S06)
+**`list_id` derivation from URL path:**
+Given href `/alice/list/my-favorites/`:
+- `owner_slug = "alice"`
+- `list_slug = "my-favorites"`
+- `list_id = "alice-my-favorites"`
+- `url = f"{self.base_url}/alice/list/my-favorites/"`
 
-**Decision:** Gate the endpoint behind both the API secret key (§2.3) and an explicit dev-only environment check.
+**Empty page detection:** if no `section.list-set` elements found → stop pagination.
 
-**Change in `src/api/app.py` — `migrate_database()`:**
+**Signature (no change to protocol):**
 ```python
-if os.getenv("APP_ENV", "development") == "production":
-    raise HTTPException(status_code=403, detail="Not available in production")
+def discover_site_lists(self, query: str | None = None, page: int = 1) -> list[LetterboxdListSummary]
 ```
-
-### 2.5 `app_patch.py` Webhook Signature Fix (BUG-S05)
-
-**Decision:** Replace the bare `except: pass` with a proper fail-closed guard. If `QStashQueue` cannot be initialized, return HTTP 503. Do not proceed.
+Note: `query` filtering is done post-scrape (same as mock) since Letterboxd's list browse does not expose a search URL in the public interface.
 
 ---
 
-## 3. LOGIC SUBSYSTEM
+## 4. HTTP SCRAPER — LIST MOVIE SLUGS (BUG-C03 + BUG-M03)
 
-### 3.1 Suppression Store Integration (BUG-L03)
+**Problem:** `fetch_list_movie_slugs(list_id)` receives only the list ID. The HTTP scraper needs a URL. The `list_id` string (e.g. `"official-best-picture"`) cannot be reliably reversed to a URL.
 
-**Decision:** Import `createSuppressionStore` from `state.js` into `app.js`. Wire `dismiss()` on swipe-left and `isSuppressed()` as a pre-render filter before building the card stack.
+**Decision:** Add an optional `list_url` keyword argument to the `Scraper` protocol and both implementations. Callers in `app.py` already hold the `LetterboxdListSummary` (which contains `url`) and will pass it.
 
-**Interface contract (no changes to `state.js`):**
-```js
-import { createSuppressionStore } from './state.js';
-const suppression = createSuppressionStore(Date.now);
-
-// On dismiss swipe:
-suppression.dismiss(slug);
-
-// In loadDeck(), filter deck before rendering:
-state.deck = state.deck.filter(m => !suppression.isSuppressed(m.slug));
-```
-
-### 3.2 Popularity Scraping (BUG-L01)
-
-**Decision:** Scrape member-count from Letterboxd film page as a popularity proxy. The member count appears in `a.has-icon.icon-watched` or `a[href$="/members/"]` — text like "1.2M" needs normalisation to an integer.
-
-**Change in `src/api/providers/letterboxd.py` — `metadata_for_slugs()`:**
+**Updated protocol:**
 ```python
-# Parse member count from film page
-members_tag = soup.select_one('a.has-icon.icon-watched span') or \
-              soup.select_one('[data-original-title*="members"]')
-popularity = _parse_member_count(members_tag.get_text()) if members_tag else 0
-
-def _parse_member_count(text: str) -> int:
-    # "1.2M" -> 1200000, "45K" -> 45000, "1,234" -> 1234
-    text = text.strip().replace(',', '')
-    if text.endswith('M'): return int(float(text[:-1]) * 1_000_000)
-    if text.endswith('K'): return int(float(text[:-1]) * 1_000)
-    return int(text) if text.isdigit() else 0
+def fetch_list_movie_slugs(self, list_id: str, list_url: str | None = None) -> list[str]: ...
 ```
 
-**Note:** The exact CSS selector must be verified against live Letterboxd HTML before committing. The mock scraper is unaffected.
+- `MockLetterboxdScraper`: ignores `list_url`, uses existing `list_id` mapping.
+- `HttpLetterboxdScraper`: uses `list_url` if provided; raises `ValueError` if neither is derivable.
 
-### 3.3 Ingest Progress (BUG-L02)
+**HTML target (Letterboxd list detail page):**
+- Film slugs: `div.film-poster[data-film-slug]` attribute — most reliable selector.
+- Fallback: `li.poster-container a[href^="/film/"]` — extract slug from href.
+- Pagination: `?page=N`, stop when no poster containers found.
+- Cap: 20 pages maximum (≈ 240 films) to prevent runaway scraping.
 
-**Decision:** Replace hardcoded progress checkpoints with real event-driven counters. The pipeline knows: total slugs fetched, slugs filtered, metadata batches completed. Emit actual percentages.
+**`app.py` call-site update (two locations):**
+```python
+summary = store.get_list_summary(list_id)
+movie_slugs = scraper.fetch_list_movie_slugs(list_id, list_url=summary.get("url") if summary else None)
+```
 
-**Approach:**
-- Extract `_filter_first_pipeline()` to accept a `progress_callback: Callable[[int], None]` parameter.
-- Milestones: slugs fetched = 20%, filtered = 40%, each metadata batch = +40%/n_batches, upsert complete = 100%.
-- `_run_ingest_worker()` passes a lambda that calls `store.set_ingest_progress(user_id, pct)`.
+---
 
-### 3.4 Fix `auth.html` Dead Endpoints (BUG-L07)
+## 5. MIGRATION FIXES (BUG-H01, BUG-H02)
 
-**Decision:** `auth.html` is a dead page with no backend. Two options:
-- **Option A:** Remove `auth.html` entirely — login is handled in `index.html`/`app.js`.
-- **Option B:** Wire `AuthService` login/register routes.
+### 5.1 LEGACY file filter
+**Change in `src/api/database.py`:**
+```python
+migration_files = sorted(f for f in migrations_dir.glob("*.sql") if not f.name.startswith("LEGACY_"))
+```
 
-**Decision: Option A.** The current app flow uses `POST /auth/session` (Letterboxd proxy), not Supabase Auth. `auth.html` is orphaned UI with no use case. Delete it. Remove reference from any nav links.
+### 5.2 `exec_sql` RPC
+**Decision:** The `exec_sql` RPC approach requires a custom Supabase function that cannot be auto-provisioned. Replace with a direct `postgrest-py` raw SQL approach using the service role key if available; otherwise log a clear error and skip.
 
-### 3.5 Fix `app_patch.py` ImportError (BUG-L04)
+**Revised approach:** Use `supabase-py`'s `client.postgrest.schema("public")` raw query path. Since supabase-py v2 does not expose arbitrary SQL via the REST client, the safest correct fix is:
+1. Keep the `rpc('exec_sql', ...)` call as-is (it works if the user provisions it).
+2. Improve the error message to explicitly say the `exec_sql` function is required.
+3. Add a note to `db/migrations/README.md`.
 
-**Decision:** `app_patch.py` is an abandoned integration draft. It cannot be salvaged without implementing QStash wiring (deferred). Delete the file.
+This is the minimum-change correct fix: do not redesign the migration runner; make the failure mode explicit.
 
-### 3.6 Fix `SCRAPER_BACKEND` Default (BUG-L10)
+---
 
-**Decision:** Change default from `"mock"` to `"http"`. Add startup log warning if `SCRAPER_BACKEND` is `"mock"` in a non-development environment.
+## 6. LIST PERSISTENCE — SQL + SUPABASE STORE (BUG-H03)
+
+### 6.1 New migration: `007_lists.sql`
+```sql
+CREATE TABLE IF NOT EXISTS list_summaries (
+    list_id TEXT PRIMARY KEY,
+    slug TEXT NOT NULL DEFAULT '',
+    url TEXT NOT NULL DEFAULT '',
+    title TEXT NOT NULL DEFAULT '',
+    owner_name TEXT DEFAULT '',
+    owner_slug TEXT DEFAULT '',
+    description TEXT DEFAULT '',
+    film_count INTEGER DEFAULT 0,
+    like_count INTEGER DEFAULT 0,
+    comment_count INTEGER DEFAULT 0,
+    is_official BOOLEAN DEFAULT FALSE,
+    tags JSONB DEFAULT '[]',
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS list_memberships (
+    id BIGSERIAL PRIMARY KEY,
+    list_id TEXT NOT NULL REFERENCES list_summaries(list_id) ON DELETE CASCADE,
+    movie_slug TEXT NOT NULL,
+    position INTEGER NOT NULL DEFAULT 0,
+    UNIQUE(list_id, movie_slug)
+);
+
+CREATE INDEX IF NOT EXISTS idx_list_memberships_list_id_pos ON list_memberships(list_id, position);
+```
+
+### 6.2 `SupabaseStore` list methods
+All five list methods (`upsert_list_summary`, `get_list_summary`, `get_lists`, `replace_list_memberships`, `get_list_memberships`) are updated to use Supabase tables instead of in-memory dicts. The in-memory `list_summaries`/`list_memberships` dict fields are removed from `SupabaseStore.__init__`.
+
+`InMemoryStore` list methods are unchanged (dicts remain correct for dev/test).
+
+---
+
+## 7. SESSION IDENTITY BINDING (BUG-H04)
+
+**Decision:** Embed the username inside the Fernet-encrypted token at auth time. `verify_session` dependency returns the verified username string. POST endpoints assert `payload.user_id == verified_username`.
+
+**Token format change:**
+- Old: `encrypt(session_cookie)`
+- New: `encrypt(json.dumps({"u": username, "c": session_cookie}))`
+
+**Backward compatibility:** `verify_session` tries JSON parse; if it fails (old-format token), it returns `""` as username and skips the binding check. This allows existing sessions to remain valid.
+
+**`create_auth_session` change:**
+```python
+import json
+token_payload = json.dumps({"u": payload.username, "c": payload.session_cookie})
+encrypted_cookie = encrypt_session_cookie(token_payload, master_key)
+```
+
+**`verify_session` change:**
+```python
+def verify_session(x_session_token: str = Header(..., alias="X-Session-Token")) -> str:
+    ...
+    raw = decrypt_session_cookie(x_session_token, master_key)
+    try:
+        data = json.loads(raw)
+        return data.get("u", "")
+    except (json.JSONDecodeError, ValueError):
+        return ""  # old token format — identity unknown, allow through
+```
+
+**Binding assertion in guarded endpoints:**
+```python
+async def start_ingest(payload: IngestStartRequest, verified_user: str = Depends(verify_session)):
+    if verified_user and payload.user_id != verified_user:
+        raise HTTPException(status_code=403, detail={"code": "user_id_mismatch"})
+```
+
+The `if verified_user` guard ensures old-format tokens still work during rollover.
+
+---
+
+## 8. INGEST RACE CONDITION FIX (BUG-H05)
+
+**Decision:** Move both the `ingest_running` check and the `add()` inside a single store lock acquisition. Add a `check_and_start_ingest` method to `InMemoryStore` (and `SupabaseStore`) that performs the check-and-set atomically.
+
+**Alternative (simpler):** Since the `store.lock` is already available, acquire it directly in `app.py` around the check+add:
 
 ```python
-SCRAPER_BACKEND = os.getenv("SCRAPER_BACKEND", "http")  # was "mock"
-if SCRAPER_BACKEND == "mock" and os.getenv("APP_ENV", "development") != "development":
-    print("WARNING: SCRAPER_BACKEND=mock in non-development environment", flush=True)
+with store.lock:
+    if payload.user_id in store.ingest_running:
+        return {"status": "already_running", "user_id": payload.user_id}
+    store.ingest_running.add(payload.user_id)
+```
+
+This is the minimum change. Do not add new store methods.
+
+---
+
+## 9. SMOKE TEST + TEST FIXES (BUG-M01, BUG-M02)
+
+### 9.1 `smoke_test_app.py`
+- Fix import: `from api.app import app` → `from src.api.app import app`
+- Fix auth call: remove `password` field, use `session_cookie` with a placeholder noting manual pre-requisite
+
+### 9.2 `test_store.py`
+- Fix skip condition: `SUPABASE_KEY` → `SUPABASE_ANON_KEY` in both `skipif` decorators
+
+---
+
+## 10. DEAD MODULE TOMBSTONING (BUG-M04)
+
+**Decision:** Do NOT delete these modules — they contain real, correct implementations that may be wired in future. Add a tombstone header to each file making their status explicit.
+
+Files: `src/api/auth.py`, `src/api/auth_deps.py`, `src/api/rate_limiter.py`, `src/api/qstash_queue.py`
+
+Header to add at top of each:
+```python
+# STATUS: IMPLEMENTED BUT NOT WIRED
+# This module is not imported by app.py. It is retained for future integration.
+# Do not assume this code is active or enforced.
 ```
 
 ---
 
-## 4. DEPENDENCY / BUILD SUBSYSTEM
+## 11. QUEUE CLEANUP (BUG-M05)
 
-### 4.1 Add `python-dotenv` (BUG-D01)
-
-**Change:** Add `python-dotenv>=1.0.0` to `requirements.txt` and `pyproject.toml` `[project.dependencies]`.
-
-### 4.2 Fix `package.json` Start Script (BUG-D02)
-
-**Change:** Update `"start"` script to `"uvicorn src.api.app:app --host 0.0.0.0 --port 8000"`.
-
-### 4.3 Consolidate Migrations (BUG-D03)
-
-**Decision:** The `00X_name.sql` series (`001_movies.sql` through `006_genre_preferences.sql`) is the canonical series — it matches what `SupabaseStore` queries. The `00X_initial_schema.sql` series is a legacy draft.
-
-**Approach:**
-- Rename legacy files with `_LEGACY` suffix so they are clearly non-executable but preserved for history.
-- Add a `README.md` in `db/migrations/` documenting the canonical order.
-- Do NOT run the legacy series against any live database.
-
-**Canonical migration order:**
-```
-001_movies.sql
-002_users.sql
-003_watchlist.sql
-004_diary.sql
-005_exclusions.sql
-006_genre_preferences.sql
-```
-
-**Note:** `007_rate_limit_state.sql` and `008_rls_user_based.sql` remain but are flagged as needing RLS policy corrections (BUG-S04 — deferred full fix, but RLS policies will be updated in this cycle to use `auth.uid()` where applicable).
+**Decision:** Remove the `queue.enqueue(...)` call from `start_ingest`. The `InMemoryQueue` serves no functional purpose. The queue object and class are retained (not deleted) since they may be replaced by QStash in future.
 
 ---
 
-## 5. DEFERRED (OUT OF SCOPE THIS CYCLE)
+## 12. DEPENDENCY COMPATIBILITY
 
-| Item | Reason |
-|------|--------|
-| BUG-S04 Full RLS rewrite | Requires fully wired user auth system first |
-| BUG-L05 QStash async ingest | Architectural lift; daemon thread is functional for local use |
-| BUG-L08 Supabase persistence for ingest/rate-limit state | Tied to BUG-L05 |
-| Full `Depends(get_authenticated_user)` on all endpoints | Requires resolving dual-auth system design |
-| BUG-L06 Profile-driven ingest source | Feature enhancement, not a bug fix |
-| BUG-L09 Column name validation | Requires knowing which migration series ran on the live DB |
-
----
-
-## 6. DEPENDENCY COMPATIBILITY
-
-| Package | Required Version | Notes |
-|---------|-----------------|-------|
-| `python-dotenv` | `>=1.0.0` | Stable; no known conflicts with existing deps |
-| `PyJWT` | `>=2.8.0` | Already in `requirements.txt`; `jwt.decode` signature verified compatible |
-| `cryptography` | `>=45.0.0` | Already present; Fernet unchanged |
-| `fastapi` | `>=0.116.0` | `Header()` dependency already available |
+| Component | Requirement | Notes |
+|-----------|-------------|-------|
+| `supabase-py` | `>=2.0.0` | `upsert(on_conflict=...)` syntax requires v2 |
+| `httpx` | `>=0.24.0` | Already in requirements; no change |
+| `beautifulsoup4` | `>=4.12` | Already in requirements; no change |
+| `cryptography` | `>=45.0.0` | Fernet unchanged |
+| Python `json` | stdlib | No new dependency for token payload change |
 
 ---
 
-## 7. FILE CHANGE MANIFEST
+## 13. FILE CHANGE MANIFEST
 
-| File | Action | Bugs Addressed |
-|------|--------|----------------|
-| `src/api/app.py` | Modify | S03, S06, L10 |
-| `src/api/auth.py` | Modify | S02 |
-| `src/api/app_patch.py` | Delete | L04, S05 |
-| `src/api/providers/letterboxd.py` | Modify | L01 |
-| `src/web/app.js` | Modify | L03 |
-| `src/web/auth.html` | Delete | L07 |
-| `scripts/print_migrations.py` | Modify | S07 |
-| `requirements.txt` | Modify | D01 |
-| `pyproject.toml` | Modify | D01 |
-| `package.json` | Modify | D02 |
-| `db/migrations/` | Rename legacy files + update README | D03 |
-| `.env.template` | Modify | S03 (document `API_SECRET_KEY`) |
+| File | Action | Bugs Fixed |
+|------|--------|------------|
+| `src/api/app.py` | Modify | C01, H04, H05, M05 |
+| `src/api/providers/letterboxd.py` | Modify | C02, C03, M03 |
+| `src/api/database.py` | Modify | H01, H02 |
+| `src/api/store.py` | Modify | H03 |
+| `db/migrations/007_lists.sql` | Create | H03 |
+| `scripts/smoke_test_app.py` | Modify | M01 |
+| `tests/test_store.py` | Modify | M02 |
+| `src/api/auth.py` | Modify (header only) | M04 |
+| `src/api/auth_deps.py` | Modify (header only) | M04 |
+| `src/api/rate_limiter.py` | Modify (header only) | M04 |
+| `src/api/qstash_queue.py` | Modify (header only) | M04 |

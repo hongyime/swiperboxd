@@ -5,7 +5,7 @@ import time
 
 from fastapi.testclient import TestClient
 
-from api.app import app
+from src.api.app import app
 
 
 def _require_env(name: str) -> str:
@@ -16,10 +16,11 @@ def _require_env(name: str) -> str:
 
 
 def main() -> int:
+    # Requires a pre-obtained Letterboxd session cookie (letterboxd.user.CURRENT from browser DevTools).
     user = os.getenv("TEST_TARGET_USERNAME") or os.getenv("LETTERBOXD_USERNAME")
-    password = os.getenv("TEST_TARGET_PASSWORD") or os.getenv("LETTERBOXD_PASSWORD")
-    if not user or not password:
-        print("ERROR missing TEST_TARGET_USERNAME/TEST_TARGET_PASSWORD (or LETTERBOXD_USERNAME/LETTERBOXD_PASSWORD)")
+    session_cookie = os.getenv("TEST_SESSION_COOKIE") or os.getenv("LETTERBOXD_SESSION_COOKIE")
+    if not user or not session_cookie:
+        print("ERROR missing TEST_TARGET_USERNAME + TEST_SESSION_COOKIE (or LETTERBOXD_USERNAME + LETTERBOXD_SESSION_COOKIE)")
         return 1
 
     _require_env("MASTER_ENCRYPTION_KEY")
@@ -54,9 +55,9 @@ def main() -> int:
     else:
         print("WARN discovery/deck returned no results for current scraper backend")
 
-    auth = client.post("/auth/session", json={"username": user, "password": password})
+    auth = client.post("/auth/session", json={"username": user, "session_cookie": session_cookie})
     if auth.status_code == 200:
-        print("OK auth/session login succeeded")
+        print("OK auth/session succeeded")
         return 0
 
     print(f"WARN auth/session failed status={auth.status_code} body={auth.text}")

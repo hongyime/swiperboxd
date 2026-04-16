@@ -42,8 +42,15 @@ else:
     store = InMemoryStore()
     print("[startup] store=InMemoryStore (Supabase not configured)", flush=True)
 
-for entry in scraper.discover_site_lists(page=1):
-    store.upsert_list_summary(entry.__dict__)
+try:
+    for entry in scraper.discover_site_lists(page=1):
+        store.upsert_list_summary(entry.__dict__)
+except NotImplementedError:
+    print(
+        "[startup] WARNING: scraper does not support list discovery; "
+        "catalog will be empty until first /lists/catalog request",
+        flush=True,
+    )
 
 print(f"[startup] scraper={SCRAPER_BACKEND} web_dir={_WEB_DIR}", flush=True)
 
@@ -97,14 +104,25 @@ def _validate_letterboxd_session(username: str, session_cookie: str) -> None:
 
 
 def verify_session(x_session_token: str = Header(..., alias="X-Session-Token")) -> str:
-    """Require a valid encrypted session token on mutating endpoints."""
+    """Decrypt X-Session-Token and return the verified username.
+
+    New token format: Fernet(json.dumps({"u": username, "c": session_cookie}))
+    Old token format: Fernet(raw_session_cookie)  — returns "" for backward compat.
+    """
     master_key = os.getenv("MASTER_ENCRYPTION_KEY")
     if not master_key:
         raise HTTPException(status_code=500, detail={"code": "server_misconfigured"})
     try:
-        return decrypt_session_cookie(x_session_token, master_key)
+        raw = decrypt_session_cookie(x_session_token, master_key)
     except Exception:
         raise HTTPException(status_code=401, detail={"code": "invalid_session"})
+
+    try:
+        data = json.loads(raw)
+        return data.get("u", "")
+    except (json.JSONDecodeError, ValueError):
+        # Old-format token (raw cookie string) — identity unknown, allow through
+        return ""
 
 
 class AuthSessionRequest(BaseModel):
@@ -201,7 +219,7 @@ def list_detail(list_id: str):
     if not summary:
         raise HTTPException(status_code=404, detail={"code": "list_not_found"})
 
-    movie_slugs = scraper.fetch_list_movie_slugs(list_id)
+    movie_slugs = scraper.fetch_list_movie_slugs(list_id, list_url=summary.get("url"))
     store.replace_list_memberships(list_id, movie_slugs)
     preview = [store.get_movie(slug) for slug in movie_slugs[:4]]
     preview = [movie for movie in preview if movie]
@@ -219,7 +237,7 @@ def list_deck(list_id: str, user_id: str = Query(min_length=1)):
     if not summary:
         raise HTTPException(status_code=404, detail={"code": "list_not_found"})
 
-    movie_slugs = scraper.fetch_list_movie_slugs(list_id)
+    movie_slugs = scraper.fetch_list_movie_slugs(list_id, list_url=summary.get("url"))
     store.replace_list_memberships(list_id, movie_slugs)
 
     missing = [slug for slug in movie_slugs if not store.get_movie(slug)]
@@ -254,25 +272,29 @@ def create_auth_session(payload: AuthSessionRequest):
         print(f"[auth] session validation failed: {exc}", flush=True)
         raise HTTPException(status_code=401, detail={"code": "invalid_session_cookie", "reason": str(exc)}) from exc
 
-    encrypted_cookie = encrypt_session_cookie(payload.session_cookie, master_key)
+    token_payload = json.dumps({"u": payload.username, "c": payload.session_cookie})
+    encrypted_cookie = encrypt_session_cookie(token_payload, master_key)
     return AuthSessionResponse(status="ok", encrypted_session_cookie=encrypted_cookie)
 
 
 @app.post("/ingest/start")
-async def start_ingest(payload: IngestStartRequest, _session: str = Depends(verify_session)):
+async def start_ingest(payload: IngestStartRequest, verified_user: str = Depends(verify_session)):
     """Start ingest process for a user (username)."""
+    if verified_user and payload.user_id != verified_user:
+        raise HTTPException(status_code=403, detail={"code": "user_id_mismatch"})
+
     allowed, retry_after = store.allow_scrape_request(payload.user_id, min_interval_seconds=1.0)
     if not allowed:
         print(f"[ingest] rate limited for user, retry_after={retry_after:.1f}s", flush=True)
         raise HTTPException(status_code=429, detail={"code": "scrape_rate_limited", "retry_after": retry_after})
 
-    if payload.user_id in store.ingest_running:
-        print("[ingest] already running, skipping duplicate start", flush=True)
-        return {"status": "already_running", "user_id": payload.user_id}
+    with store.lock:
+        if payload.user_id in store.ingest_running:
+            print("[ingest] already running, skipping duplicate start", flush=True)
+            return {"status": "already_running", "user_id": payload.user_id}
+        store.ingest_running.add(payload.user_id)
 
     store.set_ingest_error(payload.user_id, None)
-    store.ingest_running.add(payload.user_id)
-    queue.enqueue("ingest-history", {"user_id": payload.user_id, "source": payload.source, "depth_pages": payload.depth_pages})
     print(f"[ingest] starting worker source={payload.source} depth={payload.depth_pages}", flush=True)
     threading.Thread(target=_run_ingest_worker, args=(payload.user_id, payload.source, payload.depth_pages), daemon=True).start()
     return {"status": "queued", "user_id": payload.user_id}
@@ -337,8 +359,10 @@ def get_discovery_details(slug: str = Query(min_length=1)):
 
 
 @app.post("/actions/swipe")
-async def submit_swipe_action(payload: SwipeActionRequest, _session: str = Depends(verify_session)):
+async def submit_swipe_action(payload: SwipeActionRequest, verified_user: str = Depends(verify_session)):
     """Submit a swipe action."""
+    if verified_user and payload.user_id != verified_user:
+        raise HTTPException(status_code=403, detail={"code": "user_id_mismatch"})
     limited, retry_after_ms = store.should_rate_limit(payload.user_id, lock_ms=500)
     if limited:
         raise HTTPException(status_code=429, detail={"code": "sync_lock", "retry_after_ms": retry_after_ms})

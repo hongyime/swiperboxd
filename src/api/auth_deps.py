@@ -1,3 +1,6 @@
+# STATUS: IMPLEMENTED BUT NOT WIRED
+# This module is not imported by app.py. Retained for future use with auth.py.
+# Do not assume this code is active or enforced at runtime.
 """Authentication dependencies for FastAPI endpoints."""
 
 from __future__ import annotations

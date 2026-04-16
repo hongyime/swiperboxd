@@ -2,135 +2,129 @@
 
 > Source of truth for all identified defects. Updated in-place as fixes are applied.
 > Status: `Open` | `Fixed` | `Deferred`
+> Last audit: 2026-04-16 (Multi-Agent Reconciliation)
 
 ---
 
-## SECURITY
+## CRITICAL — Runtime Failures
 
-### BUG-S01 — Live Credentials in `.env`
-- **Status:** Open
-- **Root Cause:** `.env` contains plaintext production secrets (Fernet master key, Supabase service role key, Letterboxd password, Upstash/QStash tokens). The file exists in the working tree and `.gitignore` may not have prevented historical commits.
-- **Impact:** Full database compromise, session hijack, infrastructure takeover. CRITICAL.
-- **Evidence:** `e:/01 REPOSITORIES/swiperboxd/.env` — all fields populated with live values.
+### BUG-C01 — App startup crash in production
+- **Status:** Fixed
+- **Root Cause:** `app.py:45` calls `scraper.discover_site_lists(page=1)` at module load with no guard. `HttpLetterboxdScraper.discover_site_lists()` raises `NotImplementedError`. With `SCRAPER_BACKEND=http` (the production default) the process terminates before any route is registered.
+- **Impact:** Production app cannot start. Zero-downtime deploy is impossible until fixed.
+- **Evidence:** `src/api/app.py:45–47`; `src/api/providers/letterboxd.py:484`
 
-### BUG-S02 — JWT Signature Verification Disabled
-- **Status:** Open
-- **Root Cause:** `auth.py:verify_token()` calls `jwt.decode()` with `options={"verify_signature": False}`. Only expiry and issuer are checked manually.
-- **Impact:** Any token with a valid expiry and issuer field passes verification, regardless of signature. Auth bypass.
-- **Evidence:** `src/api/auth.py` — `verify_token()` method.
+### BUG-C02 — `HttpLetterboxdScraper.discover_site_lists` not implemented
+- **Status:** Fixed
+- **Root Cause:** Method body is `raise NotImplementedError(...)`. Entire Phase 2 list catalog feature is blocked.
+- **Impact:** `GET /lists/catalog` always errors with HTTP scraper. BUG-C01 is a direct consequence.
+- **Evidence:** `src/api/providers/letterboxd.py:484`
 
-### BUG-S03 — No Authentication on Any API Endpoint
-- **Status:** Open
-- **Root Cause:** Zero endpoints in `app.py` use `Depends(get_authenticated_user)`. `user_id` is passed as an unvalidated query param or request body field.
-- **Impact:** Any caller can read or mutate any user's data by supplying an arbitrary `user_id`.
-- **Evidence:** `src/api/app.py` — all endpoint signatures.
-
-### BUG-S04 — RLS Policies Are Cosmetic
-- **Status:** Open
-- **Root Cause:** `008_rls_user_based.sql` defines policies using `USING (user_id IS NOT NULL)`. This passes for every non-null row — it does not bind rows to the authenticated user.
-- **Impact:** Database-level access control is illusory. Any authenticated Supabase client can read/write all rows.
-- **Evidence:** `db/migrations/008_rls_user_based.sql`.
-
-### BUG-S05 — `app_patch.py` Silently Skips Webhook Signature Verification
-- **Status:** Open
-- **Root Cause:** `ingest_webhook()` wraps `QStashQueue()` init in a `try/except` with bare `pass`. If env vars are missing, the queue is `None` and signature verification is skipped entirely.
-- **Impact:** Unauthenticated callers can trigger ingest jobs via webhook endpoint.
-- **Evidence:** `src/api/app_patch.py` — `ingest_webhook()`.
-
-### BUG-S06 — `/db/migrate` Endpoint is Unauthenticated and Production-Exposed
-- **Status:** Open
-- **Root Cause:** The `/db/migrate` POST endpoint runs SQL migration files with no auth guard, no environment check.
-- **Impact:** Any caller can re-run or roll forward migrations in production.
-- **Evidence:** `src/api/app.py` — `migrate_database()`.
-
-### BUG-S07 — Production Supabase Project ID Hardcoded in Script
-- **Status:** Open
-- **Root Cause:** `scripts/print_migrations.py` line 38 contains a hardcoded Supabase project URL string.
-- **Impact:** Infrastructure enumeration risk if script is published or shared.
-- **Evidence:** `scripts/print_migrations.py:38`.
+### BUG-C03 — `HttpLetterboxdScraper.fetch_list_movie_slugs` not implemented
+- **Status:** Fixed
+- **Root Cause:** Method body is `raise NotImplementedError(...)`. No URL is passed from caller so HTTP scraper cannot know which page to scrape.
+- **Impact:** `GET /lists/{id}` and `GET /lists/{id}/deck` both error with HTTP scraper.
+- **Evidence:** `src/api/providers/letterboxd.py:487`
 
 ---
 
-## LOGIC
+## HIGH — Data Integrity & Security
 
-### BUG-L01 — `hidden-gems` Profile Filter Is Broken
-- **Status:** Open
-- **Root Cause:** `HttpLetterboxdScraper.metadata_for_slugs()` hardcodes `popularity=0` for every movie. The `hidden-gems` filter `popularity <= 50` always passes, making it identical in behaviour to a rating-only filter.
-- **Impact:** Profile differentiation is non-functional. Users see the same results regardless of profile selection.
-- **Evidence:** `src/api/providers/letterboxd.py:296` — `popularity=0`.
+### BUG-H01 — `database.run_migrations()` executes LEGACY files
+- **Status:** Fixed
+- **Root Cause:** `migrations_dir.glob("*.sql")` returns all `.sql` files. `LEGACY_` prefix sorts after `0–9` in ASCII, so the 8 deprecated migrations run after the 6 canonical ones, causing duplicate-table and FK-type conflicts.
+- **Impact:** `POST /db/migrate` corrupts schema in any environment where it is called.
+- **Evidence:** `src/api/database.py:66`
 
-### BUG-L02 — Ingest Progress Reporting Is Fake
-- **Status:** Open
-- **Root Cause:** `_run_ingest_worker()` emits hardcoded progress checkpoints (`5, 20, 35, 50, 70`) before the actual pipeline runs. Progress resets to `-1` on failure after showing 70%.
-- **Impact:** UI progress bar is decorative. User sees 70% completion even when the backend has done nothing yet.
-- **Evidence:** `src/api/app.py` — `_run_ingest_worker()`.
+### BUG-H02 — `run_migrations()` calls non-existent `exec_sql` RPC
+- **Status:** Fixed
+- **Root Cause:** `client.rpc('exec_sql', {'sql': sql})` requires a custom Supabase stored procedure that does not exist in any migration file. Every migration call silently fails with a `404` from the Supabase RPC layer.
+- **Impact:** `/db/migrate` endpoint is entirely non-functional against a real Supabase instance.
+- **Evidence:** `src/api/database.py:78`
 
-### BUG-L03 — 24-Hour Session Suppression Never Applied
-- **Status:** Open
-- **Root Cause:** `state.js` exports `createSuppressionStore` which implements the 24-hour dismissed-film suppression. `app.js` never imports or calls this module. Dismissed films can reappear in the same session deck.
-- **Impact:** FR 4.2.3 is entirely dead. Swipe-left has no local durability.
-- **Evidence:** `src/web/state.js`, `src/web/app.js` — no import of `state.js`.
+### BUG-H03 — No SQL schema for list tables; list data lost on cold start
+- **Status:** Fixed
+- **Root Cause:** `list_summaries` and `list_memberships` are in-memory Python dicts on both `InMemoryStore` and `SupabaseStore`. No migration creates these tables. Vercel cold starts wipe the list catalog.
+- **Impact:** Every cold start serves an empty list catalog until the startup `discover_site_lists` call repopulates it (which itself crashes — see BUG-C01).
+- **Evidence:** `src/api/store.py` — `SupabaseStore` class; `db/migrations/` — no list tables
 
-### BUG-L04 — `app_patch.py` Crashes on Import
-- **Status:** Open
-- **Root Cause:** `app_patch.py` contains `from src.api import _execute_filter_pipeline`. This symbol does not exist in `src/api/__init__.py` or `app.py`.
-- **Impact:** Any attempt to load `app_patch.py` raises `ImportError`, making it permanently dead code that cannot be recovered without a fix.
-- **Evidence:** `src/api/app_patch.py` — top-level import.
+### BUG-H04 — Session token identity not bound to `user_id` in request
+- **Status:** Fixed
+- **Root Cause:** `verify_session` decrypts the `X-Session-Token` header and returns the raw Letterboxd session cookie, not the username. POST endpoint bodies accept an arbitrary `user_id` string. A caller with a valid token for user A can submit `user_id=userB` and mutate another user's data.
+- **Impact:** Cross-user data mutation (watchlist, diary, exclusions) possible from any authenticated session.
+- **Evidence:** `src/api/app.py` — `verify_session()`, `start_ingest()`, `submit_swipe_action()`
 
-### BUG-L05 — Daemon Thread Ingest Incompatible with Serverless Runtime
-- **Status:** Open
-- **Root Cause:** `_run_ingest_worker()` runs on a `threading.Thread(daemon=True)`. Vercel serverless functions are stateless; the process is killed after each request, orphaning the thread mid-scrape.
-- **Impact:** Ingest jobs silently drop on Vercel. Only works in local `uvicorn` mode.
-- **Evidence:** `src/api/app.py` — `start_ingest()`.
-
-### BUG-L06 — Ingest Source and Depth Hardcoded in Frontend
-- **Status:** Open
-- **Root Cause:** `app.js:loadDeck()` always calls `POST /ingest/start` with `{source: 'trending', depth_pages: 2}`. Profile selection does not influence ingest source.
-- **Impact:** All profiles draw from the same trending source pool. "Hidden Gems" / "Gold Standard" differ only in post-fetch filter, not source diversity.
-- **Evidence:** `src/web/app.js:232-233`.
-
-### BUG-L07 — `auth.html` References Non-Existent Endpoints
-- **Status:** Open
-- **Root Cause:** `auth.html` POSTs to `/auth/login` and `/auth/register`. Neither endpoint is registered in `app.py`.
-- **Impact:** The auth page returns 404 for all interactions. It is a dead UI surface.
-- **Evidence:** `src/web/auth.html`, `src/api/app.py`.
-
-### BUG-L08 — `SupabaseStore` `ingest_state` / `rate_limit_state` Not Persisted
-- **Status:** Open
-- **Root Cause:** Tables `ingest_state` and `rate_limit_state` are defined in migrations but `SupabaseStore` keeps both in in-memory Python dicts. On cold start, all progress and rate-limit state is lost.
-- **Impact:** Re-opened Vercel functions lose ingest progress. Rate limits do not persist across requests.
-- **Evidence:** `src/api/store.py` — `SupabaseStore` class; `db/migrations/006_ingest_state.sql`, `007_rate_limit_state.sql`.
-
-### BUG-L09 — `genre_preferences` Column Name Mismatch
-- **Status:** Open
-- **Root Cause:** `SupabaseStore` queries `genre_preferences` for column `score`. Migration `005_genre_preferences.sql` (alternate series) defines column `weight`. If the wrong migration ran, all genre reads silently return empty results.
-- **Impact:** Weighted shuffle degrades to random shuffle without error.
-- **Evidence:** `src/api/store.py` — `get_genre_weights()`; `db/migrations/005_genre_preferences.sql` vs `006_genre_preferences.sql`.
-
-### BUG-L10 — `SCRAPER_BACKEND` Defaults to `"mock"` in Production
-- **Status:** Open
-- **Root Cause:** `os.getenv("SCRAPER_BACKEND", "mock")` — if the env var is absent from Vercel config, the production deployment silently serves mock film data.
-- **Impact:** Silent data failure. No error raised; users see hardcoded test films.
-- **Evidence:** `src/api/app.py:24`.
+### BUG-H05 — `ingest_running` check-then-add is not atomic
+- **Status:** Fixed
+- **Root Cause:** The guard `if payload.user_id in store.ingest_running` and the subsequent `store.ingest_running.add()` are two separate operations not wrapped in the store's lock. Concurrent requests can both pass the guard.
+- **Impact:** Double ingest workers launched for the same user; duplicate scrape load and progress corruption.
+- **Evidence:** `src/api/app.py:269–278`
 
 ---
 
-## DEPENDENCY / BUILD
+## MEDIUM — Correctness & Maintainability
 
-### BUG-D01 — `python-dotenv` Missing from `requirements.txt`
-- **Status:** Open
-- **Root Cause:** `src/api/auth.py` calls `from dotenv import load_dotenv` at module load. `python-dotenv` is not listed in `requirements.txt` or `pyproject.toml`.
-- **Impact:** `ImportError` on cold start in any environment that installs from `requirements.txt`.
-- **Evidence:** `src/api/auth.py:1`; `requirements.txt`.
+### BUG-M01 — `smoke_test_app.py` is permanently broken
+- **Status:** Fixed
+- **Root Cause (import):** `from api.app import app` — module path should be `src.api.app`.
+- **Root Cause (auth):** Calls `/auth/session` with `{"username": ..., "password": ...}` — current endpoint requires `{"username": ..., "session_cookie": ...}`.
+- **Impact:** Smoke test cannot run; acts as dead CI coverage.
+- **Evidence:** `scripts/smoke_test_app.py:7`, `:57`
 
-### BUG-D02 — `package.json` Start Script Has Wrong Module Path
-- **Status:** Open
-- **Root Cause:** `"start": "uvicorn api.app:app"` — the `app` object lives at `src.api.app:app`, not `api.app:app`. `api/index.py` re-exports it but does not expose it as `app` directly.
-- **Impact:** `npm start` fails with `AttributeError` or `ModuleNotFoundError`.
-- **Evidence:** `package.json`; `api/index.py`; `src/api/app.py`.
+### BUG-M02 — `test_store.py` Supabase skip condition checks wrong env var
+- **Status:** Fixed
+- **Root Cause:** `pytest.mark.skipif` checks `not os.getenv("SUPABASE_KEY")` but `database.py` checks `SUPABASE_ANON_KEY`. Skip condition never triggers via intended mechanism.
+- **Impact:** Supabase integration tests attempt live DB connection in CI, fail with misleading error.
+- **Evidence:** `tests/test_store.py:251–253`
 
-### BUG-D03 — Dual Conflicting Migration Series
-- **Status:** Open
-- **Root Cause:** `db/migrations/` contains two parallel, incompatible schema series. Both define `movies`, `genre_preferences`, and related tables with different column names and foreign key types. No documented canonical execution order.
-- **Impact:** Running all migrations in lexicographic order causes conflicts (duplicate table definitions, FK type mismatches).
-- **Evidence:** `db/migrations/001_initial_schema.sql` vs `001_movies.sql`; `005_genre_preferences.sql` vs `006_genre_preferences.sql`.
+### BUG-M03 — `fetch_list_movie_slugs` receives only `list_id`; HTTP scraper needs URL
+- **Status:** Fixed
+- **Root Cause:** The `Scraper` protocol defines `fetch_list_movie_slugs(self, list_id: str)`. The mock maps `list_id` to slugs directly. The HTTP scraper needs a URL to make a request, and `list_id` alone (e.g. `"official-best-picture"`) cannot be reliably converted back to a URL without the stored summary.
+- **Impact:** Even after BUG-C03 is fixed, the HTTP scraper cannot determine which Letterboxd URL to fetch.
+- **Evidence:** `src/api/providers/letterboxd.py:487`; `src/api/app.py:205`, `:223`
+
+### BUG-M04 — Dead infrastructure modules create false security surface
+- **Status:** Fixed
+- **Root Cause:** `auth.py`, `auth_deps.py`, `rate_limiter.py`, `qstash_queue.py` are fully implemented but never imported by `app.py`. Future developers reading these files may assume JWT auth or Redis rate limiting is active.
+- **Impact:** Maintenance confusion; incorrect security threat model.
+- **Evidence:** `src/api/auth.py`, `src/api/auth_deps.py`, `src/api/rate_limiter.py`, `src/api/qstash_queue.py` — no import in `src/api/app.py`
+
+### BUG-M05 — `InMemoryQueue` is a write-only blackhole
+- **Status:** Fixed
+- **Root Cause:** `app.py` calls `queue.enqueue(...)` but the `InMemoryQueue.messages` list is never consumed. Ingest work is done directly by `threading.Thread` below the enqueue call.
+- **Impact:** Queue grows unboundedly; adds cognitive overhead with zero functional benefit.
+- **Evidence:** `src/api/app.py:275–277`; `src/api/queue.py`
+
+---
+
+## PREVIOUSLY FIXED (Phase 1 Remediation)
+
+### BUG-S02 — JWT Signature Verification Disabled → **Fixed**
+- `auth.py:verify_token()` now uses proper HS256 verification with `self.supabase_jwt_secret`.
+
+### BUG-S03 — No auth on mutating endpoints → **Partially Fixed**
+- `verify_session` Fernet guard applied to `/ingest/start` and `/actions/swipe`. BUG-H04 (identity binding) remains open.
+
+### BUG-S06 — `/db/migrate` unauthenticated → **Fixed**
+- `APP_ENV == "production"` → 403 guard applied.
+
+### BUG-L02 — Ingest progress fake → **Fixed**
+- `_filter_first_pipeline()` emits real milestones via `progress_callback`.
+
+### BUG-L03 — Suppression store not wired → **Fixed**
+- `app.js` imports `createSuppressionStore`, calls `dismiss()` on swipe-left, filters deck via `isSuppressed()`.
+
+### BUG-L10 — `SCRAPER_BACKEND` defaults to `"mock"` → **Fixed**
+- Default changed to `"http"`.
+
+### BUG-D02 — `package.json` start script wrong → **Fixed**
+- Corrected to `uvicorn src.api.app:app --host 0.0.0.0 --port 8000`.
+
+### BUG-D03 — Dual conflicting migration series → **Partially Fixed**
+- LEGACY files renamed with `LEGACY_` prefix. BUG-H01 (glob still picks them up) remains open.
+
+### BUG-S05 / BUG-L04 — `app_patch.py` crashes on import → **Fixed**
+- File deleted.
+
+### BUG-L07 — `auth.html` dead page → **Fixed**
+- File deleted.

@@ -1,3 +1,7 @@
+# STATUS: IMPLEMENTED BUT NOT WIRED
+# This module is not imported by app.py. Async ingest currently runs via threading.Thread.
+# Retained for future Upstash QStash integration.
+# Do not assume this code is active or enforced at runtime.
 """QStash queue integration for asynchronous task processing."""
 
 from __future__ import annotations
