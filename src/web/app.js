@@ -308,9 +308,21 @@ function showProgress(message) {
         </div>
       </div>
       <p class="progress-percent">0%</p>
+      <button id="progress-disconnect-btn" class="btn-text progress-disconnect">Disconnect</button>
     </div>
   `;
   document.body.appendChild(progressOverlay);
+
+  document.getElementById('progress-disconnect-btn')?.addEventListener('click', () => {
+    console.log('[auth] disconnect from loading screen');
+    hideProgress();
+    localStorage.removeItem('swiperboxd_username');
+    localStorage.removeItem('swiperboxd_token');
+    state.username = null;
+    state.encryptedSession = null;
+    state.isSyncing = false;
+    showAuth();
+  });
 }
 
 function hideProgress() {
@@ -324,11 +336,16 @@ function hideProgress() {
 function updateProgressBar(progress) {
   const fill = $('.progress-fill');
   const percent = $('.progress-percent');
-  if (fill && percent) {
-    const pct = Math.min(100, Math.max(0, progress));
-    fill.style.width = `${pct}%`;
-    percent.textContent = `${pct}%`;
+  if (!fill || !percent) return;
+  if (progress === -1) {
+    fill.style.width = '100%';
+    fill.style.background = 'var(--accent-red, #e74c3c)';
+    percent.textContent = 'Failed — check connection';
+    return;
   }
+  const pct = Math.min(100, Math.max(0, progress));
+  fill.style.width = `${pct}%`;
+  percent.textContent = `${pct}%`;
 }
 
 function renderDeck() {

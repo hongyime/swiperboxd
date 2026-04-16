@@ -46,32 +46,38 @@ print(f"[startup] scraper={SCRAPER_BACKEND} web_dir={_WEB_DIR}", flush=True)
 queue = InMemoryQueue()
 
 
+_SESSION_COOKIE_NAME = "letterboxd.user.CURRENT"
+
+
 def _validate_letterboxd_session(username: str, session_cookie: str) -> None:
-    """Validate a Letterboxd session cookie by hitting the user's profile page.
+    """Validate a Letterboxd session cookie by hitting the settings page (auth-gated).
+
+    Uses letterboxd.user.CURRENT as the cookie name — this is the session token
+    visible in DevTools after login. A valid cookie gets a 200 on /settings/;
+    an invalid/expired one gets redirected to /sign-in/.
 
     Raises RuntimeError if the cookie is invalid or the request fails.
     """
     import httpx as _httpx
     base_url = os.getenv("TARGET_PLATFORM_BASE_URL", "https://letterboxd.com").rstrip("/")
-    url = f"{base_url}/{username}/"
+    url = f"{base_url}/settings/"
     try:
         with _httpx.Client(
-            cookies={"letterboxd.session": session_cookie},
+            cookies={_SESSION_COOKIE_NAME: session_cookie},
             timeout=15.0,
             follow_redirects=False,
         ) as client:
             resp = client.get(url)
-            print(f"[auth] profile check status={resp.status_code} url={url}", flush=True)
-            # A valid session loads the profile (200) or may redirect to the same page (301/302 to same path).
-            # An invalid/expired session redirects to /sign-in/.
+            print(f"[auth] settings check status={resp.status_code} url={url}", flush=True)
             if resp.status_code in {301, 302}:
                 location = resp.headers.get("location", "")
-                if "sign-in" in location:
+                print(f"[auth] redirect location={location}", flush=True)
+                if "sign-in" in location or "login" in location:
                     raise RuntimeError("session_expired_or_invalid")
-                # Some other redirect — treat as OK (e.g. www → non-www canonical)
-            elif resp.status_code == 404:
-                raise RuntimeError(f"username_not_found: {username}")
-            elif resp.status_code >= 400:
+                # Other redirects (canonical URL) — treat as OK
+            elif resp.status_code == 200:
+                pass  # authenticated
+            else:
                 raise RuntimeError(f"unexpected_status: {resp.status_code}")
     except _httpx.RequestError as exc:
         raise RuntimeError(f"network_error: {exc}") from exc

@@ -106,7 +106,8 @@ class InMemoryStore:
 
     def set_ingest_progress(self, user_id: str, value: int) -> None:
         with self.lock:
-            self.ingest_progress[user_id] = max(0, min(100, value))
+            # -1 is the error sentinel; preserve it so the client can detect failure
+            self.ingest_progress[user_id] = -1 if value == -1 else max(0, min(100, value))
             self.ingest_progress_updated_at[user_id] = time.time()
 
     def get_ingest_progress(self, user_id: str) -> int:
@@ -320,7 +321,7 @@ class SupabaseStore:
     def set_ingest_progress(self, user_id: str, value: int) -> None:
         """Set ingest progress (in-memory only - for performance)."""
         with self.lock:
-            self.ingest_progress[user_id] = max(0, min(100, value))
+            self.ingest_progress[user_id] = -1 if value == -1 else max(0, min(100, value))
 
     def get_ingest_progress(self, user_id: str) -> int:
         """Get ingest progress (in-memory only)."""

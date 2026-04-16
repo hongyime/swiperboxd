@@ -188,7 +188,7 @@ class HttpLetterboxdScraper:
 
         try:
             with httpx.Client(
-                cookies={"letterboxd.session": session_cookie},
+                cookies={"letterboxd.user.CURRENT": session_cookie},
                 timeout=self.timeout_seconds,
                 follow_redirects=True
             ) as client:
@@ -225,7 +225,7 @@ class HttpLetterboxdScraper:
 
         try:
             with httpx.Client(
-                cookies={"letterboxd.session": session_cookie},
+                cookies={"letterboxd.user.CURRENT": session_cookie},
                 timeout=self.timeout_seconds,
                 follow_redirects=True
             ) as client:
