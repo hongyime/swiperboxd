@@ -185,8 +185,28 @@ async function loadLists(query = '') {
     state.lists = res.results || [];
     console.log('[lists] loaded:', state.lists);
     renderLists();
+    
+    if (state.lists.length === 0) {
+      console.warn('[lists] no lists available - showing empty state');
+      cardStack.classList.add('hidden');
+      emptyState.innerHTML = `
+        <span class="empty-icon">📋</span>
+        <h2>No Lists Available</h2>
+        <p>No movie lists are currently available. Please try again later.</p>
+        <p class="text-sm text-gray">Letterboxd lists may be temporarily rate-limited.</p>
+      `;
+      emptyState.classList.remove('hidden');
+    }
   } catch (err) {
     console.error('[lists] failed to load:', err.message);
+    cardStack.classList.add('hidden');
+    emptyState.innerHTML = `
+      <span class="empty-icon">⚠️</span>
+      <h2>Error Loading Lists</h2>
+      <p>${err.message || 'Please check your connection and try again.'}</p>
+      <button onclick="loadLists()" class="btn-secondary">Retry</button>
+    `;
+    emptyState.classList.remove('hidden');
   }
 
   if (!state.selectedListId && state.lists.length > 0) {

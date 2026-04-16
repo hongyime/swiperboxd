@@ -20,6 +20,7 @@ from .security import decrypt_session_cookie, encrypt_session_cookie
 from .providers.letterboxd import HttpLetterboxdScraper, MockLetterboxdScraper
 from .database import is_supabase_configured, run_migrations
 from .store import normalize_movie_record
+from .cron import router as cron_router
 
 PROFILES = {
     "gold-standard": lambda m: m["rating"] >= 4.5,
@@ -34,7 +35,7 @@ SCRAPER_BACKEND = os.getenv("SCRAPER_BACKEND", "http").lower()
 if SCRAPER_BACKEND == "mock" and os.getenv("APP_ENV", "development") != "development":
     print("[startup] WARNING: SCRAPER_BACKEND=mock in non-development environment", flush=True)
 scraper = HttpLetterboxdScraper() if SCRAPER_BACKEND == "http" else MockLetterboxdScraper()
-app = FastAPI(title="Swiperboxd API", version="0.5.0")
+app = FastAPI(title="Swiperboxd API", version="0.6.0")
 
 # Conditional store selection
 if is_supabase_configured():
@@ -57,6 +58,9 @@ except NotImplementedError:
     )
 
 print(f"[startup] scraper={SCRAPER_BACKEND} web_dir={_WEB_DIR}", flush=True)
+
+# Include cron router for scheduled tasks
+app.include_router(cron_router, prefix="/api/cron", tags=["cron"])
 
 queue = InMemoryQueue()
 
@@ -202,13 +206,49 @@ def discovery_profiles():
 
 @app.get("/lists/catalog")
 def list_catalog(q: str | None = None, page: int = Query(default=1, ge=1)):
-    discovered = scraper.discover_site_lists(query=q, page=page)
-    for entry in discovered:
-        store.upsert_list_summary(entry.__dict__)
-
-    items = [summary for summary in store.get_lists() if not q or q.lower() in summary.get("title", "").lower() or q.lower() in summary.get("description", "").lower()]
-    items.sort(key=lambda item: (not item.get("is_official", False), -item.get("like_count", 0), item.get("title", "")))
-    return {"status": "ok", "query": q or "", "page": page, "results": items}
+    """Fetch lists from Letterboxd with fallback to cached data."""
+    
+    # Try to fetch fresh lists from Letterboxd
+    try:
+        discovered = scraper.discover_site_lists(query=q, page=page)
+        if discovered:
+            # Store fresh data
+            for entry in discovered:
+                store.upsert_list_summary(entry.__dict__)
+            print(f"[lists] Fetched {len(discovered)} fresh lists from Letterboxd", flush=True)
+        else:
+            print(f"[lists] No lists returned from Letterboxd", flush=True)
+    except RuntimeError as exc:
+        # Rate limited or other scraper errors - fall back to cached
+        print(f"[lists] Letterboxd fetch failed ({str(exc)}), using cached data", flush=True)
+    except Exception as exc:
+        print(f"[lists] Unexpected error fetching lists: {exc}", flush=True)
+    
+    # Always return cached data
+    items = store.get_lists()
+    
+    # Apply search filter if query provided
+    if q:
+        q_lower = q.lower()
+        items = [
+            item for item in items
+            if q_lower in item.get("title", "").lower() or 
+               q_lower in item.get("description", "").lower()
+        ]
+    
+    # Sort: official first, then by like count, then by title
+    items.sort(key=lambda item: (
+        not item.get("is_official", False), 
+        -item.get("like_count", 0), 
+        item.get("title", "")
+    ))
+    
+    return {
+        "status": "ok",
+        "query": q or "",
+        "page": page,
+        "results": items
+    }
 
 
 @app.get("/lists/{list_id}")
@@ -256,6 +296,53 @@ def list_deck(list_id: str, user_id: str = Query(min_length=1)):
         "list": summary,
         "results": movies[:20],
     }
+
+
+@app.post("/lists/refresh")
+async def manual_refresh_lists(verified_user: str = Depends(verify_session)):
+    """Manually refresh lists from Letterboxd (user-triggered).
+    
+    Requires authenticated session and rate limits to prevent abuse.
+    """
+    # Rate limit: 1 refresh per 5 minutes per user
+    allowed, retry_after = store.allow_scrape_request(verified_user, min_interval_seconds=300)
+    if not allowed:
+        raise HTTPException(
+            status_code=429,
+            detail={"code": "rate_limited", "retry_after": retry_after}
+        )
+    
+    try:
+        # Fetch lists from Letterboxd
+        lists_data = scraper.discover_site_lists(page=1)
+        print(f"[lists] manual refresh fetched {len(lists_data)} lists", flush=True)
+        
+        updated_count = 0
+        for item in lists_data:
+            existing = store.get_list_summary(item.list_id)
+            # Update only if data changed
+            if not existing or existing['like_count'] != item.like_count or existing['film_count'] != item.film_count:
+                store.upsert_list_summary(item.__dict__)
+                updated_count += 1
+        
+        return {
+            "status": "ok",
+            "fetched": len(lists_data),
+            "updated": updated_count
+        }
+    except RuntimeError as e:
+        if "rate_limited" in str(e).lower():
+            raise HTTPException(
+                status_code=503,
+                detail={"code": "letterboxd_rate_limited", "message": "Letterboxd is rate limiting our requests"}
+            )
+        raise
+    except Exception as e:
+        print(f"[lists] manual refresh error: {e}", flush=True)
+        raise HTTPException(
+            status_code=500,
+            detail={"code": "refresh_failed", "reason": str(e)}
+        )
 
 
 @app.post("/auth/session", response_model=AuthSessionResponse)
