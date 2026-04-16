@@ -43,12 +43,14 @@ RLS_SETUP_SQL = dedent("""
     -- -----------------------------------------------------------------------
     -- Enable RLS on all tables
     -- -----------------------------------------------------------------------
-    ALTER TABLE movies            ENABLE ROW LEVEL SECURITY;
-    ALTER TABLE users             ENABLE ROW LEVEL SECURITY;
-    ALTER TABLE watchlist         ENABLE ROW LEVEL SECURITY;
-    ALTER TABLE diary             ENABLE ROW LEVEL SECURITY;
-    ALTER TABLE exclusions        ENABLE ROW LEVEL SECURITY;
-    ALTER TABLE genre_preferences ENABLE ROW LEVEL SECURITY;
+    ALTER TABLE movies               ENABLE ROW LEVEL SECURITY;
+    ALTER TABLE users                ENABLE ROW LEVEL SECURITY;
+    ALTER TABLE watchlist            ENABLE ROW LEVEL SECURITY;
+    ALTER TABLE diary                ENABLE ROW LEVEL SECURITY;
+    ALTER TABLE exclusions           ENABLE ROW LEVEL SECURITY;
+    ALTER TABLE genre_preferences    ENABLE ROW LEVEL SECURITY;
+    ALTER TABLE list_summaries       ENABLE ROW LEVEL SECURITY;
+    ALTER TABLE list_memberships     ENABLE ROW LEVEL SECURITY;
 
     -- -----------------------------------------------------------------------
     -- Drop all legacy cosmetic policies (safe if they don't exist)
@@ -71,6 +73,17 @@ RLS_SETUP_SQL = dedent("""
     -- -----------------------------------------------------------------------
     CREATE POLICY "movies_public_read"
         ON movies FOR SELECT
+        USING (true);
+
+    -- -----------------------------------------------------------------------
+    -- List tables: public read (everyone can browse lists and memberships)
+    -- -----------------------------------------------------------------------
+    CREATE POLICY "list_summaries_public_read"
+        ON list_summaries FOR SELECT
+        USING (true);
+
+    CREATE POLICY "list_memberships_public_read"
+        ON list_memberships FOR SELECT
         USING (true);
 
     -- -----------------------------------------------------------------------
@@ -109,15 +122,20 @@ REVOKE_ANON_SQL = dedent("""
     -- Revoke all direct table privileges from anon and authenticated roles.
     -- All DB access goes through the backend using service_role.
     -- -----------------------------------------------------------------------
-    REVOKE ALL ON TABLE movies            FROM anon, authenticated;
-    REVOKE ALL ON TABLE users             FROM anon, authenticated;
-    REVOKE ALL ON TABLE watchlist         FROM anon, authenticated;
-    REVOKE ALL ON TABLE diary             FROM anon, authenticated;
-    REVOKE ALL ON TABLE exclusions        FROM anon, authenticated;
-    REVOKE ALL ON TABLE genre_preferences FROM anon, authenticated;
+    REVOKE ALL ON TABLE movies               FROM anon, authenticated;
+    REVOKE ALL ON TABLE users                FROM anon, authenticated;
+    REVOKE ALL ON TABLE watchlist            FROM anon, authenticated;
+    REVOKE ALL ON TABLE diary                FROM anon, authenticated;
+    REVOKE ALL ON TABLE exclusions           FROM anon, authenticated;
+    REVOKE ALL ON TABLE genre_preferences    FROM anon, authenticated;
+    REVOKE ALL ON TABLE list_summaries       FROM anon, authenticated;
+    REVOKE ALL ON TABLE list_memberships     FROM anon, authenticated;
 
     -- Re-grant only the movies SELECT (needed for the RLS read policy)
-    GRANT SELECT ON TABLE movies TO anon, authenticated;
+    -- and tables SELECT (needed for public list browsing)
+    GRANT SELECT ON TABLE movies             TO anon, authenticated;
+    GRANT SELECT ON TABLE list_summaries     TO anon, authenticated;
+    GRANT SELECT ON TABLE list_memberships   TO anon, authenticated;
 """)
 
 # ---------------------------------------------------------------------------
@@ -239,7 +257,8 @@ def main() -> int:
     # Validation
     print("\n" + "=" * 60)
     print("Validating schema...")
-    TABLES = ["movies", "users", "watchlist", "diary", "exclusions", "genre_preferences"]
+    TABLES = ["movies", "users", "watchlist", "diary", "exclusions", 
+              "genre_preferences", "list_summaries", "list_memberships"]
     v1 = validate_tables(TABLES)
     v2 = validate_rls(TABLES)
     all_ok = all_ok and v1 and v2
