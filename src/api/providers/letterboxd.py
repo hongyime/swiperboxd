@@ -218,11 +218,25 @@ class HttpLetterboxdScraper:
         }
         for tier_name, extra in self._proxy_manager.iter_tiers(url, session_cookie):
             extra = dict(extra)  # copy — don't mutate the list entry
-            request_url = extra.pop("scrape_do_url", url)
+            scrape_do_url = extra.pop("scrape_do_url", None)
+            if scrape_do_url is not None:
+                # ScrapeDo wraps the target URL — query params must be baked
+                # into the target before URL-encoding, not appended to the API URL.
+                if params:
+                    from urllib.parse import urlencode, quote as _quote
+                    target_with_params = f"{url}?{urlencode(params)}"
+                    token = os.getenv("SCRAPEDO_TOKEN", "")
+                    request_url = f"http://api.scrape.do/?token={token}&url={_quote(target_with_params, safe='')}"
+                else:
+                    request_url = scrape_do_url
+                request_params = None  # already baked into the URL
+            else:
+                request_url = url
+                request_params = params
             client_kwargs = {**base_kwargs, **extra}
             try:
                 with httpx.Client(**client_kwargs) as client:
-                    resp = client.get(request_url, params=params)
+                    resp = client.get(request_url, params=request_params)
                 if resp.status_code in self._RATE_LIMIT_STATUSES:
                     print(
                         f"[scraper] tier={tier_name} status={resp.status_code} url={url} → next tier",
@@ -375,7 +389,15 @@ class HttpLetterboxdScraper:
         return slugs
 
     def metadata_for_slugs(self, slugs: list[str]) -> list[LetterboxdMovie]:
-        """Fetch metadata for given film slugs by scraping individual film pages."""
+        """Fetch metadata for given film slugs by scraping individual film pages.
+
+        Primary source: JSON-LD (<script type="application/ld+json">) which
+        Letterboxd embeds on every film page and is stable across HTML redesigns.
+        HTML selectors are used only as fallbacks for fields not in JSON-LD.
+        """
+        import json as _json
+        import re as _re
+
         movies = []
         for slug in slugs:
             url = f"{self.base_url}/film/{slug}/"
@@ -388,40 +410,68 @@ class HttpLetterboxdScraper:
             try:
                 soup = BeautifulSoup(resp.text, "html.parser")
 
-                title_tag = soup.select_one("h1.title-h1")
-                title = title_tag.get_text().strip() if title_tag else ""
-
-                poster_tag = soup.select_one("img.poster-image")
-                poster_url = poster_tag.get("src", "") if poster_tag else ""
-
-                meta_rating = soup.select_one("meta[name='twitter:data1']")
-                rating = 0.0
-                if meta_rating:
+                # ── JSON-LD (primary) ──────────────────────────────────────
+                ld: dict = {}
+                for s in soup.find_all("script", type="application/ld+json"):
+                    raw = _re.sub(r"/\*.*?\*/", "", s.string or "", flags=_re.DOTALL).strip()
                     try:
-                        rating = float(meta_rating.get("content", "0"))
-                    except ValueError:
+                        ld = _json.loads(raw)
+                        break
+                    except (_json.JSONDecodeError, TypeError):
+                        continue
+
+                # Title
+                title = ld.get("name", "")
+                if not title:
+                    el = soup.select_one("h1.primaryname") or soup.select_one("h1.headline-1")
+                    title = el.get_text(strip=True) if el else ""
+
+                # Poster — JSON-LD image URL (high-res); og:image as fallback
+                poster_url = ld.get("image", "")
+                if not poster_url:
+                    og = soup.select_one('meta[property="og:image"]')
+                    poster_url = og.get("content", "") if og else ""
+
+                # Rating
+                rating = 0.0
+                agg = ld.get("aggregateRating", {})
+                if agg:
+                    try:
+                        rating = float(agg.get("ratingValue", 0) or 0)
+                    except (TypeError, ValueError):
                         pass
 
-                genre_tags = soup.select("a[href*='/genre/']")
-                genres = [tag.get_text().strip() for tag in genre_tags]
+                # Genres
+                genres: list[str] = []
+                if isinstance(ld.get("genre"), list):
+                    genres = [str(g) for g in ld["genre"]]
+                elif isinstance(ld.get("genre"), str):
+                    genres = [ld["genre"]]
+                if not genres:
+                    genres = [tag.get_text(strip=True) for tag in soup.select("a[href*='/genre/']")]
 
-                synopsis_tag = soup.select_one("div.truncate-credits div")
-                synopsis = synopsis_tag.get_text().strip() if synopsis_tag else ""
+                # Synopsis — JSON-LD description; fallback to .review block
+                synopsis = ld.get("description", "") or ""
+                if not synopsis:
+                    review_tag = soup.select_one("div.review")
+                    if review_tag:
+                        # Strip the "Synopsis" label if present
+                        text = review_tag.get_text(strip=True)
+                        synopsis = text[len("Synopsis"):].strip() if text.startswith("Synopsis") else text
 
-                cast_tags = soup.select("span.cast a")
-                cast = [tag.get_text().strip() for tag in cast_tags[:5]] if cast_tags else []
+                # Cast — JSON-LD "actors" list
+                cast: list[str] = []
+                actors_raw = ld.get("actors") or ld.get("actor") or []
+                if isinstance(actors_raw, list):
+                    cast = [a["name"] for a in actors_raw[:5] if isinstance(a, dict) and "name" in a]
 
+                # Popularity — use ratingCount from aggregateRating as proxy
                 popularity = 0
-                for sel in [
-                    "a.has-icon.icon-watched span",
-                    "li.filmstat-watches a",
-                    "a[href$='/members/']",
-                ]:
-                    tag = soup.select_one(sel)
-                    if tag:
-                        popularity = _parse_member_count(tag.get_text())
-                        if popularity:
-                            break
+                if agg:
+                    try:
+                        popularity = int(agg.get("ratingCount", 0) or 0)
+                    except (TypeError, ValueError):
+                        pass
 
                 movies.append(LetterboxdMovie(
                     slug=slug,
@@ -452,18 +502,13 @@ class HttpLetterboxdScraper:
             response = self._fetch(url, params={"page": page})
             soup = BeautifulSoup(response.text, "html.parser")
 
-            # Each list entry lives in a <section class="list-set"> block.
-            # Fallback to any <article> or <li> containing a list-summary link.
-            entries = soup.select("section.list-set") or soup.select("article.list-item")
+            # Each list entry: div.listitem > article.list-summary
+            entries = soup.select("div.listitem article.list-summary")
 
             for entry in entries:
                 try:
                     # Title + href (/owner/list/slug/)
-                    title_tag = (
-                        entry.select_one("h2.title-headline a")
-                        or entry.select_one("h2 a")
-                        or entry.select_one("h3 a")
-                    )
+                    title_tag = entry.select_one("h2.name a") or entry.select_one("h2 a")
                     if not title_tag:
                         continue
 
@@ -480,19 +525,16 @@ class HttpLetterboxdScraper:
                     title = title_tag.get_text(strip=True)
 
                     # Owner display name
-                    owner_tag = (
-                        entry.select_one(".person-summary .name")
-                        or entry.select_one("a[href='/{}/']".format(owner_slug))
-                    )
+                    owner_tag = entry.select_one("strong.displayname") or entry.select_one("a.owner")
                     owner_name = owner_tag.get_text(strip=True) if owner_tag else owner_slug
 
-                    # Description
-                    desc_tag = entry.select_one("div.body-text p") or entry.select_one(".truncate-body")
+                    # Description — first paragraph of the notes block
+                    desc_tag = entry.select_one("div.notes p") or entry.select_one("div.body-text p")
                     description = desc_tag.get_text(strip=True) if desc_tag else ""
 
-                    # Film count — text like "52 films"
+                    # Film count — "800 films" in span.value
                     film_count = 0
-                    count_tag = entry.select_one("small.poster-count") or entry.select_one(".link-alt-text")
+                    count_tag = entry.select_one("span.value")
                     if count_tag:
                         count_text = count_tag.get_text(strip=True).replace(",", "")
                         for token in count_text.split():
@@ -502,11 +544,17 @@ class HttpLetterboxdScraper:
                             except ValueError:
                                 continue
 
-                    # Like count
+                    # Like count — link to /likes/ page contains "382K"
                     like_count = 0
-                    like_tag = entry.select_one(".icon-like") or entry.select_one("a[title*='like']")
+                    like_tag = entry.select_one("a[href$='/likes/'] span.label")
                     if like_tag:
                         like_count = _parse_member_count(like_tag.get_text(strip=True))
+
+                    # Comment count — link to /#comments
+                    comment_count = 0
+                    comment_tag = entry.select_one("a[href$='/#comments'] span.label") or entry.select_one("a[href*='#comments'] span.label")
+                    if comment_tag:
+                        comment_count = _parse_member_count(comment_tag.get_text(strip=True))
 
                     results.append(
                         LetterboxdListSummary(
@@ -519,7 +567,7 @@ class HttpLetterboxdScraper:
                             description=description,
                             film_count=film_count,
                             like_count=like_count,
-                            comment_count=0,
+                            comment_count=comment_count,
                             is_official=(owner_slug in {"letterboxd", "official"}),
                             tags=[],
                         )
@@ -565,19 +613,19 @@ class HttpLetterboxdScraper:
 
                 soup = BeautifulSoup(response.text, "html.parser")
 
-                # Primary selector: data-film-slug attribute on poster containers
-                poster_divs = soup.select("div.film-poster[data-film-slug]")
+                # Primary selector: data-item-slug on react-component poster divs
+                react_divs = soup.select("div.react-component[data-item-slug]")
                 page_slugs: list[str] = [
-                    div["data-film-slug"] for div in poster_divs
-                    if div.get("data-film-slug")
+                    div["data-item-slug"] for div in react_divs
+                    if div.get("data-item-slug")
                 ]
 
-                # Fallback: extract slug from /film/<slug>/ href
+                # Fallback: extract slug from /film/<slug>/ href on any link
                 if not page_slugs:
-                    for link in soup.select("li.poster-container a[href^='/film/']"):
+                    for link in soup.select("a[href^='/film/']"):
                         href = link.get("href", "")
                         parts = href.strip("/").split("/")
-                        if len(parts) >= 2 and parts[0] == "film":
+                        if len(parts) >= 2 and parts[0] == "film" and len(parts[1]) > 0:
                             page_slugs.append(parts[1])
 
                 if not page_slugs:
