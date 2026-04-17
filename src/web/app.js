@@ -314,20 +314,29 @@ async function _startIngestBackground() {
   await delay(0); // yield so any awaiting loop iteration can check the flag
   _ingestPollCancelled = false;
 
+  let startRes;
   try {
-    const res = await api('/ingest/start', {
+    showSyncBadge(0);
+    startRes = await api('/ingest/start', {
       method: 'POST',
       body: { user_id: state.username, source: 'trending', depth_pages: 2 }
     });
-    console.log(`[ingest] start → ${res.status}`);
+    console.log(`[ingest] start → ${startRes.status}`);
   } catch (err) {
     console.warn('[ingest] start failed (non-blocking):', err.message);
+    hideSyncBadge();
     return;
   }
 
-  // Poll progress and show a small badge — cards are already visible
-  showSyncBadge(0);
-  await delay(300); // brief pause before first poll
+  // Vercel: endpoint ran the sync inline and returned "completed" — no polling needed
+  if (startRes.status === 'completed') {
+    console.log('[ingest] sync completed inline (Vercel)');
+    hideSyncBadge();
+    return;
+  }
+
+  // Long-running server: poll until done
+  await delay(300);
 
   while (!_ingestPollCancelled) {
     try {
@@ -370,7 +379,9 @@ function showSyncBadge(progress) {
 
 function hideSyncBadge() {
   const badge = $('#sync-badge');
-  if (badge) badge.classList.add('hidden');
+  if (!badge) return;
+  badge.classList.add('hidden');
+  setTimeout(() => badge.remove(), 450);
 }
 
 function renderDeck() {

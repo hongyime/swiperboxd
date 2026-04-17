@@ -381,14 +381,16 @@ async def start_ingest(
     verified_user: str = Depends(verify_session),
     x_session_token: str = Header(None, alias="X-Session-Token"),
 ):
-    """Start ingest process for a user (username)."""
+    """Start ingest process for a user (username).
+
+    On Vercel (detected via VERCEL env var): runs the user-history sync
+    synchronously within this request so the background thread isn't killed.
+    On long-running servers: spawns a background thread as before.
+    """
     if verified_user and payload.user_id != verified_user:
         raise HTTPException(status_code=403, detail={"code": "user_id_mismatch"})
 
-    # Extract the raw Letterboxd session cookie from the encrypted token so the
-    # background worker can call pull_watchlist_slugs / pull_diary_slugs directly.
-    # Falls back to None for old-format tokens or missing keys — ingest still works
-    # using store-only data in that case.
+    # Extract the raw Letterboxd session cookie from the encrypted token.
     session_cookie: str | None = None
     master_key = os.getenv("MASTER_ENCRYPTION_KEY")
     if master_key and x_session_token:
@@ -411,10 +413,45 @@ async def start_ingest(
         store.ingest_running.add(payload.user_id)
 
     store.set_ingest_error(payload.user_id, None)
-    store.set_ingest_progress(payload.user_id, 0)  # clear any stale -1 from a prior run
-    # username for constructing correct Letterboxd profile URLs (watchlist, diary)
+    store.set_ingest_progress(payload.user_id, 0)
     ingest_username = verified_user or payload.user_id
-    print(f"[ingest] starting worker source={payload.source} depth={payload.depth_pages} username={ingest_username}", flush=True)
+
+    # ── Vercel serverless: threads are killed when the response is sent, so run
+    #    the sync inline (awaited) within this request's lifetime.
+    #    We only sync watchlist/diary (capped pages) — the movie catalog is
+    #    already seeded via the seed script, so full metadata fetch is skipped.
+    if os.getenv("VERCEL"):
+        print(
+            f"[ingest] Vercel mode — running user-history sync inline "
+            f"(watchlist+diary, capped) username={ingest_username}",
+            flush=True,
+        )
+        import asyncio as _asyncio
+        try:
+            await _asyncio.wait_for(
+                _asyncio.to_thread(
+                    _run_user_history_sync,
+                    payload.user_id, session_cookie, ingest_username,
+                ),
+                timeout=55.0,  # stay within Vercel's 60 s function limit
+            )
+        except _asyncio.TimeoutError:
+            print("[ingest] Vercel inline sync timed out — partial sync saved", flush=True)
+            store.set_ingest_progress(payload.user_id, 100)
+        except Exception as exc:
+            print(f"[ingest] Vercel inline sync error: {exc}", flush=True)
+            store.set_ingest_error(payload.user_id, {"code": "ingest_worker_failed", "reason": str(exc)})
+            store.set_ingest_progress(payload.user_id, -1)
+        finally:
+            store.ingest_running.discard(payload.user_id)
+        return {"status": "completed", "user_id": payload.user_id}
+
+    # ── Long-running server: background thread ──────────────────────────────
+    print(
+        f"[ingest] starting worker source={payload.source} "
+        f"depth={payload.depth_pages} username={ingest_username}",
+        flush=True,
+    )
     threading.Thread(
         target=_run_ingest_worker,
         args=(payload.user_id, payload.source, payload.depth_pages, session_cookie, ingest_username),
@@ -502,6 +539,53 @@ async def submit_swipe_action(payload: SwipeActionRequest, verified_user: str = 
         store.add_diary(payload.user_id, payload.movie_slug)
 
     return {"status": "accepted", "action": payload.action, "movie_slug": payload.movie_slug}
+
+
+def _run_user_history_sync(
+    user_id: str,
+    session_cookie: str | None,
+    username: str | None,
+    max_watchlist_pages: int = 5,
+    max_diary_pages: int = 5,
+) -> None:
+    """Sync a user's Letterboxd watchlist and diary into the store.
+
+    Intentionally capped at a small number of pages so this can run within
+    Vercel's function timeout.  The movie catalog itself is not fetched here —
+    it should already be populated by the seed script.
+    """
+    store.set_ingest_progress(user_id, 10)
+    if not session_cookie:
+        print("[ingest] no session cookie — skipping live history sync", flush=True)
+        store.set_ingest_progress(user_id, 100)
+        store.ingest_running.discard(user_id)
+        return
+
+    try:
+        live_watchlist = scraper.pull_watchlist_slugs(
+            session_cookie, username=username, max_pages=max_watchlist_pages
+        )
+        for slug in live_watchlist:
+            store.add_watchlist(user_id, slug)
+        print(f"[ingest] watchlist synced: {len(live_watchlist)} slugs", flush=True)
+    except Exception as exc:
+        print(f"[ingest] watchlist sync failed: {exc}", flush=True)
+
+    store.set_ingest_progress(user_id, 55)
+
+    try:
+        live_diary = scraper.pull_diary_slugs(
+            session_cookie, username=username, max_pages=max_diary_pages
+        )
+        for slug in live_diary:
+            store.add_diary(user_id, slug)
+        print(f"[ingest] diary synced: {len(live_diary)} slugs", flush=True)
+    except Exception as exc:
+        print(f"[ingest] diary sync failed: {exc}", flush=True)
+
+    store.set_ingest_progress(user_id, 100)
+    store.ingest_running.discard(user_id)
+    print(f"[ingest] user history sync complete for {username}", flush=True)
 
 
 def _filter_first_pipeline(

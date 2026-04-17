@@ -260,14 +260,14 @@ class HttpLetterboxdScraper:
         for tier_name, extra in self._proxy_manager.iter_tiers(url, session_cookie):
             extra = dict(extra)  # copy — don't mutate the list entry
             scrape_do_url = extra.pop("scrape_do_url", None)
+            scrape_do_token = extra.pop("scrape_do_token", None)
             if scrape_do_url is not None:
                 # ScrapeDo wraps the target URL — query params must be baked
                 # into the target before URL-encoding, not appended to the API URL.
                 if params:
                     from urllib.parse import urlencode, quote as _quote
                     target_with_params = f"{url}?{urlencode(params)}"
-                    token = os.getenv("SCRAPEDO_TOKEN", "")
-                    request_url = f"http://api.scrape.do/?token={token}&url={_quote(target_with_params, safe='')}"
+                    request_url = f"http://api.scrape.do/?token={scrape_do_token}&url={_quote(target_with_params, safe='')}"
                 else:
                     request_url = scrape_do_url
                 request_params = None  # already baked into the URL
@@ -278,6 +278,17 @@ class HttpLetterboxdScraper:
             try:
                 with httpx.Client(**client_kwargs) as client:
                     resp = client.get(request_url, params=request_params)
+                # Scrape.do-specific errors (401 = bad token, 402 = quota exhausted)
+                # These are NOT proxied-site errors — they come from Scrape.do itself.
+                if tier_name == "scrape_do" and resp.status_code in {401, 402}:
+                    self._proxy_manager.record_scrape_do_response(scrape_do_token, resp.status_code)
+                    self._proxy_manager.record_failure_for(tier_name)
+                    print(
+                        f"[scraper] tier=scrape_do status={resp.status_code} "
+                        f"token=...{(scrape_do_token or '')[-8:]} url={url} → next tier",
+                        flush=True,
+                    )
+                    continue
                 if resp.status_code in self._RATE_LIMIT_STATUSES:
                     print(
                         f"[scraper] tier={tier_name} status={resp.status_code} url={url} → next tier",
@@ -363,12 +374,12 @@ class HttpLetterboxdScraper:
                 raise RuntimeError(f"session_cookie_missing (status={status}, final_url={response.url})")
             return cookie
 
-    def pull_watchlist_slugs(self, session_cookie: str, username: str | None = None) -> set[str]:
-        """Pull all film slugs from the authenticated user's watchlist."""
+    def pull_watchlist_slugs(self, session_cookie: str, username: str | None = None, max_pages: int = 50) -> set[str]:
+        """Pull film slugs from the authenticated user's watchlist."""
         slugs: set[str] = set()
         path = f"/{username}/watchlist/" if username else "/watchlist/"
         url = f"{self.base_url}{path}"
-        for page in range(1, 51):  # cap at 50 pages (~600 films)
+        for page in range(1, max_pages + 1):
             try:
                 resp = self._fetch(url, params={"page": page}, session_cookie=session_cookie)
             except RuntimeError:
@@ -381,12 +392,12 @@ class HttpLetterboxdScraper:
         print(f"[scraper] watchlist pull: {len(slugs)} slugs for {username or '(no username)'}", flush=True)
         return slugs
 
-    def pull_diary_slugs(self, session_cookie: str, username: str | None = None) -> set[str]:
-        """Pull all film slugs from the authenticated user's diary."""
+    def pull_diary_slugs(self, session_cookie: str, username: str | None = None, max_pages: int = 200) -> set[str]:
+        """Pull film slugs from the authenticated user's diary."""
         slugs: set[str] = set()
         path = f"/{username}/films/diary/" if username else "/diary/"
         url = f"{self.base_url}{path}"
-        for page in range(1, 201):  # cap at 200 pages (~2 400 entries)
+        for page in range(1, max_pages + 1):
             try:
                 resp = self._fetch(url, params={"page": page}, session_cookie=session_cookie)
             except RuntimeError:

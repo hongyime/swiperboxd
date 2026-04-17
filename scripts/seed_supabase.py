@@ -37,7 +37,8 @@ from dotenv import load_dotenv, set_key
 load_dotenv(repo_root / ".env")
 
 ENV_FILE = repo_root / ".env"
-MOVIE_BATCH = 5   # fetch this many movie pages at once before saving
+MOVIE_BATCH = 5      # fetch this many movie pages at once before saving
+FAIL_BAIL_THRESHOLD = 10  # consecutive all-tiers-failed errors before aborting
 
 
 # ── Auth ──────────────────────────────────────────────────────────────────────
@@ -258,9 +259,11 @@ def _fetch_and_save_movies(
     """Fetch movie metadata in small batches and save each movie immediately.
 
     Returns (written, skipped, failed).
+    Aborts early when FAIL_BAIL_THRESHOLD consecutive all-tiers-failed errors occur.
     """
     written = skipped = failed = 0
     total = len(slugs)
+    consecutive_all_failed = 0
 
     for batch_start in range(0, total, MOVIE_BATCH):
         batch = slugs[batch_start: batch_start + MOVIE_BATCH]
@@ -269,6 +272,24 @@ def _fetch_and_save_movies(
 
         try:
             movies = scraper.metadata_for_slugs(batch)
+            consecutive_all_failed = 0  # reset on any non-exception result
+        except RuntimeError as exc:
+            if "all_tiers_failed" in str(exc):
+                consecutive_all_failed += len(batch)
+                failed += len(batch)
+                print(f"ALL TIERS FAILED ({consecutive_all_failed} consecutive)")
+                if consecutive_all_failed >= FAIL_BAIL_THRESHOLD:
+                    print(
+                        f"\n[seed] aborting early — {consecutive_all_failed} consecutive "
+                        "all-tiers-failed errors. Saving what we have.",
+                        flush=True,
+                    )
+                    return written, skipped, failed
+            else:
+                failed += len(batch)
+                print(f"SCRAPE FAILED: {exc}")
+            time.sleep(1)
+            continue
         except Exception as exc:
             failed += len(batch)
             print(f"SCRAPE FAILED: {exc}")
