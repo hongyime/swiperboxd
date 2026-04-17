@@ -421,7 +421,7 @@ class SupabaseStore:
         if "director" in movie:
             record["director"] = movie["director"]
             
-        self.client.table("movies").upsert(record).execute()
+        self.client.table("movies").upsert(record, on_conflict="slug").execute()
 
     def get_movie(self, slug: str) -> dict | None:
         """Get movie metadata from Supabase cache."""

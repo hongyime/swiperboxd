@@ -165,7 +165,7 @@ def _parse_member_count(text: str) -> int:
 
 
 class HttpLetterboxdScraper:
-    def __init__(self, base_url: str | None = None, timeout_seconds: float | None = None):
+    def __init__(self, base_url: str | None = None, timeout_seconds: float | None = None, session_cookie: str | None = None):
         self.base_url = (base_url or os.getenv("TARGET_PLATFORM_BASE_URL") or "https://letterboxd.com").rstrip("/")
         timeout_from_env = os.getenv("TARGET_PLATFORM_TIMEOUT_SECONDS")
         resolved_timeout = timeout_seconds
@@ -175,6 +175,9 @@ class HttpLetterboxdScraper:
             except ValueError:
                 resolved_timeout = None
         self.timeout_seconds = resolved_timeout if resolved_timeout and resolved_timeout > 0 else 20.0
+        # Default session cookie used as tier-1 on every request when set.
+        # Pass session_cookie= at construction or set scraper.session_cookie later.
+        self.session_cookie: str | None = session_cookie
         self._proxy_manager = ProxyManager()
         print(f"[proxy] Initialized proxy manager for {self.base_url}", flush=True)
 
@@ -201,6 +204,9 @@ class HttpLetterboxdScraper:
         params: dict | None = None,
         session_cookie: str | None = None,
     ) -> httpx.Response:
+        # Fall back to the scraper-level default cookie when no per-call cookie given
+        if session_cookie is None:
+            session_cookie = self.session_cookie
         """Fetch *url* through the 4-tier fallback chain.
 
         Tier 1: session-cookie + direct  (only when session_cookie is provided)
