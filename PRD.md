@@ -21,7 +21,7 @@ The discovery surface is built on Letterboxd community and official lists rather
   Database:     Supabase (PostgreSQL) with supabase-py v2 client; InMemoryStore fallback for dev/test
   Scraping:     httpx + BeautifulSoup4; target platform is letterboxd.com
   Auth crypto:  Python cryptography (Fernet / AES-128-CBC) for session token encryption
-  Scheduling:   Vercel Cron (POST /api/cron/refresh-lists, every 3 hours)
+  Scheduling:   Vercel Cron (POST /api/cron/refresh-lists, daily at 02:00 UTC)
 
 2.2 Scraper Backends
 
