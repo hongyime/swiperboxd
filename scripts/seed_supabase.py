@@ -326,9 +326,9 @@ def _print_summary(store, args, written=0, skipped=0, failed=0) -> None:
     print(f"  Movies written: {written} | skipped (no data): {skipped} | failed: {failed}")
     if not args.dry_run and store is not None:
         try:
-            lists_count = len(store.get_lists())
-            movies_count = len(store.client.table("movies").select("slug").execute().data)
-            print(f"  Supabase totals: {lists_count} lists, {movies_count} movies")
+            lists_resp = store.client.table("lists").select("list_id", count="exact").execute()  # type: ignore[union-attr]
+            movies_resp = store.client.table("movies").select("slug", count="exact").execute()  # type: ignore[union-attr]
+            print(f"  Supabase totals: {lists_resp.count} lists, {movies_resp.count} movies")
         except Exception as exc:
             print(f"  (Could not fetch totals: {exc})")
     else:

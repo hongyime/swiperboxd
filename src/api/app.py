@@ -412,10 +412,12 @@ async def start_ingest(
 
     store.set_ingest_error(payload.user_id, None)
     store.set_ingest_progress(payload.user_id, 0)  # clear any stale -1 from a prior run
-    print(f"[ingest] starting worker source={payload.source} depth={payload.depth_pages}", flush=True)
+    # username for constructing correct Letterboxd profile URLs (watchlist, diary)
+    ingest_username = verified_user or payload.user_id
+    print(f"[ingest] starting worker source={payload.source} depth={payload.depth_pages} username={ingest_username}", flush=True)
     threading.Thread(
         target=_run_ingest_worker,
-        args=(payload.user_id, payload.source, payload.depth_pages, session_cookie),
+        args=(payload.user_id, payload.source, payload.depth_pages, session_cookie, ingest_username),
         daemon=True,
     ).start()
     return {"status": "queued", "user_id": payload.user_id}
@@ -507,6 +509,7 @@ def _filter_first_pipeline(
     source: str,
     depth_pages: int,
     session_cookie: str | None = None,
+    username: str | None = None,
     progress_callback: Callable[[int], None] | None = None,
 ) -> list[dict]:
     """Filter pipeline: pull source → exclude seen → fetch metadata → upsert to cache."""
@@ -524,18 +527,23 @@ def _filter_first_pipeline(
     exclusions = store.get_exclusions(user_id)
 
     # Augment with live Letterboxd history when a session cookie is available.
+    # Persist to store so deck filtering and future ingests use the real data.
     # Failures are non-fatal — ingest continues with store-only data.
     if session_cookie:
         try:
-            live_watchlist = scraper.pull_watchlist_slugs(session_cookie)
+            live_watchlist = scraper.pull_watchlist_slugs(session_cookie, username=username)
+            for slug in live_watchlist:
+                store.add_watchlist(user_id, slug)
             watchlist = watchlist | live_watchlist
-            print(f"[ingest] live_watchlist={len(live_watchlist)}", flush=True)
+            print(f"[ingest] live_watchlist={len(live_watchlist)} persisted to store", flush=True)
         except Exception as exc:
             print(f"[ingest] live watchlist fetch failed: {exc}", flush=True)
         try:
-            live_diary = scraper.pull_diary_slugs(session_cookie)
+            live_diary = scraper.pull_diary_slugs(session_cookie, username=username)
+            for slug in live_diary:
+                store.add_diary(user_id, slug)
             diary = diary | live_diary
-            print(f"[ingest] live_diary={len(live_diary)}", flush=True)
+            print(f"[ingest] live_diary={len(live_diary)} persisted to store", flush=True)
         except Exception as exc:
             print(f"[ingest] live diary fetch failed: {exc}", flush=True)
 
@@ -565,6 +573,7 @@ def _run_ingest_worker(
     source: str,
     depth_pages: int,
     session_cookie: str | None = None,
+    username: str | None = None,
 ) -> None:
     """Background worker for ingest processing with real progress events."""
 
@@ -579,6 +588,7 @@ def _run_ingest_worker(
             source=source,
             depth_pages=depth_pages,
             session_cookie=session_cookie,
+            username=username,
             progress_callback=_set_progress,
         )
         _set_progress(100)

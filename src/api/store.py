@@ -481,25 +481,21 @@ class SupabaseStore:
 
     def record_genre_preference(self, user_id: str, genres: list[str]) -> None:
         """Record user's genre preferences in Supabase."""
+        import datetime
         actual_user_id = self._get_or_create_user_id(user_id)
-        
-        # Load current weights from DB
         weights = self.get_genre_weights(user_id)
-        
-        # Update weights
+        now = datetime.datetime.utcnow().isoformat() + "Z"
         for genre in genres:
             weights[genre] = weights.get(genre, 0) + 1
-            
-            # Update in database
             try:
                 self.client.table("genre_preferences").upsert({
                     "user_id": actual_user_id,
                     "genre": genre,
                     "score": weights[genre],
-                    "updated_at": time.time()
-                }).execute()
+                    "updated_at": now,
+                }, on_conflict="user_id,genre").execute()
             except Exception as e:
-                print(f"Error recording genre preference: {e}")
+                print(f"[store] genre_preference upsert failed for {genre}: {e}", flush=True)
 
     def get_genre_weights(self, user_id: str) -> dict[str, int]:
         """Get user's genre weights from Supabase."""

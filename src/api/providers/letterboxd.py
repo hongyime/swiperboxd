@@ -44,9 +44,9 @@ class LetterboxdListSummary:
 class Scraper(Protocol):
     def login(self, username: str, password: str) -> str: ...
 
-    def pull_watchlist_slugs(self, session_cookie: str) -> set[str]: ...
+    def pull_watchlist_slugs(self, session_cookie: str, username: str | None = None) -> set[str]: ...
 
-    def pull_diary_slugs(self, session_cookie: str) -> set[str]: ...
+    def pull_diary_slugs(self, session_cookie: str, username: str | None = None) -> set[str]: ...
 
     def pull_source_slugs(self, source: str, depth_pages: int = 2) -> list[str]: ...
 
@@ -117,10 +117,10 @@ class MockLetterboxdScraper:
     def login(self, username: str, password: str) -> str:
         return f"session::{username}"
 
-    def pull_watchlist_slugs(self, session_cookie: str) -> set[str]:
+    def pull_watchlist_slugs(self, session_cookie: str, username: str | None = None) -> set[str]:
         return {"film-a"}
 
-    def pull_diary_slugs(self, session_cookie: str) -> set[str]:
+    def pull_diary_slugs(self, session_cookie: str, username: str | None = None) -> set[str]:
         return {"film-b"}
 
     def pull_source_slugs(self, source: str, depth_pages: int = 2) -> list[str]:
@@ -162,6 +162,41 @@ def _parse_member_count(text: str) -> int:
         return int(float(text))
     except (ValueError, TypeError):
         return 0
+
+
+def _extract_film_slugs(soup) -> list[str]:
+    """Extract film slugs from a Letterboxd page using current selectors.
+
+    Tries multiple selector strategies to stay robust against HTML changes:
+      1. data-item-slug on react-component divs (2024+ redesign)
+      2. data-film-slug on film-poster divs (older)
+      3. href pattern on any <a> tag pointing to /film/slug/
+    """
+    slugs = []
+    seen: set[str] = set()
+
+    def _add(slug: str) -> None:
+        if slug and slug not in seen:
+            seen.add(slug)
+            slugs.append(slug)
+
+    # Strategy 1: react-component data-item-slug
+    for el in soup.select("div.react-component[data-item-slug]"):
+        _add(el["data-item-slug"])
+
+    # Strategy 2: film-poster data-film-slug
+    for el in soup.select("[data-film-slug]"):
+        _add(el["data-film-slug"])
+
+    # Strategy 3: anchor hrefs  /film/<slug>/
+    if not slugs:
+        for a in soup.select("a[href]"):
+            href = a.get("href", "")
+            parts = href.strip("/").split("/")
+            if len(parts) >= 2 and parts[0] == "film":
+                _add(parts[1])
+
+    return slugs
 
 
 class HttpLetterboxdScraper:
@@ -328,42 +363,40 @@ class HttpLetterboxdScraper:
                 raise RuntimeError(f"session_cookie_missing (status={status}, final_url={response.url})")
             return cookie
 
-    def pull_watchlist_slugs(self, session_cookie: str) -> set[str]:
+    def pull_watchlist_slugs(self, session_cookie: str, username: str | None = None) -> set[str]:
         """Pull all film slugs from the authenticated user's watchlist."""
         slugs: set[str] = set()
-        url = f"{self.base_url}/watchlist/"
+        path = f"/{username}/watchlist/" if username else "/watchlist/"
+        url = f"{self.base_url}{path}"
         for page in range(1, 51):  # cap at 50 pages (~600 films)
             try:
                 resp = self._fetch(url, params={"page": page}, session_cookie=session_cookie)
             except RuntimeError:
                 break
             soup = BeautifulSoup(resp.text, "html.parser")
-            film_links = soup.select("li.poster-container a")
-            if not film_links:
+            page_slugs = _extract_film_slugs(soup)
+            if not page_slugs:
                 break
-            for link in film_links:
-                href = link.get("href", "")
-                if href.startswith("/film/"):
-                    slugs.add(href.split("/")[2])
+            slugs.update(page_slugs)
+        print(f"[scraper] watchlist pull: {len(slugs)} slugs for {username or '(no username)'}", flush=True)
         return slugs
 
-    def pull_diary_slugs(self, session_cookie: str) -> set[str]:
+    def pull_diary_slugs(self, session_cookie: str, username: str | None = None) -> set[str]:
         """Pull all film slugs from the authenticated user's diary."""
         slugs: set[str] = set()
-        url = f"{self.base_url}/diary/"
+        path = f"/{username}/films/diary/" if username else "/diary/"
+        url = f"{self.base_url}{path}"
         for page in range(1, 201):  # cap at 200 pages (~2 400 entries)
             try:
                 resp = self._fetch(url, params={"page": page}, session_cookie=session_cookie)
             except RuntimeError:
                 break
             soup = BeautifulSoup(resp.text, "html.parser")
-            film_links = soup.select("td.poster-container a")
-            if not film_links:
+            page_slugs = _extract_film_slugs(soup)
+            if not page_slugs:
                 break
-            for link in film_links:
-                href = link.get("href", "")
-                if href.startswith("/film/"):
-                    slugs.add(href.split("/")[2])
+            slugs.update(page_slugs)
+        print(f"[scraper] diary pull: {len(slugs)} slugs for {username or '(no username)'}", flush=True)
         return slugs
 
     def pull_source_slugs(self, source: str, depth_pages: int = 2) -> list[str]:
