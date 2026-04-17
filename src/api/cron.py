@@ -25,7 +25,7 @@ async def refresh_lists_cron(x_cron_secret: str = Header(...)):
     Returns:
         JSON response with refresh stats
     """
-    if CRON_SECRET and x_cron_secret != CRON_SECRET:
+    if not CRON_SECRET or x_cron_secret != CRON_SECRET:
         raise HTTPException(
             status_code=403, 
             detail="Unauthorized: Invalid cron secret"
@@ -74,7 +74,11 @@ async def refresh_lists_cron(x_cron_secret: str = Header(...)):
                 print(f"  ✗ Error processing {item.title}: {e}")
         
         print(f"[cron] Refresh complete: {updated_count} updated, {skipped_count} skipped, {error_count} errors", flush=True)
-        
+
+        # Prune stale ingest progress entries (older than 1 hour) to prevent
+        # unbounded dict growth in long-running processes.
+        store.cleanup_expired_progress()
+
         return {
             "status": "ok",
             "fetched": len(lists_data),

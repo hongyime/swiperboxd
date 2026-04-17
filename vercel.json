@@ -1,12 +1,20 @@
 {
   "builds": [
     {
-      "src": "src/api/app.py",
+      "src": "api/index.py",
       "use": "@vercel/python"
     }
   ],
   "routes": [
-    { "src": "/web/(.*)", "dest": "src/api/app.py" },
-    { "src": "/(.*)", "dest": "src/api/app.py" }
+    {
+      "src": "/(.*)",
+      "dest": "api/index.py"
+    }
+  ],
+  "crons": [
+    {
+      "path": "/api/cron/refresh-lists",
+      "schedule": "0 */3 * * *"
+    }
   ]
 }

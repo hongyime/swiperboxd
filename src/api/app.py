@@ -15,7 +15,6 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 
-from .queue import InMemoryQueue
 from .security import decrypt_session_cookie, encrypt_session_cookie
 from .providers.letterboxd import HttpLetterboxdScraper, MockLetterboxdScraper
 from .database import is_supabase_configured, run_migrations
@@ -47,22 +46,14 @@ else:
     store = InMemoryStore()
     print("[startup] store=InMemoryStore (Supabase not configured)", flush=True)
 
-try:
-    for entry in scraper.discover_site_lists(page=1):
-        store.upsert_list_summary(entry.__dict__)
-except NotImplementedError:
-    print(
-        "[startup] WARNING: scraper does not support list discovery; "
-        "catalog will be empty until first /lists/catalog request",
-        flush=True,
-    )
+# Lists are now refreshed via cron job (every 3 hours on Vercel)
+# No startup scraping - reads from database
+print("[startup] lists loaded from database (refreshed via cron job)", flush=True)
 
 print(f"[startup] scraper={SCRAPER_BACKEND} web_dir={_WEB_DIR}", flush=True)
 
 # Include cron router for scheduled tasks
 app.include_router(cron_router, prefix="/api/cron", tags=["cron"])
-
-queue = InMemoryQueue()
 
 
 _SESSION_COOKIE_NAME = "letterboxd.user.CURRENT"
@@ -162,9 +153,10 @@ def health():
 
 
 @app.post("/db/migrate")
-def migrate_database():
+def migrate_database(verified_user: str = Depends(verify_session)):
     """
     Run database migrations. Development only — blocked in production.
+    Requires a valid session token (X-Session-Token header).
     """
     if os.getenv("APP_ENV", "development") == "production":
         raise HTTPException(status_code=403, detail={"code": "not_available_in_production"})
@@ -369,10 +361,28 @@ def create_auth_session(payload: AuthSessionRequest):
 
 
 @app.post("/ingest/start")
-async def start_ingest(payload: IngestStartRequest, verified_user: str = Depends(verify_session)):
+async def start_ingest(
+    payload: IngestStartRequest,
+    verified_user: str = Depends(verify_session),
+    x_session_token: str = Header(None, alias="X-Session-Token"),
+):
     """Start ingest process for a user (username)."""
     if verified_user and payload.user_id != verified_user:
         raise HTTPException(status_code=403, detail={"code": "user_id_mismatch"})
+
+    # Extract the raw Letterboxd session cookie from the encrypted token so the
+    # background worker can call pull_watchlist_slugs / pull_diary_slugs directly.
+    # Falls back to None for old-format tokens or missing keys — ingest still works
+    # using store-only data in that case.
+    session_cookie: str | None = None
+    master_key = os.getenv("MASTER_ENCRYPTION_KEY")
+    if master_key and x_session_token:
+        try:
+            raw = decrypt_session_cookie(x_session_token, master_key)
+            data = json.loads(raw)
+            session_cookie = data.get("c")
+        except Exception:
+            pass
 
     allowed, retry_after = store.allow_scrape_request(payload.user_id, min_interval_seconds=1.0)
     if not allowed:
@@ -387,7 +397,11 @@ async def start_ingest(payload: IngestStartRequest, verified_user: str = Depends
 
     store.set_ingest_error(payload.user_id, None)
     print(f"[ingest] starting worker source={payload.source} depth={payload.depth_pages}", flush=True)
-    threading.Thread(target=_run_ingest_worker, args=(payload.user_id, payload.source, payload.depth_pages), daemon=True).start()
+    threading.Thread(
+        target=_run_ingest_worker,
+        args=(payload.user_id, payload.source, payload.depth_pages, session_cookie),
+        daemon=True,
+    ).start()
     return {"status": "queued", "user_id": payload.user_id}
 
 
@@ -476,6 +490,7 @@ def _filter_first_pipeline(
     user_id: str,
     source: str,
     depth_pages: int,
+    session_cookie: str | None = None,
     progress_callback: Callable[[int], None] | None = None,
 ) -> list[dict]:
     """Filter pipeline: pull source → exclude seen → fetch metadata → upsert to cache."""
@@ -491,6 +506,22 @@ def _filter_first_pipeline(
     watchlist = store.get_watchlist(user_id)
     diary = store.get_diary(user_id)
     exclusions = store.get_exclusions(user_id)
+
+    # Augment with live Letterboxd history when a session cookie is available.
+    # Failures are non-fatal — ingest continues with store-only data.
+    if session_cookie:
+        try:
+            live_watchlist = scraper.pull_watchlist_slugs(session_cookie)
+            watchlist = watchlist | live_watchlist
+            print(f"[ingest] live_watchlist={len(live_watchlist)}", flush=True)
+        except Exception as exc:
+            print(f"[ingest] live watchlist fetch failed: {exc}", flush=True)
+        try:
+            live_diary = scraper.pull_diary_slugs(session_cookie)
+            diary = diary | live_diary
+            print(f"[ingest] live_diary={len(live_diary)}", flush=True)
+        except Exception as exc:
+            print(f"[ingest] live diary fetch failed: {exc}", flush=True)
 
     unique = [slug for slug in source_slugs if slug not in watchlist]
     unique = [slug for slug in unique if slug not in diary]
@@ -513,7 +544,12 @@ def _filter_first_pipeline(
     return metadata
 
 
-def _run_ingest_worker(user_id: str, source: str, depth_pages: int) -> None:
+def _run_ingest_worker(
+    user_id: str,
+    source: str,
+    depth_pages: int,
+    session_cookie: str | None = None,
+) -> None:
     """Background worker for ingest processing with real progress events."""
 
     def _set_progress(pct: int) -> None:
@@ -526,6 +562,7 @@ def _run_ingest_worker(user_id: str, source: str, depth_pages: int) -> None:
             user_id=user_id,
             source=source,
             depth_pages=depth_pages,
+            session_cookie=session_cookie,
             progress_callback=_set_progress,
         )
         _set_progress(100)

@@ -7,6 +7,16 @@ import { createSuppressionStore, getIngestPollingState } from './state.js';
 
 const suppression = createSuppressionStore(() => Date.now());
 
+// HTML-escape helper — prevents XSS when interpolating server data into innerHTML
+function esc(str) {
+  return String(str ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#x27;');
+}
+
 // State
 const state = {
   username: null,
@@ -218,12 +228,53 @@ async function loadLists(query = '') {
 }
 
 function renderLists() {
-  profileOptions.innerHTML = state.lists.map(item => `
-    <div class="profile-option ${item.list_id === state.selectedListId ? 'active' : ''}" data-list-id="${item.list_id}">
-      <div class="list-option-title">${item.title}</div>
-      <div class="list-option-meta">${item.owner_name} · ${item.film_count} films</div>
+  // Add refresh button at top
+  const refreshSection = `
+    <div class="list-refresh-section">
+      <button id="refresh-lists-btn" class="btn-text refresh-btn">
+        <span class="refresh-icon">↻</span>
+        Refresh Lists from Letterboxd
+      </button>
+      <p class="refresh-hint">Updates automatically every 3 hours</p>
+    </div>`;
+  
+  profileOptions.innerHTML = refreshHTML = refreshSection + state.lists.map(item => `
+    <div class="profile-option ${item.list_id === state.selectedListId ? 'active' : ''}" data-list-id="${esc(item.list_id)}">
+      <div class="list-option-title">${esc(item.title)}</div>
+      <div class="list-option-meta">${esc(item.owner_name)} · ${esc(item.film_count)} films</div>
     </div>
   `).join('');
+
+  // Add refresh button click handler
+  document.getElementById('refresh-lists-btn')?.addEventListener('click', async () => {
+    const btn = document.getElementById('refresh-lists-btn');
+    btn.disabled = true;
+    btn.innerHTML = '<span class="refresh-icon spinning">↻</span> Refreshing...';
+    
+    try {
+      const res = await api('/lists/refresh', { method: 'POST' });
+      console.log('[lists] refresh result:', res);
+      
+      await loadLists();
+      
+      btn.innerHTML = '<span class="refresh-icon">✓</span> Refreshed!';
+      setTimeout(() => {
+        btn.disabled = false;
+        btn.innerHTML = '<span class="refresh-icon">↻</span> Refresh Lists from Letterboxd';
+      }, 2000);
+    } catch (err) {
+      console.error('[lists] refresh failed:', err);
+      btn.innerHTML = '<span class="refresh-icon">✗</span> Try Again';
+      setTimeout(() => {
+        btn.disabled = false;
+        btn.innerHTML = '<span class="refresh-icon">↻</span> Refresh Lists from Letterboxd';
+      }, 2000);
+      
+      if (err.message.includes('rate_limited')) {
+        alert('Letterboxd is rate limiting requests. Lists will be updated automatically every 3 hours.');
+      }
+    }
+  });
 
   profileOptions.querySelectorAll('.profile-option').forEach(opt => {
     opt.addEventListener('click', () => {
@@ -414,18 +465,18 @@ function createCard(movie, isTop = false) {
   card.dataset.slug = movie.slug;
 
   card.innerHTML = `
-    <img class="card-poster" src="${movie.poster_url}" alt="${movie.title}" />
+    <img class="card-poster" src="${esc(movie.poster_url)}" alt="${esc(movie.title)}" />
     <div class="card-overlay">
-      <h2 class="card-title">${movie.title}</h2>
-      <p class="card-meta">★ ${movie.rating} · ${movie.popularity} popularity</p>
+      <h2 class="card-title">${esc(movie.title)}</h2>
+      <p class="card-meta">★ ${esc(movie.rating)} · ${esc(movie.popularity)} popularity</p>
     </div>
     <div class="card-back">
-      <h2 class="card-title">${movie.title}</h2>
-      <p class="card-meta">★ ${movie.rating} · ${movie.popularity} popularity</p>
+      <h2 class="card-title">${esc(movie.title)}</h2>
+      <p class="card-meta">★ ${esc(movie.rating)} · ${esc(movie.popularity)} popularity</p>
       <div class="card-genres">
-        ${(movie.genres || []).slice(0, 3).map(g => `<span class="genre-tag">${g}</span>`).join('')}
+        ${(movie.genres || []).slice(0, 3).map(g => `<span class="genre-tag">${esc(g)}</span>`).join('')}
       </div>
-      <p class="card-synopsis">${movie.synopsis || 'No synopsis available.'}</p>
+      <p class="card-synopsis">${esc(movie.synopsis) || 'No synopsis available.'}</p>
     </div>
     <div class="swipe-indicator watchlist">WATCHLIST</div>
     <div class="swipe-indicator dismiss">SKIP</div>

@@ -1,135 +1,214 @@
 Product Requirements Document: Media Discovery PWA
 
-Version: 1.1.0 | Status: Approved for Implementation
+Version: 2.0.0 | Status: Reflects deployed implementation
+
+---
 
 1. Executive Summary
 
-The Media Discovery PWA is a serverless, discovery-driven engine that transforms static movie lists into an interactive, swipe-based decision loop. It solves "choice paralysis" by programmatically filtering out content the user has already seen or queued, presenting only unseen titles. By caching discovered metadata globally, the platform accelerates discovery for subsequent users while minimizing target platform scraping.
+This application is a serverless, discovery-driven engine that transforms Letterboxd movie lists into an interactive, swipe-based decision loop. It solves choice paralysis by programmatically filtering out content the user has already seen or queued, presenting only unseen titles from curated lists. Discovered movie metadata is cached globally in Supabase, accelerating subsequent users while minimising target platform scraping.
 
-2. User Personas & Use Cases
+The discovery surface is built on Letterboxd community and official lists rather than static rating profiles. Lists are scraped periodically via a Vercel Cron job; individual list film rosters are fetched on demand when a user loads a deck.
 
-The Power User: Has thousands of logged films. Needs an initial background sync to filter out their extensive history so they only see fresh recommendations.
+---
 
-The Causal Discoverer: Uses predefined deck profiles (e.g., "High Rating / Low Popularity") to quickly find hidden gems and funnel them into a watchlist.
+2. System Architecture
 
-3. Technical Stack
+2.1 Stack
 
-Frontend: Next.js (React), Tailwind CSS, Zustand (State Management), PWA Manifest.
+  Frontend:     Vanilla JavaScript (ES modules, no framework), served as static files by FastAPI
+  Backend:      FastAPI (Python 3.11+) deployed via @vercel/python
+  Database:     Supabase (PostgreSQL) with supabase-py v2 client; InMemoryStore fallback for dev/test
+  Scraping:     httpx + BeautifulSoup4; target platform is letterboxd.com
+  Auth crypto:  Python cryptography (Fernet / AES-128-CBC) for session token encryption
+  Scheduling:   Vercel Cron (POST /api/cron/refresh-lists, every 3 hours)
 
-Backend: Vercel Serverless Functions (Python/FastAPI via @vercel/python).
+2.2 Scraper Backends
 
-Database: Supabase (PostgreSQL) with Supavisor connection pooling.
+  SCRAPER_BACKEND=http   HttpLetterboxdScraper  (production default)
+  SCRAPER_BACKEND=mock   MockLetterboxdScraper  (development / testing)
 
-Cache & Queuing: Upstash Redis (Session/Rate Limiting) and Upstash QStash (Asynchronous task queueing).
+Both backends implement the Scraper protocol defined in src/api/providers/letterboxd.py.
 
-4. Functional Requirements
+2.3 Store Backends
 
-4.1 Authentication & Session Management
+  Supabase configured   SupabaseStore   all persistent data in PostgreSQL tables
+  Supabase absent       InMemoryStore   in-process dicts + sets; wiped on restart
 
-4.1.1 The system shall authenticate users by proxying credentials to the target platform and retrieving the session cookie.
+Selection is automatic at startup: if SUPABASE_URL and SUPABASE_ANON_KEY are set, SupabaseStore is used.
 
-4.1.2 The system shall encrypt the session cookie using an AES-256 master key and store it locally for the user.
+2.4 Request Flow
 
-4.2 Data Ingestion & State
+  User loads app → POST /auth/session → encrypted token stored in localStorage
+  User selects list → GET /lists/catalog → list metadata from store
+  User loads deck  → POST /ingest/start → background thread scrapes user history
+                   → poll GET /ingest/progress until 100%
+                   → GET /lists/{list_id}/deck → weighted-shuffled movie cards
+  User swipes      → POST /actions/swipe → persist action; dismiss adds 24h suppression
 
-4.2.1 On initial login, the system shall queue an asynchronous task to ingest the user's historical diary and store the slugs in a Supabase user_exclusions table.
+---
 
-4.2.2 The frontend shall display a real-time progress indicator during the initial background ingestion.
+3. API Contract
 
-4.2.3 The system shall maintain a 24-hour localized not_interested list via browser LocalStorage for skipped items.
+All endpoints are hosted at the root path. Auth-guarded endpoints require the X-Session-Token header.
 
-4.3 The Discovery Engine
+3.1 System
 
-4.3.1 The system shall provide predefined filtering profiles (e.g., "The Gold Standard", "Hidden Gems").
+  GET  /health                      Liveness check; reports store type
+  GET  /                            Serves src/web/index.html
+  GET  /web/{path}                  Serves static frontend assets (path-traversal guarded)
 
-4.3.2 The backend shall scrape the target platform page-by-page, cross-referencing against the user_exclusions table before transmitting the payload to the client.
+3.2 Authentication
 
-4.3.3 The system shall upsert discovered film metadata into a global movies table to serve as a Cache-Aside database.
+  POST /auth/session
+    Body:     { "username": str, "session_cookie": str }
+    Response: { "status": "ok", "encrypted_session_cookie": str }
+    Behaviour: validates session_cookie against letterboxd.com/settings/; encrypts
+              JSON payload {"u": username, "c": session_cookie} with Fernet using
+              MASTER_ENCRYPTION_KEY; returns encrypted token.
 
-4.3.4 Records with malformed or missing critical data (e.g., poster URLs) shall trigger an exponential backoff retry; if unresolvable, the record is dropped.
+3.3 Ingest
 
-4.4 Interaction & UI
+  POST /ingest/start                [auth required]
+    Body:     { "user_id": str, "source": str, "depth_pages": int (1–50) }
+    Response: { "status": "queued" | "already_running", "user_id": str }
+    Behaviour: launches daemon thread; check-and-add to ingest_running is atomic
+              (held under store.lock). Identity binding: user_id must match the
+              username in the decrypted session token.
 
-4.4.1 The client shall implement a gesture-based UI: Swipe Right (Watchlist), Swipe Left (Dismiss), Swipe Up (Log).
+  GET  /ingest/progress?user_id=    Returns { progress: int (-1=error, 0–100) }
 
-4.4.2 The client shall enforce a 500ms UI lock (isSyncing) post-interaction to prevent API rate-limit breaches.
+3.4 Discovery
 
-4.4.3 Images shall be served using a network-first caching strategy via browser cache headers to optimize load times.
+  GET  /discovery/profiles          Lists available deck filter profiles
+  GET  /discovery/deck?user_id=&profile=   Returns up to 20 weighted-shuffled movies
+  GET  /discovery/details?slug=     Returns synopsis, cast, genres for one movie
 
-5. Non-Functional Requirements
+3.5 Lists
 
-Performance: Card decks must initialize within 1.5 seconds. Cached metadata queries must return in <50ms.
+  GET  /lists/catalog?q=&page=
+    Behaviour: attempts fresh scrape of letterboxd.com/lists/popular/; on rate-limit
+              or error falls back to store.get_lists(); applies q filter post-fetch;
+              sorts official-first then by like_count desc.
+    Response: { "status": "ok", "query": str, "page": int, "results": [LetterboxdListSummary] }
 
-Scalability: The architecture must gracefully handle Vercel's free-tier limitations via asynchronous offloading and connection pooling.
+  GET  /lists/{list_id}
+    Behaviour: fetches film roster via HTTP scraper (requires summary.url); stores
+              memberships; returns summary + movie_slugs + 4-movie preview.
 
-Security: Master encryption keys are managed via Vercel Environment Variables. Target platform passwords are strictly pass-through and never stored.
+  GET  /lists/{list_id}/deck?user_id=
+    Behaviour: fetches film roster; backfills missing movie metadata; returns up to
+              20 weighted-shuffled movies.
 
-Resilience: The backend scraper must implement a Rotating Proxy Fallback upon encountering 429 or 403 HTTP status codes.
+  POST /lists/refresh               [auth required]
+    Rate limit: 1 request per 5 minutes per user (store.allow_scrape_request)
+    Response:  { "status": "ok", "fetched": int, "updated": int }
 
-6. System Architecture Flow
+3.6 Actions
 
-Client Request: User selects a deck profile.
+  POST /actions/swipe               [auth required]
+    Body:     { "user_id": str, "movie_slug": str, "action": "watchlist"|"dismiss"|"log" }
+    Rate limit: 500 ms sync lock per user (store.should_rate_limit)
 
-Cache Check: Vercel Function checks Supabase movies table for indexed metadata.
+3.7 Database
 
-Target Sync (if miss): Function dynamically scrapes the target platform, upserts new metadata to Supabase, and updates Upstash Redis rate limits.
+  POST /db/migrate                  Development only (403 in production)
 
-Exclusion Filter: Results are filtered against the user's Supabase user_exclusions.
+3.8 Cron (internal)
 
-Delivery: The clean queue is pushed to the client's Zustand store for rendering. Actions (swipes) trigger asynchronous updates back to the target platform and local tables.
+  POST /api/cron/refresh-lists      Protected by X-Cron-Secret header (VERCEL_CRON_SECRET)
+  GET  /api/cron/health
 
-7. Success Metrics
+---
 
-System Stability: <1% rate-limit blockage from the target platform.
+4. Data Models
 
-Cache Efficiency: 80%+ cache hit rate on the movies table after the first month of operation.
+4.1 LetterboxdListSummary (scraper output / list_summaries table)
 
-Engagement: High volume of swipe-to-watchlist conversions per session.
+  list_id       TEXT PK   "{owner_slug}-{list_slug}" derived from href path
+  slug          TEXT      list slug component
+  url           TEXT      canonical letterboxd.com URL (required for deck fetching)
+  title         TEXT
+  owner_name    TEXT
+  owner_slug    TEXT
+  description   TEXT
+  film_count    INTEGER
+  like_count    INTEGER
+  comment_count INTEGER
+  is_official   BOOLEAN   true if owner_slug in {"letterboxd", "official"}
+  tags          JSONB
 
-8. Infrastructure Operations & Maintenance (Keep-Alive Strategy)
+4.2 list_memberships table
 
-To ensure the Supabase free-tier project remains active and avoids being paused due to the 7-day inactivity policy, the system will utilize a scheduled GitHub Action to execute a lightweight database ping. This automates maintenance and ensures uninterrupted availability.
+  id         BIGSERIAL PK
+  list_id    TEXT FK → list_summaries(list_id) ON DELETE CASCADE
+  movie_slug TEXT
+  position   INTEGER
+  UNIQUE(list_id, movie_slug)
+  INDEX on (list_id, position)
 
-8.1 GitHub Actions Workflow (supabase-keep-alive.yml)
+4.3 LetterboxdMovie (scraper output / movies table)
 
-Create a file at .github/workflows/keep-alive.yml in the repository with the following configuration:
+  slug, title, poster_url, rating (float), popularity (int),
+  genres (JSONB array), synopsis, cast (JSONB array), year?, director?
 
-name: Supabase Keep-Alive
-on:
-  schedule:
-    # Runs at 00:00 UTC every Monday and Thursday
-    - cron: '0 0 * * 1,4'
-  workflow_dispatch: # Allows manual triggering for testing
-jobs:
-  ping-db:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Ping Supabase Database
-        run: |
-          curl -X POST "${{ secrets.SUPABASE_URL }}/rest/v1/rpc/keep_alive_ping" \
-          -H "apikey: ${{ secrets.SUPABASE_ANON_KEY }}" \
-          -H "Authorization: Bearer ${{ secrets.SUPABASE_ANON_KEY }}" \
-          -H "Content-Type: application/json"
+4.4 Session Token Format
 
+  Fernet( json.dumps({"u": username, "c": session_cookie}) )
+  Old format (raw cookie string) is accepted for backward compatibility; identity
+  binding is skipped when the decrypted payload is not valid JSON.
 
-8.2 Supabase Remote Procedure Call (RPC) Implementation
+---
 
-To allow the secure execution of the curl command without exposing table data or requiring heavy database driver installations, a lightweight function must be instantiated in the Supabase SQL Editor:
+5. Security Model
 
-create or replace function keep_alive_ping()
-returns void as $$
-begin
-  -- This function executes a minimal operation to register activity and wake the DB
-end;
-$$ language plpgsql security definer;
+5.1 Session token encryption
+  MASTER_ENCRYPTION_KEY (env) is required to encrypt and decrypt all session tokens.
+  Fernet provides authenticated encryption; tampering is detected.
 
+5.2 Identity binding
+  POST /ingest/start and POST /actions/swipe extract the username from the decrypted
+  session token and reject requests where payload.user_id differs (HTTP 403).
+  Guard is bypassed for old-format tokens (empty username) for backward compat.
 
-8.3 Environment Secrets configuration
+5.3 Cron endpoint
+  POST /api/cron/refresh-lists requires X-Cron-Secret: <VERCEL_CRON_SECRET>.
+  If VERCEL_CRON_SECRET is unset the endpoint rejects all requests (fail-closed).
+  Set VERCEL_CRON_SECRET in all environments, including local dev, to enable the endpoint.
 
-The following variables must be defined in the GitHub Repository Settings (Settings > Secrets and variables > Actions):
+5.4 Path traversal guard
+  GET /web/{path} resolves the path and checks it remains within _WEB_DIR before serving.
 
-SUPABASE_URL: The project URL (e.g., https://xyz.supabase.co).
+5.5 Ingest atomicity
+  The ingest_running check-and-add is wrapped in store.lock to prevent double-ingest
+  under concurrent requests.
 
-SUPABASE_ANON_KEY: The project’s anonymous API key.
+5.6 Dead infrastructure
+  auth.py, auth_deps.py, rate_limiter.py, qstash_queue.py are implemented but not
+  imported. Each file carries a tombstone comment. Do not assume JWT auth or Redis
+  rate limiting is active.
 
-By scheduling this workflow twice a week, the system consistently satisfies Supabase's activity requirements, resetting the inactivity timer programmatically.
+---
+
+6. Non-Functional Requirements
+
+6.1 Serverless constraints
+  Background ingest uses daemon threads (threading.Thread). This works on long-running
+  uvicorn processes but will be interrupted on Vercel serverless cold starts. The cron
+  refresh endpoint is the reliable path for list data freshness.
+
+6.2 Rate limiting
+  Swipe actions:     500 ms minimum interval per user (in-memory, resets on restart)
+  Manual refresh:    300 s minimum interval per user (in-memory)
+  Ingest:            1 s minimum interval per user (in-memory)
+
+6.3 Deck ordering
+  weighted_shuffle: top 8 movies by summed genre preference score, then random tail.
+  Genre weights accumulate per watchlist swipe and are persisted to Supabase in production.
+
+6.4 Frontend suppression
+  Dismiss swipes suppress the movie for 24 hours in the client-side Map (not persisted
+  across page reloads). Suppressed movies are filtered from deck results before rendering.
+
+6.5 List catalog sorting
+  Official lists first, then descending like_count, then alphabetical title.

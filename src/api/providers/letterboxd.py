@@ -13,6 +13,7 @@ import httpx
 from bs4 import BeautifulSoup
 
 from .. import resilience
+from ..proxy_manager import ProxyManager
 
 
 @dataclass
@@ -181,6 +182,9 @@ class HttpLetterboxdScraper:
             timeout=self.timeout_seconds,
             follow_redirects=True
         )
+        # Initialize proxy manager for intelligent proxy rotation
+        self._proxy_manager = ProxyManager()
+        print(f"[proxy] Initialized proxy manager for {self.base_url}", flush=True)
 
     # Browser headers sent on every request to avoid bot detection.
     _BROWSER_HEADERS = {
@@ -278,10 +282,27 @@ class HttpLetterboxdScraper:
                 follow_redirects=True
             ) as client:
                 while True:
-                    response = client.get(f"{self.base_url}/watchlist/", params={"page": page})
+                    url = f"{self.base_url}/watchlist/"
+                    params = {"page": page}
+                    proxy_config = self._get_proxy_config(url)
+                    
+                    # Configure proxy if needed
+                    client_config = {}
+                    if proxy_config["use_proxy"]:
+                        if proxy_config["proxy_url"]:
+                            client_config["proxies"] = {
+                                "http://": proxy_config["proxy_url"],
+                                "https://": proxy_config["proxy_url"]
+                            }
+                    
+                    response = client.get(url, params=params, **client_config)
 
                     if response.status_code in {403, 429}:
+                        self._record_proxy_failure()
                         raise RuntimeError("rate_limit_require_proxy")
+
+                    if response.status_code == 200:
+                        self._record_proxy_success()
 
                     soup = BeautifulSoup(response.text, "html.parser")
                     film_links = soup.select("li.poster-container a")
@@ -298,7 +319,6 @@ class HttpLetterboxdScraper:
                     page += 1
 
         except httpx.TimeoutException:
-            # Apply exponential backoff and retry logic would go here
             pass
 
         return slugs
@@ -385,32 +405,52 @@ class HttpLetterboxdScraper:
         from .resilience import should_trigger_proxy_fallback, exponential_backoff_seconds
 
         for i, slug in enumerate(slugs):
-            try:
-                use_proxy = False
-                retry_count = 0
+            retry_count = 0
+            max_retries = 5  # Increased retries for proxy rotation
+            last_success = False
 
-                while retry_count < 3:
+            while retry_count < max_retries and not last_success:
+                try:
+                    # Get proxy configuration for current retry
+                    target_url = f"{self.base_url}/film/{slug}/"
+                    proxy_config = self._get_proxy_config(target_url)
+                    source = proxy_config["source"]
+                    
                     client_config = {
                         "timeout": self.timeout_seconds,
                         "follow_redirects": True,
+                        "headers": self._BROWSER_HEADERS,
                     }
 
-                    if use_proxy:
-                        proxy_url = self._get_proxy_url()
-                        if proxy_url:
-                            client_config["proxies"] = {"http://": proxy_url, "https://": proxy_url}
+                    # Configure proxy if available
+                    if proxy_config["use_proxy"]:
+                        if proxy_config["proxy_url"]:
+                            # WebShare or regular proxy
+                            client_config["proxies"] = {
+                                "http://": proxy_config["proxy_url"],
+                                "https://": proxy_config["proxy_url"]
+                            }
+                            print(f"[proxy] Using {source} proxy for {slug}", flush=True)
+                        elif proxy_config["scrape_do_url"]:
+                            # Scrape.do: use direct URL
+                            target_url = proxy_config["scrape_do_url"]
+                            print(f"[proxy] Using Scrape.do for {slug}", flush=True)
 
                     with httpx.Client(**client_config) as client:
-                        response = client.get(f"{self.base_url}/film/{slug}/")
+                        response = client.get(target_url)
 
-                        # Check for rate limiting
-                        if response.status_code in {403, 429}:
+                        # Check for proxy or rate limiting issues
+                        if response.status_code in {403, 429, 502, 503, 504}:
+                            print(f"[proxy] {source} failed status={response.status_code} for {slug} (retry {retry_count+1}/{max_retries})", flush=True)
+                            self._record_proxy_failure()
+                            
+                            # If we should try another proxy source, trigger it
                             if should_trigger_proxy_fallback(response.status_code):
-                                use_proxy = True
-                                retry_count = 0
+                                time.sleep(exponential_backoff_seconds(retry_count) * 2)
+                                retry_count += 1
                                 continue
                             else:
-                                raise RuntimeError("rate_limit_no_proxy_available")
+                                break
 
                         soup = BeautifulSoup(response.text, "html.parser")
                         
@@ -444,8 +484,6 @@ class HttpLetterboxdScraper:
                         cast = [tag.get_text().strip() for tag in cast_tags[:5]] if cast_tags else []
 
                         # Extract member/watch count as popularity proxy.
-                        # Letterboxd renders this as a stat link containing a numeric text
-                        # (e.g. "1.2M", "45K"). Try known selectors in priority order.
                         popularity = 0
                         for sel in [
                             "a.has-icon.icon-watched span",
@@ -470,14 +508,32 @@ class HttpLetterboxdScraper:
                                 cast=cast,
                             )
                         )
+                        
+                        # Success with this proxy source
+                        self._record_proxy_success()
+                        last_success = True
                         break
 
-                    retry_count += 1
-                    if retry_count > 0:
-                        time.sleep(exponential_backoff_seconds(retry_count))
+                except httpx.TimeoutException as e:
+                    print(f"[proxy] Timeout for {slug} using {source} (retry {retry_count+1}/{max_retries}): {e}", flush=True)
+                    self._record_proxy_failure()
+                    
+                except httpx.ProxyError as e:
+                    print(f"[proxy] Proxy error for {slug} using {source}: {e}", flush=True)
+                    self._record_proxy_failure()
+                    
+                except Exception as exc:
+                    print(f"[proxy] Error fetching {slug} using {source}: {exc}", flush=True)
+                    self._record_proxy_failure()
 
-            except Exception as exc:
-                pass
+                # Retry with backoff
+                retry_count += 1
+                if retry_count < max_retries and not last_success:
+                    sleep_time = exponential_backoff_seconds(retry_count)
+                    print(f"[proxy] Waiting {sleep_time}s before retry {retry_count}/{max_retries}", flush=True)
+                    time.sleep(sleep_time)
+                else:
+                    print(f"[proxy] Giving up on {slug} after {retry_count} retries", flush=True)
 
         return movies
 
@@ -651,20 +707,15 @@ class HttpLetterboxdScraper:
 
         return slugs
 
-    def _get_proxy_url(self) -> str | None:
-        """Get rotating proxy URL if configured."""
-        proxy_endpoint = os.getenv("ROTATING_PROXY_ENDPOINT")
-        proxy_key = os.getenv("ROTATING_PROXY_API_KEY")
+    def _get_proxy_config(self, target_url: str) -> dict:
+        """Get proxy configuration for the current request."""
+        return self._proxy_manager.get_proxy_config(target_url)
 
-        if not proxy_endpoint or not proxy_key:
-            return None
+    def _record_proxy_success(self) -> None:
+        """Record a successful proxy request."""
+        self._proxy_manager.record_success()
 
-        try:
-            response = requests.get(
-                proxy_endpoint,
-                headers={"X-API-Key": proxy_key},
-                timeout=5
-            )
-            return response.json().get("proxy_url")
-        except Exception:
-            return None
+    def _record_proxy_failure(self) -> None:
+        """Record a failed proxy request."""
+        self._proxy_manager.record_failure()
+

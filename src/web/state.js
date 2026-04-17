@@ -1,5 +1,13 @@
 const DAY_MS = 24 * 60 * 60 * 1000;
 
+export function createProgressState() {
+  return {
+    update(value) {
+      return Math.min(100, Math.max(0, value));
+    }
+  };
+}
+
 export function getIngestPollingState(progress) {
   if (progress >= 100) {
     return { status: 'completed' };
@@ -8,16 +16,6 @@ export function getIngestPollingState(progress) {
     return { status: 'failed', reason: 'server_reported_failure' };
   }
   return { status: 'pending' };
-}
-
-export function createProgressState() {
-  return {
-    progress: 0,
-    update(value) {
-      this.progress = Math.max(0, Math.min(100, value));
-      return this.progress;
-    }
-  };
 }
 
 export function createSuppressionStore(now = () => Date.now()) {

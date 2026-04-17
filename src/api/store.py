@@ -292,6 +292,10 @@ class InMemoryStore:
 
         return removed
 
+    # NOTE: archive_old_actions is a future cleanup hook for the `actions` list.
+    # The list is currently never populated by any active code path (queue.enqueue
+    # was removed in Cycle 2). Wire this to a scheduler when the actions list gains
+    # active writers.
     def archive_old_actions(self, keep_days: float = 7.0) -> int:
         """Remove action entries older than keep_days. Returns remaining count."""
         cutoff = time.time() - (keep_days * 86400)
@@ -534,6 +538,7 @@ class SupabaseStore:
             "comment_count": int(list_summary.get("comment_count", 0) or 0),
             "is_official": bool(list_summary.get("is_official", False)),
             "tags": list_summary.get("tags", []) if isinstance(list_summary.get("tags", []), list) else [],
+            "updated_at": "now()",
         }
         if normalized["list_id"]:
             self.client.table("list_summaries").upsert(normalized, on_conflict="list_id").execute()
