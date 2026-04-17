@@ -393,13 +393,21 @@ async def start_ingest(
     # Extract the raw Letterboxd session cookie from the encrypted token.
     session_cookie: str | None = None
     master_key = os.getenv("MASTER_ENCRYPTION_KEY")
-    if master_key and x_session_token:
+    if not master_key:
+        print("[ingest] WARNING: MASTER_ENCRYPTION_KEY not set — cannot decrypt session token", flush=True)
+    elif not x_session_token:
+        print("[ingest] WARNING: no X-Session-Token header received — diary/watchlist sync will be skipped", flush=True)
+    else:
         try:
             raw = decrypt_session_cookie(x_session_token, master_key)
             data = json.loads(raw)
             session_cookie = data.get("c")
-        except Exception:
-            pass
+            if session_cookie:
+                print(f"[ingest] session cookie extracted OK (length={len(session_cookie)})", flush=True)
+            else:
+                print("[ingest] WARNING: decrypted token has no 'c' field — session cookie missing from payload", flush=True)
+        except Exception as exc:
+            print(f"[ingest] ERROR: failed to decrypt session token: {type(exc).__name__}: {exc}", flush=True)
 
     allowed, retry_after = store.allow_scrape_request(payload.user_id, min_interval_seconds=1.0)
     if not allowed:
@@ -423,12 +431,14 @@ async def start_ingest(
     if os.getenv("VERCEL"):
         print(
             f"[ingest] Vercel mode — running user-history sync inline "
-            f"(watchlist+diary, capped) username={ingest_username}",
+            f"(watchlist+diary, capped) username={ingest_username} "
+            f"session_cookie_present={session_cookie is not None}",
             flush=True,
         )
         import asyncio as _asyncio
+        sync_stats: dict = {"watchlist_count": 0, "diary_count": 0, "errors": []}
         try:
-            await _asyncio.wait_for(
+            sync_stats = await _asyncio.wait_for(
                 _asyncio.to_thread(
                     _run_user_history_sync,
                     payload.user_id, session_cookie, ingest_username,
@@ -438,13 +448,19 @@ async def start_ingest(
         except _asyncio.TimeoutError:
             print("[ingest] Vercel inline sync timed out — partial sync saved", flush=True)
             store.set_ingest_progress(payload.user_id, 100)
+            sync_stats["errors"].append("sync timed out (55s limit)")
         except Exception as exc:
-            print(f"[ingest] Vercel inline sync error: {exc}", flush=True)
+            print(f"[ingest] Vercel inline sync error: {type(exc).__name__}: {exc}", flush=True)
             store.set_ingest_error(payload.user_id, {"code": "ingest_worker_failed", "reason": str(exc)})
             store.set_ingest_progress(payload.user_id, -1)
+            sync_stats["errors"].append(str(exc))
         finally:
             store.ingest_running.discard(payload.user_id)
-        return {"status": "completed", "user_id": payload.user_id}
+        return {
+            "status": "completed",
+            "user_id": payload.user_id,
+            "sync_stats": sync_stats,
+        }
 
     # ── Long-running server: background thread ──────────────────────────────
     print(
@@ -547,45 +563,73 @@ def _run_user_history_sync(
     username: str | None,
     max_watchlist_pages: int = 5,
     max_diary_pages: int = 5,
-) -> None:
+) -> dict:
     """Sync a user's Letterboxd watchlist and diary into the store.
 
     Intentionally capped at a small number of pages so this can run within
     Vercel's function timeout.  The movie catalog itself is not fetched here —
     it should already be populated by the seed script.
+
+    Returns a sync_stats dict with counts for the frontend.
     """
+    sync_stats: dict = {"watchlist_count": 0, "diary_count": 0, "errors": []}
+    print(f"[ingest/sync] starting user history sync for user_id={user_id} username={username}", flush=True)
     store.set_ingest_progress(user_id, 10)
+
     if not session_cookie:
-        print("[ingest] no session cookie — skipping live history sync", flush=True)
+        msg = "no session cookie provided — diary/watchlist sync skipped entirely"
+        print(f"[ingest/sync] WARNING: {msg}", flush=True)
+        sync_stats["errors"].append(msg)
         store.set_ingest_progress(user_id, 100)
         store.ingest_running.discard(user_id)
-        return
+        return sync_stats
+
+    print(f"[ingest/sync] session cookie present (length={len(session_cookie)}), fetching watchlist (max_pages={max_watchlist_pages})...", flush=True)
 
     try:
         live_watchlist = scraper.pull_watchlist_slugs(
             session_cookie, username=username, max_pages=max_watchlist_pages
         )
+        print(f"[ingest/sync] watchlist scraper returned {len(live_watchlist)} slugs", flush=True)
+        stored = 0
         for slug in live_watchlist:
             store.add_watchlist(user_id, slug)
-        print(f"[ingest] watchlist synced: {len(live_watchlist)} slugs", flush=True)
+            stored += 1
+        sync_stats["watchlist_count"] = stored
+        print(f"[ingest/sync] watchlist stored: {stored} slugs for user_id={user_id}", flush=True)
     except Exception as exc:
-        print(f"[ingest] watchlist sync failed: {exc}", flush=True)
+        msg = f"watchlist sync failed: {type(exc).__name__}: {exc}"
+        print(f"[ingest/sync] ERROR: {msg}", flush=True)
+        sync_stats["errors"].append(msg)
 
     store.set_ingest_progress(user_id, 55)
 
+    print(f"[ingest/sync] fetching diary (max_pages={max_diary_pages})...", flush=True)
     try:
         live_diary = scraper.pull_diary_slugs(
             session_cookie, username=username, max_pages=max_diary_pages
         )
+        print(f"[ingest/sync] diary scraper returned {len(live_diary)} slugs", flush=True)
+        stored = 0
         for slug in live_diary:
             store.add_diary(user_id, slug)
-        print(f"[ingest] diary synced: {len(live_diary)} slugs", flush=True)
+            stored += 1
+        sync_stats["diary_count"] = stored
+        print(f"[ingest/sync] diary stored: {stored} slugs for user_id={user_id}", flush=True)
     except Exception as exc:
-        print(f"[ingest] diary sync failed: {exc}", flush=True)
+        msg = f"diary sync failed: {type(exc).__name__}: {exc}"
+        print(f"[ingest/sync] ERROR: {msg}", flush=True)
+        sync_stats["errors"].append(msg)
 
     store.set_ingest_progress(user_id, 100)
     store.ingest_running.discard(user_id)
-    print(f"[ingest] user history sync complete for {username}", flush=True)
+    print(
+        f"[ingest/sync] DONE for {username}: "
+        f"watchlist={sync_stats['watchlist_count']} diary={sync_stats['diary_count']} "
+        f"errors={len(sync_stats['errors'])}",
+        flush=True,
+    )
+    return sync_stats
 
 
 def _filter_first_pipeline(
@@ -614,6 +658,7 @@ def _filter_first_pipeline(
     # Persist to store so deck filtering and future ingests use the real data.
     # Failures are non-fatal — ingest continues with store-only data.
     if session_cookie:
+        print(f"[ingest] session cookie present (length={len(session_cookie)}), fetching live history...", flush=True)
         _emit(22)
         try:
             live_watchlist = scraper.pull_watchlist_slugs(session_cookie, username=username)
@@ -622,7 +667,7 @@ def _filter_first_pipeline(
             watchlist = watchlist | live_watchlist
             print(f"[ingest] live_watchlist={len(live_watchlist)} persisted to store", flush=True)
         except Exception as exc:
-            print(f"[ingest] live watchlist fetch failed: {exc}", flush=True)
+            print(f"[ingest] live watchlist fetch failed: {type(exc).__name__}: {exc}", flush=True)
         _emit(31)
         try:
             live_diary = scraper.pull_diary_slugs(session_cookie, username=username)
@@ -631,8 +676,10 @@ def _filter_first_pipeline(
             diary = diary | live_diary
             print(f"[ingest] live_diary={len(live_diary)} persisted to store", flush=True)
         except Exception as exc:
-            print(f"[ingest] live diary fetch failed: {exc}", flush=True)
+            print(f"[ingest] live diary fetch failed: {type(exc).__name__}: {exc}", flush=True)
         _emit(39)
+    else:
+        print("[ingest] WARNING: no session cookie — skipping live watchlist/diary fetch", flush=True)
 
     unique = [slug for slug in source_slugs if slug not in watchlist]
     unique = [slug for slug in unique if slug not in diary]

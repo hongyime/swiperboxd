@@ -322,6 +322,13 @@ async function _startIngestBackground() {
       body: { user_id: state.username, source: 'trending', depth_pages: 2 }
     });
     console.log(`[ingest] start → ${startRes.status}`);
+    if (startRes.sync_stats) {
+      const s = startRes.sync_stats;
+      console.log(`[ingest] sync_stats: watchlist=${s.watchlist_count} diary=${s.diary_count} errors=${(s.errors||[]).length}`);
+      if (s.errors && s.errors.length > 0) {
+        s.errors.forEach(e => console.warn(`[ingest] sync error: ${e}`));
+      }
+    }
   } catch (err) {
     console.warn('[ingest] start failed (non-blocking):', err.message);
     hideSyncBadge();
@@ -330,7 +337,11 @@ async function _startIngestBackground() {
 
   // Vercel: endpoint ran the sync inline and returned "completed" — no polling needed
   if (startRes.status === 'completed') {
-    console.log('[ingest] sync completed inline (Vercel)');
+    const s = startRes.sync_stats || {};
+    console.log(`[ingest] sync completed inline (Vercel) — watchlist=${s.watchlist_count||0} diary=${s.diary_count||0}`);
+    if (s.watchlist_count === 0 && s.diary_count === 0) {
+      console.warn('[ingest] WARNING: both watchlist and diary are empty — check session cookie and Vercel function logs');
+    }
     hideSyncBadge();
     return;
   }

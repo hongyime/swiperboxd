@@ -336,15 +336,18 @@ class SupabaseStore:
         """Get user ID from Supabase or create new user."""
         # Try to find existing user by letterboxd_username
         response = self.client.table("users").select("id").eq("letterboxd_username", letterboxd_username).execute()
-        
+
         if response.data:
+            print(f"[store] found existing user id={response.data[0]['id']} for {letterboxd_username}", flush=True)
             return response.data[0]["id"]
-        
+
         # Create new user
+        print(f"[store] creating new user for {letterboxd_username}", flush=True)
         new_user = self.client.table("users").insert({
             "letterboxd_username": letterboxd_username
         }).execute()
-        
+
+        print(f"[store] created user id={new_user.data[0]['id']} for {letterboxd_username}", flush=True)
         return new_user.data[0]["id"]
 
     def add_exclusion(self, user_id: str, slug: str) -> None:
@@ -355,6 +358,7 @@ class SupabaseStore:
         except Exception as e:
             # Ignore duplicate key errors
             if "duplicate" not in str(e).lower() and "unique" not in str(e).lower():
+                print(f"[store] ERROR: exclusion insert failed for {slug}: {e}", flush=True)
                 raise
 
     def get_exclusions(self, user_id: str) -> set[str]:
@@ -374,12 +378,14 @@ class SupabaseStore:
         except Exception as e:
             # Ignore duplicate key errors
             if "duplicate" not in str(e).lower() and "unique" not in str(e).lower():
+                print(f"[store] ERROR: watchlist insert failed for {slug}: {e}", flush=True)
                 raise
 
     def get_watchlist(self, user_id: str) -> set[str]:
         """Get user's watchlist from Supabase."""
         actual_user_id = self._get_or_create_user_id(user_id)
         response = self.client.table("watchlist").select("movie_slug").eq("user_id", actual_user_id).execute()
+        print(f"[store] get_watchlist: {len(response.data)} slugs for user_id={actual_user_id}", flush=True)
         return {row["movie_slug"] for row in response.data}
 
     def add_diary(self, user_id: str, slug: str) -> None:
@@ -393,7 +399,15 @@ class SupabaseStore:
         except Exception as e:
             # Ignore duplicate key errors
             if "duplicate" not in str(e).lower() and "unique" not in str(e).lower():
+                print(f"[store] ERROR: diary insert failed for {slug}: {e}", flush=True)
                 raise
+
+    def get_diary(self, user_id: str) -> set[str]:
+        """Get user's diary from Supabase."""
+        actual_user_id = self._get_or_create_user_id(user_id)
+        response = self.client.table("diary").select("movie_slug").eq("user_id", actual_user_id).execute()
+        print(f"[store] get_diary: {len(response.data)} slugs for user_id={actual_user_id}", flush=True)
+        return {row["movie_slug"] for row in response.data}
 
     def get_diary(self, user_id: str) -> set[str]:
         """Get user's diary from Supabase."""

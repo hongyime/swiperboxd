@@ -379,17 +379,22 @@ class HttpLetterboxdScraper:
         slugs: set[str] = set()
         path = f"/{username}/watchlist/" if username else "/watchlist/"
         url = f"{self.base_url}{path}"
+        print(f"[scraper] watchlist: starting fetch url={url} max_pages={max_pages} cookie_len={len(session_cookie or '')}", flush=True)
         for page in range(1, max_pages + 1):
             try:
                 resp = self._fetch(url, params={"page": page}, session_cookie=session_cookie)
-            except RuntimeError:
+                print(f"[scraper] watchlist: page={page} status={resp.status_code} body_len={len(resp.text)}", flush=True)
+            except RuntimeError as exc:
+                print(f"[scraper] watchlist: page={page} fetch failed: {exc} — stopping pagination", flush=True)
                 break
             soup = BeautifulSoup(resp.text, "html.parser")
             page_slugs = _extract_film_slugs(soup)
             if not page_slugs:
+                print(f"[scraper] watchlist: page={page} returned 0 slugs — end of data", flush=True)
                 break
             slugs.update(page_slugs)
-        print(f"[scraper] watchlist pull: {len(slugs)} slugs for {username or '(no username)'}", flush=True)
+            print(f"[scraper] watchlist: page={page} found {len(page_slugs)} slugs (total so far: {len(slugs)})", flush=True)
+        print(f"[scraper] watchlist: DONE {len(slugs)} total slugs for {username or '(no username)'}", flush=True)
         return slugs
 
     def pull_diary_slugs(self, session_cookie: str, username: str | None = None, max_pages: int = 200) -> set[str]:
@@ -397,17 +402,22 @@ class HttpLetterboxdScraper:
         slugs: set[str] = set()
         path = f"/{username}/films/diary/" if username else "/diary/"
         url = f"{self.base_url}{path}"
+        print(f"[scraper] diary: starting fetch url={url} max_pages={max_pages} cookie_len={len(session_cookie or '')}", flush=True)
         for page in range(1, max_pages + 1):
             try:
                 resp = self._fetch(url, params={"page": page}, session_cookie=session_cookie)
-            except RuntimeError:
+                print(f"[scraper] diary: page={page} status={resp.status_code} body_len={len(resp.text)}", flush=True)
+            except RuntimeError as exc:
+                print(f"[scraper] diary: page={page} fetch failed: {exc} — stopping pagination", flush=True)
                 break
             soup = BeautifulSoup(resp.text, "html.parser")
             page_slugs = _extract_film_slugs(soup)
             if not page_slugs:
+                print(f"[scraper] diary: page={page} returned 0 slugs — end of data", flush=True)
                 break
             slugs.update(page_slugs)
-        print(f"[scraper] diary pull: {len(slugs)} slugs for {username or '(no username)'}", flush=True)
+            print(f"[scraper] diary: page={page} found {len(page_slugs)} slugs (total so far: {len(slugs)})", flush=True)
+        print(f"[scraper] diary: DONE {len(slugs)} total slugs for {username or '(no username)'}", flush=True)
         return slugs
 
     def pull_source_slugs(self, source: str, depth_pages: int = 2) -> list[str]:
