@@ -530,6 +530,7 @@ def _filter_first_pipeline(
     # Persist to store so deck filtering and future ingests use the real data.
     # Failures are non-fatal — ingest continues with store-only data.
     if session_cookie:
+        _emit(22)
         try:
             live_watchlist = scraper.pull_watchlist_slugs(session_cookie, username=username)
             for slug in live_watchlist:
@@ -538,6 +539,7 @@ def _filter_first_pipeline(
             print(f"[ingest] live_watchlist={len(live_watchlist)} persisted to store", flush=True)
         except Exception as exc:
             print(f"[ingest] live watchlist fetch failed: {exc}", flush=True)
+        _emit(31)
         try:
             live_diary = scraper.pull_diary_slugs(session_cookie, username=username)
             for slug in live_diary:
@@ -546,6 +548,7 @@ def _filter_first_pipeline(
             print(f"[ingest] live_diary={len(live_diary)} persisted to store", flush=True)
         except Exception as exc:
             print(f"[ingest] live diary fetch failed: {exc}", flush=True)
+        _emit(39)
 
     unique = [slug for slug in source_slugs if slug not in watchlist]
     unique = [slug for slug in unique if slug not in diary]

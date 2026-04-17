@@ -205,13 +205,18 @@ class ProxyManager:
     3. Direct request (no proxy)
     """
     
+    # How many consecutive 403s before a tier is skipped for the rest of the session.
+    _SKIP_THRESHOLD = 3
+
     def __init__(self):
         self._webshare: WebShareProxyPool | None = None
         self._scrape_do: ScrapeDoProxy | None = None
         self._current_source: str = "none"  # "webshare", "scrape_do", "direct"
         self._retry_count = 0
         self._source_failures: dict[str, int] = {"webshare": 0, "scrape_do": 0}
-        
+        # Per-tier consecutive-failure counter. Reset to 0 on any success.
+        self._consecutive_failures: dict[str, int] = {}
+
         # Initialize available proxy sources
         self._init_webshare()
         self._init_scrape_do()
@@ -255,15 +260,22 @@ class ProxyManager:
         """
         tiers: list[tuple[str, dict]] = []
 
+        def _skipped(name: str) -> bool:
+            fails = self._consecutive_failures.get(name, 0)
+            if fails >= self._SKIP_THRESHOLD:
+                print(f"[scraper] tier={name} skipped ({fails} consecutive failures)", flush=True)
+                return True
+            return False
+
         # Tier 1: session-cookie direct
-        if session_cookie:
+        if session_cookie and not _skipped("cookie"):
             tiers.append((
                 "cookie",
                 {"cookies": {"letterboxd.user.CURRENT": session_cookie}},
             ))
 
         # Tier 2: WebShare proxy (attach cookie too — helps avoid bot detection)
-        if self._webshare:
+        if self._webshare and not _skipped("webshare"):
             proxy_url = self._webshare.get_proxy_url()
             if proxy_url:
                 kwargs: dict = {"proxy": proxy_url}
@@ -272,7 +284,7 @@ class ProxyManager:
                 tiers.append(("webshare", kwargs))
 
         # Tier 3: Scrape.do (URL-wrapping; can't forward cookies)
-        if self._scrape_do and self._scrape_do.credits_remaining > 0:
+        if self._scrape_do and self._scrape_do.credits_remaining > 0 and not _skipped("scrape_do"):
             tiers.append((
                 "scrape_do",
                 {"scrape_do_url": self._scrape_do.build_url(target_url)},
@@ -291,6 +303,10 @@ class ProxyManager:
         elif tier == "scrape_do" and self._scrape_do:
             self._scrape_do.record_success()
             self._source_failures["scrape_do"] = 0
+        prev = self._consecutive_failures.get(tier, 0)
+        self._consecutive_failures[tier] = 0
+        if prev >= self._SKIP_THRESHOLD:
+            print(f"[scraper] tier={tier} recovered — re-enabling", flush=True)
         self._retry_count = 0
 
     def record_failure_for(self, tier: str) -> None:
@@ -301,6 +317,9 @@ class ProxyManager:
         elif tier == "scrape_do" and self._scrape_do:
             self._scrape_do.record_failure()
             self._source_failures["scrape_do"] += 1
+        self._consecutive_failures[tier] = self._consecutive_failures.get(tier, 0) + 1
+        if self._consecutive_failures[tier] == self._SKIP_THRESHOLD:
+            print(f"[scraper] tier={tier} circuit-opened after {self._SKIP_THRESHOLD} consecutive failures", flush=True)
         self._retry_count += 1
 
     # ------------------------------------------------------------------ legacy

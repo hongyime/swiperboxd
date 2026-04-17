@@ -3,7 +3,7 @@
  * Uses Letterboxd authentication (username/password)
  */
 
-import { createSuppressionStore, getIngestPollingState } from './state.js';
+import { createSuppressionStore } from './state.js';
 
 const suppression = createSuppressionStore(() => Date.now());
 
@@ -30,6 +30,9 @@ const state = {
   selectedListTitle: 'Choose a List',
   listSearchQuery: ''
 };
+
+// Cancel token for the background ingest poll loop
+let _ingestPollCancelled = false;
 
 // DOM Elements
 const $ = (sel) => document.querySelector(sel);
@@ -95,6 +98,8 @@ function initLetterboxdAuth() {
 
   $('#logout-btn')?.addEventListener('click', () => {
     console.log('[auth] logging out');
+    _ingestPollCancelled = true;
+    hideSyncBadge();
     localStorage.removeItem('swiperboxd_username');
     localStorage.removeItem('swiperboxd_token');
     state.username = null;
@@ -268,7 +273,6 @@ async function loadDeck() {
     console.log('[deck] already syncing, skipping duplicate loadDeck');
     return;
   }
-
   if (!state.selectedListId) {
     console.warn('[deck] loadDeck called with no selected list, aborting');
     return;
@@ -277,34 +281,20 @@ async function loadDeck() {
   console.log('[deck] starting load for list:', state.selectedListId);
   cardStack.classList.add('hidden');
   emptyState.classList.add('hidden');
-  loadingSkeleton.classList.add('hidden');
+  loadingSkeleton.classList.remove('hidden');
+
+  // Kick off watchlist/diary sync in the background — don't block card display
+  _startIngestBackground();
 
   try {
-    console.log('[ingest] starting ingest...');
-    await api('/ingest/start', {
-      method: 'POST',
-      body: { user_id: state.username, source: 'trending', depth_pages: 2 }
-    });
-
-    const ingestResult = await pollProgress();
-    if (ingestResult.status !== 'completed') {
-      const reason = ingestResult.reason || 'ingest_failed';
-      console.error('[deck] aborting deck fetch due to ingest status:', ingestResult.status, reason);
-      throw new Error(reason === 'server_reported_failure'
-        ? 'Letterboxd sync failed before deck load.'
-        : 'Unable to complete ingest before deck load.');
-    }
-
-    console.log('[deck] fetching list deck...');
+    console.log('[deck] fetching list deck from DB...');
     const res = await api(`/lists/${encodeURIComponent(state.selectedListId)}/deck?user_id=${encodeURIComponent(state.username)}`);
-
     const raw = res.results || [];
     state.deck = raw.filter(m => !suppression.isSuppressed(m.slug));
     state.currentIndex = 0;
-
     console.log(`[deck] received ${raw.length} films, ${state.deck.length} after suppression filter`);
-    hideProgress();
 
+    loadingSkeleton.classList.add('hidden');
     if (state.deck.length > 0) {
       renderDeck();
     } else {
@@ -315,102 +305,72 @@ async function loadDeck() {
     console.error('[deck] load failed:', err.message);
     loadingSkeleton.classList.add('hidden');
     emptyState.classList.remove('hidden');
-    hideProgress();
   }
 }
 
-async function pollProgress() {
-  // Remove any existing overlay before creating a new one
-  const existing = $('#ingest-progress-overlay');
-  if (existing) existing.remove();
+async function _startIngestBackground() {
+  // Cancel any previous poll loop still running
+  _ingestPollCancelled = true;
+  await delay(0); // yield so any awaiting loop iteration can check the flag
+  _ingestPollCancelled = false;
 
-  showProgress('Loading your Letterboxd data...');
-  console.log('[ingest] polling progress...');
-
-  // Give the background thread a moment to start before the first poll,
-  // so we don't read the initial 0 or a stale value set just before thread start.
-  await delay(300);
-
-  while (true) {
-    try {
-      const res = await api(`/ingest/progress?user_id=${encodeURIComponent(state.username)}`);
-      const progress = res.progress;
-      const ingestState = getIngestPollingState(progress);
-
-      updateProgressBar(progress);
-      console.log(`[ingest] progress=${progress}%`);
-
-      if (ingestState.status === 'completed') {
-        console.log('[ingest] complete');
-        return ingestState;
-      }
-      if (ingestState.status === 'failed') {
-        console.error('[ingest] server reported ingest failure');
-        return ingestState;
-      }
-
-      await delay(500);
-    } catch (err) {
-      console.error('[ingest] progress poll error:', err.message);
-      return { status: 'interrupted', reason: err.message };
-    }
-  }
-}
-
-function showProgress(message) {
-  const progressOverlay = document.createElement('div');
-  progressOverlay.id = 'ingest-progress-overlay';
-  progressOverlay.className = 'ingest-progress-container';
-  progressOverlay.innerHTML = `
-    <div class="ingest-progress">
-      <div class="progress-logo">
-        <img src="/web/logo.svg" alt="Swiperboxd" />
-      </div>
-      <h3>${message}</h3>
-      <div class="progress-bar-container">
-        <div class="progress-bar">
-          <div class="progress-fill" style="width: 0%"></div>
-        </div>
-      </div>
-      <p class="progress-percent">0%</p>
-      <button id="progress-disconnect-btn" class="btn-text progress-disconnect">Disconnect</button>
-    </div>
-  `;
-  document.body.appendChild(progressOverlay);
-
-  document.getElementById('progress-disconnect-btn')?.addEventListener('click', () => {
-    console.log('[auth] disconnect from loading screen');
-    hideProgress();
-    localStorage.removeItem('swiperboxd_username');
-    localStorage.removeItem('swiperboxd_token');
-    state.username = null;
-    state.encryptedSession = null;
-    state.isSyncing = false;
-    showAuth();
-  });
-}
-
-function hideProgress() {
-  const overlay = $('#ingest-progress-overlay');
-  if (overlay) {
-    overlay.classList.add('hidden');
-    setTimeout(() => overlay.remove(), 300);
-  }
-}
-
-function updateProgressBar(progress) {
-  const fill = $('.progress-fill');
-  const percent = $('.progress-percent');
-  if (!fill || !percent) return;
-  if (progress === -1) {
-    fill.style.width = '100%';
-    fill.style.background = 'var(--accent-red, #e74c3c)';
-    percent.textContent = 'Failed — check connection';
+  try {
+    const res = await api('/ingest/start', {
+      method: 'POST',
+      body: { user_id: state.username, source: 'trending', depth_pages: 2 }
+    });
+    console.log(`[ingest] start → ${res.status}`);
+  } catch (err) {
+    console.warn('[ingest] start failed (non-blocking):', err.message);
     return;
   }
-  const pct = Math.min(100, Math.max(0, progress));
-  fill.style.width = `${pct}%`;
-  percent.textContent = `${pct}%`;
+
+  // Poll progress and show a small badge — cards are already visible
+  showSyncBadge(0);
+  await delay(300); // brief pause before first poll
+
+  while (!_ingestPollCancelled) {
+    try {
+      const res = await api(`/ingest/progress?user_id=${encodeURIComponent(state.username)}`);
+      const { progress } = res;
+      console.log(`[ingest] progress=${progress}%`);
+
+      if (progress === 100) {
+        hideSyncBadge();
+        console.log('[ingest] sync complete');
+        return;
+      }
+      if (progress === -1) {
+        hideSyncBadge();
+        console.warn('[ingest] sync failed on server');
+        return;
+      }
+      showSyncBadge(progress);
+    } catch (err) {
+      console.warn('[ingest] poll error:', err.message);
+      hideSyncBadge();
+      return;
+    }
+    await delay(1000);
+  }
+}
+
+function showSyncBadge(progress) {
+  let badge = $('#sync-badge');
+  if (!badge) {
+    badge = document.createElement('div');
+    badge.id = 'sync-badge';
+    badge.className = 'sync-badge';
+    document.body.appendChild(badge);
+  }
+  const label = (progress > 0 && progress < 100) ? `Syncing… ${progress}%` : 'Syncing watchlist…';
+  badge.textContent = label;
+  badge.classList.remove('hidden');
+}
+
+function hideSyncBadge() {
+  const badge = $('#sync-badge');
+  if (badge) badge.classList.add('hidden');
 }
 
 function renderDeck() {

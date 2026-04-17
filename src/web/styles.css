@@ -813,3 +813,22 @@ body {
   0%, 100% { transform: scale(1); opacity: 1; }
   50% { transform: scale(1.05); opacity: 0.8; }
 }
+
+/* Non-blocking sync badge shown while ingest runs in background */
+.sync-badge {
+  position: fixed;
+  bottom: 1rem;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(30, 30, 30, 0.9);
+  color: var(--text-secondary);
+  font-size: 0.75rem;
+  padding: 0.35rem 0.85rem;
+  border-radius: 999px;
+  border: 1px solid rgba(255,255,255,0.08);
+  backdrop-filter: blur(8px);
+  z-index: 200;
+  pointer-events: none;
+  white-space: nowrap;
+}
+.sync-badge.hidden { display: none; }

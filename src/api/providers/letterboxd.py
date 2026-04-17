@@ -534,11 +534,16 @@ class HttpLetterboxdScraper:
         (https://letterboxd.com/lists/popular/). If Letterboxd changes its HTML
         structure, update the selectors here — all other logic stays the same.
         """
-        url = f"{self.base_url}/lists/popular/"
+        # Letterboxd uses path-based pagination: /lists/popular/page/N/
+        # Passing ?page=N as a query param is silently ignored and always returns page 1.
+        if page > 1:
+            url = f"{self.base_url}/lists/popular/page/{page}/"
+        else:
+            url = f"{self.base_url}/lists/popular/"
         results: list[LetterboxdListSummary] = []
 
         try:
-            response = self._fetch(url, params={"page": page})
+            response = self._fetch(url)
             soup = BeautifulSoup(response.text, "html.parser")
 
             # Each list entry: div.listitem > article.list-summary
