@@ -235,10 +235,10 @@ function renderLists() {
         <span class="refresh-icon">↻</span>
         Refresh Lists from Letterboxd
       </button>
-      <p class="refresh-hint">Updates automatically every 3 hours</p>
+      <p class="refresh-hint">Updates automatically every 24 hours</p>
     </div>`;
   
-  profileOptions.innerHTML = refreshHTML = refreshSection + state.lists.map(item => `
+  profileOptions.innerHTML = refreshSection + state.lists.map(item => `
     <div class="profile-option ${item.list_id === state.selectedListId ? 'active' : ''}" data-list-id="${esc(item.list_id)}">
       <div class="list-option-title">${esc(item.title)}</div>
       <div class="list-option-meta">${esc(item.owner_name)} · ${esc(item.film_count)} films</div>
@@ -271,7 +271,7 @@ function renderLists() {
       }, 2000);
       
       if (err.message.includes('rate_limited')) {
-        alert('Letterboxd is rate limiting requests. Lists will be updated automatically every 3 hours.');
+        alert('Letterboxd is rate limiting requests. Lists will be updated automatically every 24 hours.');
       }
     }
   });

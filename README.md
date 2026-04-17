@@ -20,13 +20,14 @@ Copy `.env.template` to `.env` and populate:
 | --- | --- | --- |
 | `MASTER_ENCRYPTION_KEY` | Yes | Fernet key for session token encryption. Generate with `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"` |
 | `SUPABASE_URL` | Production | Supabase project URL |
-| `SUPABASE_ANON_KEY` | Production | Supabase anon/public key |
+| `SUPABASE_SERVICE_ROLE_KEY` | Production | Supabase service role key — bypasses RLS, required for server-side writes |
+| `SUPABASE_ANON_KEY` | Optional | Supabase anon key — fallback when service role key is absent (local dev only) |
 | `SCRAPER_BACKEND` | No | `http` (default) or `mock` (dev/test) |
 | `APP_ENV` | No | `development` (default) or `production` |
 | `TARGET_PLATFORM_BASE_URL` | No | Override scrape target, default `https://letterboxd.com` |
 | `VERCEL_CRON_SECRET` | Production | Shared secret for `X-Cron-Secret` header on cron endpoints |
 
-Without `SUPABASE_URL` and `SUPABASE_ANON_KEY` the app falls back to `InMemoryStore` (data is wiped on restart).
+Without `SUPABASE_URL` the app falls back to `InMemoryStore` (data is wiped on restart). The backend must use `SUPABASE_SERVICE_ROLE_KEY` — the anon key is blocked by Row Level Security on writes.
 
 ---
 

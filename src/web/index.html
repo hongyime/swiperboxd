@@ -22,19 +22,9 @@
         <p>Swipe. Discover. Repeat.</p>
       </div>
 
-      <div class="auth-steps">
-        <p class="auth-steps-title">Connect your Letterboxd account</p>
-        <ol>
-          <li>Log in to <strong>letterboxd.com</strong> in your browser</li>
-          <li>Open DevTools <span class="key">F12</span> → Application → Cookies → <code>letterboxd.com</code></li>
-          <li>Find the row named <code>letterboxd.user.CURRENT</code> and copy its value</li>
-          <li>Paste it below along with your username</li>
-        </ol>
-      </div>
-
       <form id="letterboxd-login-form" class="auth-form">
         <input type="text" id="letterboxd-username" placeholder="Your Letterboxd username" autocomplete="username" required />
-        <textarea id="letterboxd-session-cookie" placeholder="Paste letterboxd.session cookie value here" rows="3" required autocomplete="off"></textarea>
+        <textarea id="letterboxd-session-cookie" placeholder="Paste letterboxd.session cookie value here" rows="6" required autocomplete="off"></textarea>
         <button type="submit" class="btn-primary">Connect</button>
       </form>
       <div id="auth-error" class="error-msg hidden"></div>

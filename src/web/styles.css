@@ -215,50 +215,6 @@ body {
   border: 1px solid var(--accent-green);
 }
 
-.auth-steps {
-  background: rgba(255,255,255,0.05);
-  border: 1px solid rgba(255,255,255,0.1);
-  border-radius: 12px;
-  padding: 1rem 1.25rem;
-  margin-bottom: 1.25rem;
-  text-align: left;
-}
-
-.auth-steps-title {
-  color: var(--text-primary);
-  font-size: 0.85rem;
-  font-weight: 600;
-  margin: 0 0 0.6rem 0;
-}
-
-.auth-steps ol {
-  color: var(--text-secondary);
-  font-size: 0.8rem;
-  line-height: 1.6;
-  margin: 0;
-  padding-left: 1.25rem;
-}
-
-.auth-steps li {
-  margin-bottom: 0.2rem;
-}
-
-.auth-steps code {
-  background: rgba(255,255,255,0.12);
-  padding: 1px 5px;
-  border-radius: 3px;
-  font-family: monospace;
-  font-size: 0.78rem;
-}
-
-.auth-steps .key {
-  background: rgba(255,255,255,0.15);
-  border: 1px solid rgba(255,255,255,0.2);
-  border-radius: 3px;
-  padding: 0 4px;
-  font-size: 0.72rem;
-  font-family: monospace;
-}
 
 .auth-form textarea {
   width: 100%;

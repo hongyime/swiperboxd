@@ -16,19 +16,21 @@ def get_supabase_client() -> Client:
     """
     Get a cached Supabase client instance.
 
-    Requires SUPABASE_URL and SUPABASE_ANON_KEY environment variables.
-    Raises ValueError if required environment variables are missing.
-
-    Returns:
-        Client: Supabase client instance
+    Uses SUPABASE_SERVICE_ROLE_KEY when available (bypasses RLS — correct for
+    server-side code). Falls back to SUPABASE_ANON_KEY for read-only / local dev.
+    Raises ValueError if neither key is set alongside SUPABASE_URL.
     """
     supabase_url = os.getenv("SUPABASE_URL")
-    supabase_key = os.getenv("SUPABASE_ANON_KEY")
+    # Prefer service role key: server-side code must bypass RLS to read/write
+    # user rows on behalf of any authenticated user.
+    supabase_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY") or os.getenv("SUPABASE_ANON_KEY")
 
     if not supabase_url or not supabase_key:
-        raise ValueError("SUPABASE_URL and SUPABASE_ANON_KEY environment variables must be set")
+        raise ValueError(
+            "SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY (or SUPABASE_ANON_KEY) "
+            "environment variables must be set"
+        )
 
-    # Lazy import to avoid errors when Supabase credentials are not configured
     from supabase import create_client
 
     return create_client(supabase_url, supabase_key)
