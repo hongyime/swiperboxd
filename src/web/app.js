@@ -464,27 +464,67 @@ function createCard(movie, isTop = false) {
 }
 
 function initCardTouch(card) {
-  let startX = 0, startY = 0, currentX = 0, currentY = 0;
+  let startX = 0, startY = 0, currentX = 0, currentY = 0, dragging = false;
   const threshold = 100;
 
-  card.addEventListener('touchstart', (e) => {
-    startX = e.touches[0].clientX;
-    startY = e.touches[0].clientY;
-  }, { passive: true });
+  function onStart(x, y) {
+    startX = x;
+    startY = y;
+    currentX = 0;
+    currentY = 0;
+    dragging = true;
+    card.style.transition = 'none';
+  }
 
-  card.addEventListener('touchmove', (e) => {
-    currentX = e.touches[0].clientX - startX;
-    currentY = e.touches[0].clientY - startY;
+  function onMove(x, y) {
+    if (!dragging) return;
+    currentX = x - startX;
+    currentY = y - startY;
     card.style.transform = `translate(${currentX}px, ${currentY}px) rotate(${currentX * 0.1}deg)`;
-  }, { passive: true });
+    // Show swipe indicators
+    const watchEl = card.querySelector('.swipe-indicator.watchlist');
+    const dismissEl = card.querySelector('.swipe-indicator.dismiss');
+    const logEl = card.querySelector('.swipe-indicator.log');
+    if (watchEl) watchEl.style.opacity = currentX > 30 ? Math.min((currentX - 30) / 70, 1) : 0;
+    if (dismissEl) dismissEl.style.opacity = currentX < -30 ? Math.min((-currentX - 30) / 70, 1) : 0;
+    if (logEl) logEl.style.opacity = currentY < -30 ? Math.min((-currentY - 30) / 70, 1) : 0;
+  }
 
-  card.addEventListener('touchend', () => {
+  function onEnd() {
+    if (!dragging) return;
+    dragging = false;
+    card.style.transition = '';
+    const watchEl = card.querySelector('.swipe-indicator.watchlist');
+    const dismissEl = card.querySelector('.swipe-indicator.dismiss');
+    const logEl = card.querySelector('.swipe-indicator.log');
+    if (watchEl) watchEl.style.opacity = 0;
+    if (dismissEl) dismissEl.style.opacity = 0;
+    if (logEl) logEl.style.opacity = 0;
     if (currentX > threshold) executeSwipe('watchlist');
     else if (currentX < -threshold) executeSwipe('dismiss');
     else if (currentY < -threshold) executeSwipe('log');
     else card.style.transform = '';
     currentX = 0;
     currentY = 0;
+  }
+
+  // Touch
+  card.addEventListener('touchstart', (e) => onStart(e.touches[0].clientX, e.touches[0].clientY), { passive: true });
+  card.addEventListener('touchmove', (e) => onMove(e.touches[0].clientX, e.touches[0].clientY), { passive: true });
+  card.addEventListener('touchend', onEnd);
+
+  // Mouse (desktop drag)
+  card.addEventListener('mousedown', (e) => {
+    e.preventDefault();
+    onStart(e.clientX, e.clientY);
+    function onMouseMove(ev) { onMove(ev.clientX, ev.clientY); }
+    function onMouseUp() {
+      onEnd();
+      document.removeEventListener('mousemove', onMouseMove);
+      document.removeEventListener('mouseup', onMouseUp);
+    }
+    document.addEventListener('mousemove', onMouseMove);
+    document.addEventListener('mouseup', onMouseUp);
   });
 }
 

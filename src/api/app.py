@@ -288,9 +288,16 @@ def list_deck(list_id: str, user_id: str = Query(min_length=1)):
     for movie in scraper.metadata_for_slugs(missing):
         store.upsert_movie(movie.__dict__)
 
+    # Filter out movies the user has already watchlisted, logged, or dismissed
+    watchlist = store.get_watchlist(user_id)
+    diary = store.get_diary(user_id)
+    exclusions = store.get_exclusions(user_id)
+    seen = watchlist | diary | exclusions
+
     movies = [store.get_movie(slug) for slug in store.get_list_memberships(list_id)]
-    movies = [movie for movie in movies if movie]
+    movies = [m for m in movies if m and m.get("slug") not in seen]
     movies = store.weighted_shuffle(user_id, movies)
+    print(f"[deck] list={list_id} total={len(store.get_list_memberships(list_id))} after_filter={len(movies)} seen={len(seen)}", flush=True)
     return {
         "status": "ok",
         "list": summary,

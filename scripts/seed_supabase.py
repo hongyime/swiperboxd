@@ -2,27 +2,25 @@
 Local seed script: scrape Letterboxd from this machine and upload to Supabase.
 
 Why local? Vercel's AWS IPs are blocked by Letterboxd. Your home IP is not.
-This script scrapes lists + movies locally then writes them straight to production.
+
+Auth flow (tried in order):
+  1. LETTERBOXD_SESSION_COOKIE in .env  → fastest, skip login entirely
+  2. Headless login with LETTERBOXD_USERNAME + LETTERBOXD_PASSWORD
+  3. Opens a real Chromium browser → you log in manually → cookie extracted automatically
+     (requires: pip install playwright && playwright install chromium)
+
+Resume logic:
+  - Lists whose memberships are already in Supabase are skipped (slug scraping)
+  - Movies already in the movies table are skipped (metadata fetch)
+  - Kill the script any time — restart picks up where it left off
 
 Usage:
     python scripts/seed_supabase.py
     python scripts/seed_supabase.py --lists-pages 5
-    python scripts/seed_supabase.py --movies-only
-    python scripts/seed_supabase.py --skip-movies
-    python scripts/seed_supabase.py --dry-run
-
-Options:
-    --lists-pages N   Pages of popular lists to scrape (default: 3, ~18 lists/page)
-    --skip-movies     Upload list metadata + memberships only, skip movie metadata
-    --movies-only     Skip list scraping; fetch metadata for slugs already in DB memberships
-    --dry-run         Scrape but don't write to Supabase (useful for debugging)
-
-Auth:
-    Reads LETTERBOXD_USERNAME + LETTERBOXD_PASSWORD from .env and logs in to get a
-    session cookie automatically. This authenticates every scrape request (tier 1),
-    which is much harder for Letterboxd to block than anonymous requests.
-    Set LETTERBOXD_SESSION_COOKIE in .env to skip the login step and use a
-    pre-obtained cookie directly (faster).
+    python scripts/seed_supabase.py --skip-movies     # lists + memberships only
+    python scripts/seed_supabase.py --movies-only     # fill in missing movie metadata
+    python scripts/seed_supabase.py --no-resume       # re-scrape everything (ignore cache)
+    python scripts/seed_supabase.py --dry-run         # scrape but don't write to Supabase
 """
 from __future__ import annotations
 
@@ -32,50 +30,101 @@ import sys
 import time
 from pathlib import Path
 
-# Ensure the repo root is on the path so src.api imports work
 repo_root = Path(__file__).parent.parent
 sys.path.insert(0, str(repo_root))
 
-from dotenv import load_dotenv
+from dotenv import load_dotenv, set_key
 load_dotenv(repo_root / ".env")
 
+ENV_FILE = repo_root / ".env"
+MOVIE_BATCH = 5   # fetch this many movie pages at once before saving
+
+
+# ── Auth ──────────────────────────────────────────────────────────────────────
 
 def _get_session_cookie(scraper) -> str | None:
-    """Try to obtain a Letterboxd session cookie for authenticated scraping.
+    """Return a Letterboxd session cookie, trying env → headless login → browser."""
 
-    Checks (in order):
-    1. LETTERBOXD_SESSION_COOKIE env var (pre-obtained cookie, fastest)
-    2. Login with LETTERBOXD_USERNAME + LETTERBOXD_PASSWORD
-    """
-    # Option 1: pre-set cookie
+    # 1. Pre-set cookie in .env
     cookie = os.getenv("LETTERBOXD_SESSION_COOKIE", "").strip()
     if cookie:
-        print(f"[seed] Using pre-set LETTERBOXD_SESSION_COOKIE")
+        print("[auth] Using LETTERBOXD_SESSION_COOKIE from .env")
         return cookie
 
-    # Option 2: login with credentials
+    # 2. Headless login
     username = os.getenv("LETTERBOXD_USERNAME", "").strip()
     password = os.getenv("LETTERBOXD_PASSWORD", "").strip()
     if username and password:
-        print(f"[seed] Logging in as {username} to get session cookie...")
+        print(f"[auth] Trying headless login as {username}...")
         try:
             cookie = scraper.login(username, password)
-            print(f"[seed] Login OK — session cookie obtained")
+            print("[auth] Headless login OK")
             return cookie
         except Exception as exc:
-            print(f"[seed] Login failed ({exc}), continuing without auth cookie")
-            return None
+            print(f"[auth] Headless login failed ({exc}) — falling back to browser login")
 
-    print("[seed] No LETTERBOXD_SESSION_COOKIE or credentials found — scraping without auth")
+    # 3. Browser login via Playwright
+    return _browser_login()
+
+
+def _browser_login() -> str | None:
+    """Open a real Chromium browser, wait for the user to log in, return the session cookie."""
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError:
+        print(
+            "\n[auth] Playwright not installed.\n"
+            "  Run:  pip install playwright && playwright install chromium\n"
+            "  Then re-run this script.\n"
+        )
+        return None
+
+    print("\n[auth] Opening Chromium for manual login...")
+    print("[auth] Log in to Letterboxd in the browser — the script will continue automatically.\n")
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=False, slow_mo=50)
+        context = browser.new_context()
+        page = context.new_page()
+        page.goto("https://letterboxd.com/sign-in/")
+
+        # Poll until letterboxd.user.CURRENT cookie appears (up to 3 minutes)
+        cookie_value = None
+        for _ in range(180):
+            for c in context.cookies():
+                if c["name"] == "letterboxd.user.CURRENT":
+                    cookie_value = c["value"]
+                    break
+            if cookie_value:
+                print("[auth] Login detected — cookie extracted")
+                break
+            time.sleep(1)
+        else:
+            print("[auth] Timed out waiting for login (3 min)")
+
+        browser.close()
+
+    if cookie_value:
+        # Persist to .env so future runs skip the browser step
+        try:
+            set_key(str(ENV_FILE), "LETTERBOXD_SESSION_COOKIE", cookie_value)
+            print(f"[auth] Saved cookie to {ENV_FILE} as LETTERBOXD_SESSION_COOKIE")
+        except Exception as exc:
+            print(f"[auth] Could not save cookie to .env: {exc}")
+        return cookie_value
+
     return None
 
+
+# ── Main ──────────────────────────────────────────────────────────────────────
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Seed Supabase with Letterboxd data")
     parser.add_argument("--lists-pages", type=int, default=3, help="Pages of popular lists to scrape (default: 3)")
-    parser.add_argument("--skip-movies", action="store_true", help="Skip movie metadata fetch")
-    parser.add_argument("--movies-only", action="store_true", help="Skip list scraping; only fetch missing movie metadata")
-    parser.add_argument("--dry-run", action="store_true", help="Scrape only, don't write to Supabase")
+    parser.add_argument("--skip-movies", action="store_true", help="Save lists + memberships only, skip movie metadata")
+    parser.add_argument("--movies-only", action="store_true", help="Fill in missing movie metadata; skip list scraping")
+    parser.add_argument("--no-resume", action="store_true", help="Re-scrape everything, ignore existing DB data")
+    parser.add_argument("--dry-run", action="store_true", help="Scrape but don't write to Supabase")
     args = parser.parse_args()
 
     from src.api.providers.letterboxd import HttpLetterboxdScraper
@@ -83,7 +132,6 @@ def main() -> None:
 
     scraper = HttpLetterboxdScraper()
 
-    # Get session cookie — uses auth credentials from .env for tier-1 requests
     session_cookie = _get_session_cookie(scraper)
     if session_cookie:
         scraper.session_cookie = session_cookie
@@ -100,91 +148,158 @@ def main() -> None:
         print("[seed] DRY RUN — no writes to Supabase")
 
     if args.movies_only:
-        # Skip list scraping — go straight to fetching missing movie metadata
         _fetch_missing_movies(scraper, store, args)
         return
 
-    # ── Step 1: Scrape list catalog ─────────────────────────────────────────
+    # ── Step 1: Discover lists page by page ────────────────────────────────
     print(f"\n[seed] Scraping {args.lists_pages} page(s) of popular lists...")
-    all_lists = []
+    seen_ids: set[str] = set()
+    unique_lists = []
+
     for page in range(1, args.lists_pages + 1):
         print(f"  [lists] page {page}/{args.lists_pages}...", end=" ", flush=True)
         try:
-            page_results = scraper.discover_site_lists(page=page)
-            all_lists.extend(page_results)
-            print(f"got {len(page_results)} lists (total: {len(all_lists)})")
+            results = scraper.discover_site_lists(page=page)
+            new = [r for r in results if r.list_id not in seen_ids]
+            for r in new:
+                seen_ids.add(r.list_id)
+                unique_lists.append(r)
+            print(f"got {len(results)} ({len(new)} new, {len(unique_lists)} total unique)")
         except Exception as exc:
             print(f"FAILED: {exc}")
         time.sleep(0.5)
 
-    if not all_lists:
+    if not unique_lists:
         print("[seed] No lists scraped. Check your connection.")
         sys.exit(1)
 
-    # Deduplicate by list_id
-    seen_ids: set[str] = set()
-    unique_lists = []
-    for lst in all_lists:
-        if lst.list_id not in seen_ids:
-            seen_ids.add(lst.list_id)
-            unique_lists.append(lst)
+    print(f"\n[seed] Processing {len(unique_lists)} unique lists...\n")
 
-    print(f"\n[seed] {len(unique_lists)} unique lists found")
+    # ── Step 2: Per-list: save summary → get slugs → save memberships → fetch movies
+    total_movies_written = 0
+    total_movies_skipped = 0
+    total_movies_failed = 0
 
-    if not args.dry_run:
-        print("[seed] Writing list summaries to Supabase...")
-        for lst in unique_lists:
-            store.upsert_list_summary(lst.__dict__)
-        print(f"[seed] {len(unique_lists)} list summaries written")
+    for list_idx, lst in enumerate(unique_lists, 1):
+        print(f"[{list_idx}/{len(unique_lists)}] {lst.title[:70]}")
 
-    # ── Step 2: Scrape movie slugs for each list ────────────────────────────
-    all_slugs: list[str] = []
-    list_slug_map: dict[str, list[str]] = {}
+        # Save list summary immediately
+        if not args.dry_run:
+            try:
+                store.upsert_list_summary(lst.__dict__)
+            except Exception as exc:
+                print(f"  [warn] Failed to save list summary: {exc}")
 
-    print(f"\n[seed] Scraping movie slugs for each list...")
-    for i, lst in enumerate(unique_lists, 1):
-        print(f"  [{i}/{len(unique_lists)}] {lst.title[:60]}...", end=" ", flush=True)
+        # Get movie slugs — resume from DB if possible
+        slugs = _get_slugs_for_list(lst, scraper, store, args)
+        if slugs is None:
+            print(f"  [skip] Could not get slugs — skipping")
+            continue
+
+        print(f"  slugs: {len(slugs)}", end="")
+
+        if args.skip_movies:
+            print(" (--skip-movies: not fetching metadata)")
+            continue
+
+        # Which movies need fetching?
+        if not args.dry_run and not args.no_resume:
+            existing = {row["slug"] for row in store.client.table("movies").select("slug").in_("slug", slugs).execute().data} if slugs else set()
+            to_fetch = [s for s in slugs if s not in existing]
+            print(f" | already in DB: {len(existing)} | to fetch: {len(to_fetch)}")
+        else:
+            to_fetch = list(slugs)
+            print(f" | to fetch: {len(to_fetch)}")
+
+        if not to_fetch:
+            print(f"  [resume] All movies already in DB — skipping")
+            continue
+
+        # Fetch + save in small batches so every movie is persisted immediately
+        w, sk, f = _fetch_and_save_movies(to_fetch, lst.title, scraper, store, args)
+        total_movies_written += w
+        total_movies_skipped += sk
+        total_movies_failed += f
+
+        print()  # blank line between lists
+
+    _print_summary(store, args, total_movies_written, total_movies_skipped, total_movies_failed)
+
+
+def _get_slugs_for_list(lst, scraper, store, args) -> list[str] | None:
+    """Return movie slugs for a list — resume from DB cache when available."""
+    # Resume: memberships already in DB?
+    if not args.dry_run and not args.no_resume:
+        cached = store.get_list_memberships(lst.list_id)
+        if cached:
+            print(f"  [resume] memberships cached ({len(cached)} slugs)")
+            return cached
+
+    # Scrape fresh
+    try:
+        slugs = scraper.fetch_list_movie_slugs(lst.list_id, list_url=lst.url)
+    except Exception as exc:
+        print(f"  [error] slug scrape failed: {exc}")
+        return None
+
+    if not args.dry_run and slugs:
         try:
-            slugs = scraper.fetch_list_movie_slugs(lst.list_id, list_url=lst.url)
-            list_slug_map[lst.list_id] = slugs
-            all_slugs.extend(slugs)
-            print(f"{len(slugs)} films")
+            store.replace_list_memberships(lst.list_id, slugs)
         except Exception as exc:
-            print(f"FAILED: {exc}")
-            list_slug_map[lst.list_id] = []
-        time.sleep(0.3)
+            print(f"  [warn] Failed to save memberships: {exc}")
 
-    # Write memberships to Supabase
-    if not args.dry_run:
-        print("\n[seed] Writing list memberships to Supabase...")
-        written_memberships = 0
-        for list_id, slugs in list_slug_map.items():
-            if slugs:
-                store.replace_list_memberships(list_id, slugs)
-                written_memberships += 1
-        print(f"[seed] {written_memberships} list membership sets written")
+    time.sleep(0.3)
+    return slugs
 
-    # Deduplicate all movie slugs across lists
-    seen_slugs: set[str] = set()
-    unique_slugs: list[str] = []
-    for slug in all_slugs:
-        if slug and slug not in seen_slugs:
-            seen_slugs.add(slug)
-            unique_slugs.append(slug)
 
-    print(f"\n[seed] {len(unique_slugs)} unique movie slugs across all lists")
+def _fetch_and_save_movies(
+    slugs: list[str], list_title: str, scraper, store, args
+) -> tuple[int, int, int]:
+    """Fetch movie metadata in small batches and save each movie immediately.
 
-    if args.skip_movies:
-        print("[seed] --skip-movies: skipping movie metadata fetch")
-        _print_summary(store, args)
-        return
+    Returns (written, skipped, failed).
+    """
+    written = skipped = failed = 0
+    total = len(slugs)
 
-    _fetch_movies_for_slugs(unique_slugs, scraper, store, args)
-    _print_summary(store, args)
+    for batch_start in range(0, total, MOVIE_BATCH):
+        batch = slugs[batch_start: batch_start + MOVIE_BATCH]
+        batch_end = min(batch_start + MOVIE_BATCH, total)
+        print(f"  [movies] {batch_start + 1}-{batch_end}/{total}...", end=" ", flush=True)
+
+        try:
+            movies = scraper.metadata_for_slugs(batch)
+        except Exception as exc:
+            failed += len(batch)
+            print(f"SCRAPE FAILED: {exc}")
+            time.sleep(1)
+            continue
+
+        fetched_slugs = {m.slug for m in movies}
+        skipped += len(batch) - len(fetched_slugs)  # slugs that came back empty
+
+        batch_ok = batch_fail = 0
+        if not args.dry_run and store is not None:
+            for movie in movies:
+                try:
+                    store.upsert_movie(movie.__dict__)
+                    batch_ok += 1
+                except Exception as exc:
+                    batch_fail += 1
+                    print(f"\n    [warn] upsert failed for {movie.slug}: {exc}", end="")
+        else:
+            batch_ok = len(movies)
+
+        written += batch_ok
+        failed += batch_fail
+        print(f"saved {batch_ok}/{len(batch)}" + (f" ({batch_fail} errors)" if batch_fail else ""))
+        time.sleep(0.4)
+
+    return written, skipped, failed
 
 
 def _fetch_missing_movies(scraper, store, args) -> None:
-    """--movies-only: pull all slugs from DB memberships, fetch metadata for missing ones."""
+    """--movies-only: fetch metadata for slugs in DB memberships that have no movie record."""
     if args.dry_run or store is None:
         print("[seed] --movies-only requires a live Supabase connection (not --dry-run)")
         return
@@ -196,82 +311,28 @@ def _fetch_missing_movies(scraper, store, args) -> None:
 
     existing = {row["slug"] for row in store.client.table("movies").select("slug").execute().data}
     missing = [s for s in all_slugs if s not in existing]
-    print(f"[seed] {len(existing)} already in movies table, {len(missing)} need fetching")
+    print(f"[seed] {len(existing)} already in movies table, {len(missing)} to fetch")
 
     if not missing:
-        print("[seed] All movies already seeded. Done.")
-        return
-
-    _fetch_movies_for_slugs(missing, scraper, store, args)
-    _print_summary(store, args)
-
-
-def _fetch_movies_for_slugs(slugs: list[str], scraper, store, args) -> None:
-    """Fetch + upsert metadata for the given slug list."""
-    if not slugs:
-        return
-
-    # Check which ones are already in DB (skip if not --movies-only, already filtered upstream)
-    missing_slugs = slugs
-    if not args.dry_run and store is not None and not args.movies_only:
-        print("\n[seed] Checking which movies are already in Supabase...")
-        existing = {row["slug"] for row in store.client.table("movies").select("slug").execute().data}
-        missing_slugs = [s for s in slugs if s not in existing]
-        print(f"[seed] {len(existing)} already in DB, {len(missing_slugs)} need fetching")
-
-    if not missing_slugs:
         print("[seed] All movies already seeded.")
         return
 
-    BATCH = 20
-    total = len(missing_slugs)
-    fetched = 0
-    failed = 0
-
-    print(f"\n[seed] Fetching metadata for {total} movies in batches of {BATCH}...")
-    for batch_start in range(0, total, BATCH):
-        batch = missing_slugs[batch_start: batch_start + BATCH]
-        batch_end = min(batch_start + BATCH, total)
-        print(f"  [movies] {batch_start + 1}-{batch_end}/{total}...", end=" ", flush=True)
-
-        try:
-            movies = scraper.metadata_for_slugs(batch)
-        except Exception as exc:
-            failed += len(batch)
-            print(f"SCRAPE FAILED: {exc}")
-            time.sleep(0.5)
-            continue
-
-        batch_fetched = 0
-        batch_failed = 0
-        if not args.dry_run and store is not None:
-            for movie in movies:
-                try:
-                    store.upsert_movie(movie.__dict__)
-                    batch_fetched += 1
-                except Exception as exc:
-                    batch_failed += 1
-                    print(f"\n    [warn] upsert failed for {movie.slug}: {exc}", end="")
-        else:
-            batch_fetched = len(movies)
-
-        fetched += batch_fetched
-        failed += batch_failed + (len(batch) - len(movies))
-        print(f"fetched {batch_fetched}/{len(batch)}" + (f" ({batch_failed} upsert errors)" if batch_failed else ""))
-        time.sleep(0.5)
-
-    print(f"\n[seed] Movie metadata: {fetched} written, {failed} failed/skipped")
+    w, sk, f = _fetch_and_save_movies(missing, "all lists", scraper, store, args)
+    _print_summary(store, args, w, sk, f)
 
 
-def _print_summary(store, args) -> None:
-    print(f"\n[seed] Done. Supabase now has:")
+def _print_summary(store, args, written=0, skipped=0, failed=0) -> None:
+    print(f"\n[seed] Done.")
+    print(f"  Movies written: {written} | skipped (no data): {skipped} | failed: {failed}")
     if not args.dry_run and store is not None:
-        lists_count = len(store.get_lists())
-        movies_count = len(store.client.table("movies").select("slug").execute().data)
-        print(f"  {lists_count} lists")
-        print(f"  {movies_count} movies")
+        try:
+            lists_count = len(store.get_lists())
+            movies_count = len(store.client.table("movies").select("slug").execute().data)
+            print(f"  Supabase totals: {lists_count} lists, {movies_count} movies")
+        except Exception as exc:
+            print(f"  (Could not fetch totals: {exc})")
     else:
-        print(f"  (dry run — nothing written)")
+        print("  (dry run — nothing written)")
 
 
 if __name__ == "__main__":
