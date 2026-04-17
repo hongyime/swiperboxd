@@ -256,7 +256,10 @@ def list_detail(list_id: str):
         raise HTTPException(status_code=404, detail={"code": "list_not_found"})
 
     movie_slugs = scraper.fetch_list_movie_slugs(list_id, list_url=summary.get("url"))
-    store.replace_list_memberships(list_id, movie_slugs)
+    if movie_slugs:
+        store.replace_list_memberships(list_id, movie_slugs)
+    else:
+        movie_slugs = store.get_list_memberships(list_id)
     preview = [store.get_movie(slug) for slug in movie_slugs[:4]]
     preview = [movie for movie in preview if movie]
     return {
@@ -274,7 +277,12 @@ def list_deck(list_id: str, user_id: str = Query(min_length=1)):
         raise HTTPException(status_code=404, detail={"code": "list_not_found"})
 
     movie_slugs = scraper.fetch_list_movie_slugs(list_id, list_url=summary.get("url"))
-    store.replace_list_memberships(list_id, movie_slugs)
+    if movie_slugs:
+        store.replace_list_memberships(list_id, movie_slugs)
+    else:
+        # Scrape returned nothing (rate-limited / blocked) — fall back to cache
+        movie_slugs = store.get_list_memberships(list_id)
+        print(f"[deck] scrape returned empty for {list_id}, using {len(movie_slugs)} cached slugs", flush=True)
 
     missing = [slug for slug in movie_slugs if not store.get_movie(slug)]
     for movie in scraper.metadata_for_slugs(missing):

@@ -35,18 +35,33 @@
     <div id="discovery-screen" class="screen">
       <header class="header">
         <img src="/web/logo.svg" alt="Logo" class="header-logo" />
-        <button id="logout-btn" class="btn-text">Disconnect</button>
+        <button class="profile-btn" id="profile-btn">
+          <span id="current-profile">Choose a List</span>
+          <span class="chevron">▼</span>
+        </button>
+        <div class="header-actions">
+          <button id="refresh-lists-btn" class="btn-text header-refresh-btn" title="Refresh lists from Letterboxd">↻</button>
+          <button id="logout-btn" class="btn-text">Disconnect</button>
+        </div>
       </header>
-      
+
+      <!-- List Dropdown (anchored below header) -->
+      <div id="profile-dropdown" class="profile-dropdown hidden">
+        <div class="list-search-shell">
+          <input id="list-search-input" class="list-search-input" type="text" placeholder="Search Letterboxd lists" />
+        </div>
+        <div class="profile-options" id="profile-options"></div>
+      </div>
+
       <div class="deck-container" id="deck-container">
         <!-- Card Stack -->
         <div class="card-stack" id="card-stack"></div>
-        
+
         <!-- Loading Skeleton -->
         <div id="loading-skeleton" class="skeleton-stack hidden">
           <div class="skeleton-card"></div>
         </div>
-        
+
         <!-- Empty State -->
         <div id="empty-state" class="empty-state hidden">
           <span class="empty-icon">🎭</span>
@@ -54,38 +69,6 @@
           <p>You've seen everything in this list. Try another!</p>
           <button id="refresh-btn" class="btn-secondary">Refresh Deck</button>
         </div>
-      </div>
-
-      <!-- Action Buttons -->
-      <div class="action-bar" id="action-bar">
-        <button class="action-btn dismiss" data-action="dismiss" title="Skip">
-          <span class="action-icon">✕</span>
-        </button>
-        <button class="action-btn flip" id="flip-btn" title="Details">
-          <span class="action-icon">↻</span>
-        </button>
-        <button class="action-btn watchlist" data-action="watchlist" title="Watchlist">
-          <span class="action-icon">♥</span>
-        </button>
-        <button class="action-btn log" data-action="log" title="Log">
-          <span class="action-icon">✓</span>
-        </button>
-      </div>
-
-      <!-- List Selector -->
-      <div class="profile-selector" id="profile-selector">
-        <button class="profile-btn" id="profile-btn">
-          <span id="current-profile">Choose a List</span>
-          <span class="chevron">▼</span>
-        </button>
-      </div>
-
-      <!-- List Dropdown -->
-      <div id="profile-dropdown" class="profile-dropdown hidden">
-        <div class="list-search-shell">
-          <input id="list-search-input" class="list-search-input" type="text" placeholder="Search Letterboxd lists" />
-        </div>
-        <div class="profile-options" id="profile-options"></div>
       </div>
 
       <!-- Sync Overlay -->

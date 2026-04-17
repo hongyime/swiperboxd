@@ -154,22 +154,29 @@ function initDiscovery() {
     await loadLists(state.listSearchQuery);
   });
 
-  $$('.action-btn[data-action]').forEach(btn => {
-    btn.addEventListener('click', () => {
-      if (state.isSyncing || state.deck.length === 0) return;
-      executeSwipe(btn.dataset.action);
-    });
-  });
-
-  $('#flip-btn')?.addEventListener('click', () => flipCard());
-
   $('#refresh-btn')?.addEventListener('click', () => {
     console.log('[deck] manual refresh triggered');
     loadDeck();
   });
 
+  // Refresh lists button (in header)
+  $('#refresh-lists-btn')?.addEventListener('click', async () => {
+    const btn = $('#refresh-lists-btn');
+    btn.disabled = true;
+    btn.classList.add('spinning');
+    try {
+      await api('/lists/refresh', { method: 'POST' });
+      await loadLists();
+    } catch (err) {
+      console.error('[lists] refresh failed:', err.message);
+    } finally {
+      btn.disabled = false;
+      btn.classList.remove('spinning');
+    }
+  });
+
   document.addEventListener('click', (e) => {
-    if (!e.target.closest('.profile-selector')) {
+    if (!e.target.closest('#profile-btn') && !e.target.closest('#profile-dropdown')) {
       profileDropdown.classList.add('hidden');
     }
   });
@@ -228,53 +235,12 @@ async function loadLists(query = '') {
 }
 
 function renderLists() {
-  // Add refresh button at top
-  const refreshSection = `
-    <div class="list-refresh-section">
-      <button id="refresh-lists-btn" class="btn-text refresh-btn">
-        <span class="refresh-icon">↻</span>
-        Refresh Lists from Letterboxd
-      </button>
-      <p class="refresh-hint">Updates automatically every 24 hours</p>
-    </div>`;
-  
-  profileOptions.innerHTML = refreshSection + state.lists.map(item => `
+  profileOptions.innerHTML = state.lists.map(item => `
     <div class="profile-option ${item.list_id === state.selectedListId ? 'active' : ''}" data-list-id="${esc(item.list_id)}">
       <div class="list-option-title">${esc(item.title)}</div>
       <div class="list-option-meta">${esc(item.owner_name)} · ${esc(item.film_count)} films</div>
     </div>
   `).join('');
-
-  // Add refresh button click handler
-  document.getElementById('refresh-lists-btn')?.addEventListener('click', async () => {
-    const btn = document.getElementById('refresh-lists-btn');
-    btn.disabled = true;
-    btn.innerHTML = '<span class="refresh-icon spinning">↻</span> Refreshing...';
-    
-    try {
-      const res = await api('/lists/refresh', { method: 'POST' });
-      console.log('[lists] refresh result:', res);
-      
-      await loadLists();
-      
-      btn.innerHTML = '<span class="refresh-icon">✓</span> Refreshed!';
-      setTimeout(() => {
-        btn.disabled = false;
-        btn.innerHTML = '<span class="refresh-icon">↻</span> Refresh Lists from Letterboxd';
-      }, 2000);
-    } catch (err) {
-      console.error('[lists] refresh failed:', err);
-      btn.innerHTML = '<span class="refresh-icon">✗</span> Try Again';
-      setTimeout(() => {
-        btn.disabled = false;
-        btn.innerHTML = '<span class="refresh-icon">↻</span> Refresh Lists from Letterboxd';
-      }, 2000);
-      
-      if (err.message.includes('rate_limited')) {
-        alert('Letterboxd is rate limiting requests. Lists will be updated automatically every 24 hours.');
-      }
-    }
-  });
 
   profileOptions.querySelectorAll('.profile-option').forEach(opt => {
     opt.addEventListener('click', () => {
