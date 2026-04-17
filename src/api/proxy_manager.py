@@ -236,88 +236,108 @@ class ProxyManager:
             self._scrape_do = ScrapeDoProxy(token, credits_limit)
             print(f"[proxy] Scrape.do initialized ({credits_limit} credits)", flush=True)
     
+    def iter_tiers(
+        self,
+        target_url: str,
+        session_cookie: str | None = None,
+    ) -> list[tuple[str, dict]]:
+        """Return ordered (tier_name, extra_client_kwargs) pairs to try.
+
+        Tier order:
+          1. "cookie"    – direct request carrying the user's session cookie
+          2. "webshare"  – WebShare rotating proxy pool (+ cookie if available)
+          3. "scrape_do" – Scrape.do URL-wrapping service; dict includes
+                           "scrape_do_url" key instead of a proxy kwarg
+          4. "direct"    – raw direct request, no proxy, no cookie
+
+        The caller should pop "scrape_do_url" from the dict (if present) and
+        use it as the request URL rather than as a client constructor kwarg.
+        """
+        tiers: list[tuple[str, dict]] = []
+
+        # Tier 1: session-cookie direct
+        if session_cookie:
+            tiers.append((
+                "cookie",
+                {"cookies": {"letterboxd.user.CURRENT": session_cookie}},
+            ))
+
+        # Tier 2: WebShare proxy (attach cookie too — helps avoid bot detection)
+        if self._webshare:
+            proxy_url = self._webshare.get_proxy_url()
+            if proxy_url:
+                kwargs: dict = {"proxy": proxy_url}
+                if session_cookie:
+                    kwargs["cookies"] = {"letterboxd.user.CURRENT": session_cookie}
+                tiers.append(("webshare", kwargs))
+
+        # Tier 3: Scrape.do (URL-wrapping; can't forward cookies)
+        if self._scrape_do and self._scrape_do.credits_remaining > 0:
+            tiers.append((
+                "scrape_do",
+                {"scrape_do_url": self._scrape_do.build_url(target_url)},
+            ))
+
+        # Tier 4: raw direct fallback
+        tiers.append(("direct", {}))
+
+        return tiers
+
+    def record_success_for(self, tier: str) -> None:
+        """Record a successful request for the named tier."""
+        if tier == "webshare" and self._webshare:
+            self._webshare.record_success()
+            self._source_failures["webshare"] = 0
+        elif tier == "scrape_do" and self._scrape_do:
+            self._scrape_do.record_success()
+            self._source_failures["scrape_do"] = 0
+        self._retry_count = 0
+
+    def record_failure_for(self, tier: str) -> None:
+        """Record a failed request for the named tier."""
+        if tier == "webshare" and self._webshare:
+            self._webshare.record_failure()
+            self._source_failures["webshare"] += 1
+        elif tier == "scrape_do" and self._scrape_do:
+            self._scrape_do.record_failure()
+            self._source_failures["scrape_do"] += 1
+        self._retry_count += 1
+
+    # ------------------------------------------------------------------ legacy
+    # Kept for any callers that haven't migrated to iter_tiers yet.
+
     def get_proxy_config(self, target_url: str | None = None) -> dict:
-        """
-        Get proxy configuration for the next request.
-        
-        Returns dict with:
-        - use_proxy: bool indicating if proxy should be used
-        - proxy_url: str URL for httpx proxies dict (or None)
-        - scrape_do_url: str full URL for Scrape.do (or None)
-        - source: str which source was selected
-        """
-        # Reset source if too many failures in a row
+        """Legacy single-shot proxy config. Prefer iter_tiers for new code."""
         if self._retry_count >= 3:
             self._current_source = "none"
             self._retry_count = 0
-        
         source = self._current_source
-        
-        # Try WebShare first (if not already failed many times)
         if source == "none" and self._webshare:
             if self._source_failures["webshare"] < 3:
                 self._current_source = "webshare"
                 proxy_url = self._webshare.get_proxy_url()
                 if proxy_url:
-                    return {
-                        "use_proxy": True,
-                        "proxy_url": proxy_url,
-                        "scrape_do_url": None,
-                        "source": "webshare"
-                    }
-        
-        # Try Scrape.do as fallback
+                    return {"use_proxy": True, "proxy_url": proxy_url,
+                            "scrape_do_url": None, "source": "webshare"}
         if source == "none" and self._scrape_do:
             if self._source_failures["scrape_do"] < 3:
                 if self._scrape_do.credits_remaining > 0:
                     self._current_source = "scrape_do"
                     if target_url:
-                        scrape_url = self._scrape_do.build_url(target_url)
-                        return {
-                            "use_proxy": True,
-                            "proxy_url": None,
-                            "scrape_do_url": scrape_url,
-                            "source": "scrape_do"
-                        }
-        
-        # No proxy available - direct request
+                        return {"use_proxy": True, "proxy_url": None,
+                                "scrape_do_url": self._scrape_do.build_url(target_url),
+                                "source": "scrape_do"}
         self._current_source = "none"
-        return {
-            "use_proxy": False,
-            "proxy_url": None,
-            "scrape_do_url": None,
-            "source": "direct"
-        }
-    
+        return {"use_proxy": False, "proxy_url": None, "scrape_do_url": None, "source": "direct"}
+
     def record_success(self) -> None:
-        """Record successful request for current source."""
-        source = self._current_source
-        
-        if source == "webshare" and self._webshare:
-            self._webshare.record_success()
-        elif source == "scrape_do" and self._scrape_do:
-            self._scrape_do.record_success()
-        
-        # Reset failure counters on success
-        if source in self._source_failures:
-            self._source_failures[source] = 0
-        self._retry_count = 0
-        
+        """Legacy success recording. Prefer record_success_for."""
+        self.record_success_for(self._current_source)
+
     def record_failure(self) -> None:
-        """Record failed request and possibly switch source."""
-        source = self._current_source
-        
-        if source == "webshare" and self._webshare:
-            self._webshare.record_failure()
-            self._source_failures["webshare"] += 1
-        elif source == "scrape_do" and self._scrape_do:
-            self._scrape_do.record_failure()
-            self._source_failures["scrape_do"] += 1
-        
-        self._retry_count += 1
-        
-        # Force source switch on failure
-        if source != "none":
+        """Legacy failure recording. Prefer record_failure_for."""
+        self.record_failure_for(self._current_source)
+        if self._current_source != "none":
             self._current_source = "none"
     
     @property

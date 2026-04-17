@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import json
 import os
-import requests
-import time
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -12,7 +10,6 @@ from typing import Protocol
 import httpx
 from bs4 import BeautifulSoup
 
-from .. import resilience
 from ..proxy_manager import ProxyManager
 
 
@@ -178,11 +175,6 @@ class HttpLetterboxdScraper:
             except ValueError:
                 resolved_timeout = None
         self.timeout_seconds = resolved_timeout if resolved_timeout and resolved_timeout > 0 else 20.0
-        self._http_client = httpx.Client(
-            timeout=self.timeout_seconds,
-            follow_redirects=True
-        )
-        # Initialize proxy manager for intelligent proxy rotation
         self._proxy_manager = ProxyManager()
         print(f"[proxy] Initialized proxy manager for {self.base_url}", flush=True)
 
@@ -200,6 +192,52 @@ class HttpLetterboxdScraper:
         "Sec-Fetch-Dest": "document",
         "Upgrade-Insecure-Requests": "1",
     }
+
+    _RATE_LIMIT_STATUSES: frozenset[int] = frozenset({403, 429, 502, 503, 504})
+
+    def _fetch(
+        self,
+        url: str,
+        params: dict | None = None,
+        session_cookie: str | None = None,
+    ) -> httpx.Response:
+        """Fetch *url* through the 4-tier fallback chain.
+
+        Tier 1: session-cookie + direct  (only when session_cookie is provided)
+        Tier 2: WebShare rotating proxy  (+ cookie if available)
+        Tier 3: Scrape.do URL-wrapping service
+        Tier 4: raw direct request
+
+        Returns the first response with a non-rate-limit status code.
+        Raises RuntimeError("all_tiers_failed") when every tier is exhausted.
+        """
+        base_kwargs = {
+            "timeout": self.timeout_seconds,
+            "follow_redirects": True,
+            "headers": self._BROWSER_HEADERS,
+        }
+        for tier_name, extra in self._proxy_manager.iter_tiers(url, session_cookie):
+            extra = dict(extra)  # copy — don't mutate the list entry
+            request_url = extra.pop("scrape_do_url", url)
+            client_kwargs = {**base_kwargs, **extra}
+            try:
+                with httpx.Client(**client_kwargs) as client:
+                    resp = client.get(request_url, params=params)
+                if resp.status_code in self._RATE_LIMIT_STATUSES:
+                    print(
+                        f"[scraper] tier={tier_name} status={resp.status_code} url={url} → next tier",
+                        flush=True,
+                    )
+                    self._proxy_manager.record_failure_for(tier_name)
+                    continue
+                self._proxy_manager.record_success_for(tier_name)
+                if tier_name not in ("cookie", "direct"):
+                    print(f"[scraper] tier={tier_name} OK url={url}", flush=True)
+                return resp
+            except (httpx.TimeoutException, httpx.ProxyError) as exc:
+                print(f"[scraper] tier={tier_name} error={exc!r} url={url} → next tier", flush=True)
+                self._proxy_manager.record_failure_for(tier_name)
+        raise RuntimeError("all_tiers_failed")
 
     def login(self, username: str, password: str) -> str:
         with httpx.Client(
@@ -271,269 +309,132 @@ class HttpLetterboxdScraper:
             return cookie
 
     def pull_watchlist_slugs(self, session_cookie: str) -> set[str]:
-        """Pull all film slugs from user's watchlist with pagination."""
-        slugs = set()
-        page = 1
-
-        try:
-            with httpx.Client(
-                cookies={"letterboxd.user.CURRENT": session_cookie},
-                timeout=self.timeout_seconds,
-                follow_redirects=True
-            ) as client:
-                while True:
-                    url = f"{self.base_url}/watchlist/"
-                    params = {"page": page}
-                    proxy_config = self._get_proxy_config(url)
-                    
-                    # Configure proxy if needed
-                    client_config = {}
-                    if proxy_config["use_proxy"]:
-                        if proxy_config["proxy_url"]:
-                            client_config["proxies"] = {
-                                "http://": proxy_config["proxy_url"],
-                                "https://": proxy_config["proxy_url"]
-                            }
-                    
-                    response = client.get(url, params=params, **client_config)
-
-                    if response.status_code in {403, 429}:
-                        self._record_proxy_failure()
-                        raise RuntimeError("rate_limit_require_proxy")
-
-                    if response.status_code == 200:
-                        self._record_proxy_success()
-
-                    soup = BeautifulSoup(response.text, "html.parser")
-                    film_links = soup.select("li.poster-container a")
-
-                    if not film_links:
-                        break  # No more pages
-
-                    for link in film_links:
-                        href = link.get("href", "")
-                        if href.startswith("/film/"):
-                            slug = href.split("/")[2]
-                            slugs.add(slug)
-
-                    page += 1
-
-        except httpx.TimeoutException:
-            pass
-
+        """Pull all film slugs from the authenticated user's watchlist."""
+        slugs: set[str] = set()
+        url = f"{self.base_url}/watchlist/"
+        for page in range(1, 51):  # cap at 50 pages (~600 films)
+            try:
+                resp = self._fetch(url, params={"page": page}, session_cookie=session_cookie)
+            except RuntimeError:
+                break
+            soup = BeautifulSoup(resp.text, "html.parser")
+            film_links = soup.select("li.poster-container a")
+            if not film_links:
+                break
+            for link in film_links:
+                href = link.get("href", "")
+                if href.startswith("/film/"):
+                    slugs.add(href.split("/")[2])
         return slugs
 
     def pull_diary_slugs(self, session_cookie: str) -> set[str]:
-        """Pull all film slugs from user's diary (watched films) with pagination."""
-        slugs = set()
-        page = 1
-
-        try:
-            with httpx.Client(
-                cookies={"letterboxd.user.CURRENT": session_cookie},
-                timeout=self.timeout_seconds,
-                follow_redirects=True
-            ) as client:
-                while True:
-                    response = client.get(f"{self.base_url}/diary/", params={"page": page})
-
-                    if response.status_code in {403, 429}:
-                        raise RuntimeError("rate_limit_require_proxy")
-
-                    soup = BeautifulSoup(response.text, "html.parser")
-                    film_links = soup.select("td.poster-container a")
-
-                    if not film_links:
-                        break  # No more pages
-
-                    for link in film_links:
-                        href = link.get("href", "")
-                        if href.startswith("/film/"):
-                            slug = href.split("/")[2]
-                            slugs.add(slug)
-
-                    page += 1
-
-        except httpx.TimeoutException:
-            pass
-
+        """Pull all film slugs from the authenticated user's diary."""
+        slugs: set[str] = set()
+        url = f"{self.base_url}/diary/"
+        for page in range(1, 201):  # cap at 200 pages (~2 400 entries)
+            try:
+                resp = self._fetch(url, params={"page": page}, session_cookie=session_cookie)
+            except RuntimeError:
+                break
+            soup = BeautifulSoup(resp.text, "html.parser")
+            film_links = soup.select("td.poster-container a")
+            if not film_links:
+                break
+            for link in film_links:
+                href = link.get("href", "")
+                if href.startswith("/film/"):
+                    slugs.add(href.split("/")[2])
         return slugs
 
     def pull_source_slugs(self, source: str, depth_pages: int = 2) -> list[str]:
-        """Pull film slugs from source pages (trending, popular, recommended) with pagination."""
+        """Pull film slugs from public source pages (trending, popular, recommended)."""
         url_map = {
             "trending": "/films/trending/",
             "popular": "/films/popular/",
             "recommended": "/films/reception/recommended/",
         }
-
         if source not in url_map:
             raise ValueError(f"Unknown source: {source}")
 
-        slugs = []
-        base_path = url_map[source]
-
-        try:
-            for page in range(1, depth_pages + 1):
-                response = self._http_client.get(
-                    f"{self.base_url}{base_path}",
-                    params={"page": page}
-                )
-
-                # Check for rate limiting
-                if response.status_code in {403, 429}:
-                    raise RuntimeError("rate_limit_require_proxy")
-
-                soup = BeautifulSoup(response.text, "html.parser")
-                film_links = soup.select("li.poster-container a")
-
-                for link in film_links:
-                    href = link.get("href", "")
-                    if href.startswith("/film/"):
-                        slug = href.split("/")[2]
-                        if slug not in slugs:
-                            slugs.append(slug)
-
-        except httpx.TimeoutException:
-            pass
-
+        slugs: list[str] = []
+        seen: set[str] = set()
+        url = f"{self.base_url}{url_map[source]}"
+        for page in range(1, depth_pages + 1):
+            try:
+                resp = self._fetch(url, params={"page": page})
+            except RuntimeError:
+                break
+            soup = BeautifulSoup(resp.text, "html.parser")
+            for link in soup.select("li.poster-container a"):
+                href = link.get("href", "")
+                if href.startswith("/film/"):
+                    slug = href.split("/")[2]
+                    if slug not in seen:
+                        seen.add(slug)
+                        slugs.append(slug)
         return slugs
 
     def metadata_for_slugs(self, slugs: list[str]) -> list[LetterboxdMovie]:
         """Fetch metadata for given film slugs by scraping individual film pages."""
         movies = []
-        from .resilience import should_trigger_proxy_fallback, exponential_backoff_seconds
+        for slug in slugs:
+            url = f"{self.base_url}/film/{slug}/"
+            try:
+                resp = self._fetch(url)
+            except RuntimeError:
+                print(f"[scraper] all tiers failed for slug={slug}, skipping", flush=True)
+                continue
 
-        for i, slug in enumerate(slugs):
-            retry_count = 0
-            max_retries = 5  # Increased retries for proxy rotation
-            last_success = False
+            try:
+                soup = BeautifulSoup(resp.text, "html.parser")
 
-            while retry_count < max_retries and not last_success:
-                try:
-                    # Get proxy configuration for current retry
-                    target_url = f"{self.base_url}/film/{slug}/"
-                    proxy_config = self._get_proxy_config(target_url)
-                    source = proxy_config["source"]
-                    
-                    client_config = {
-                        "timeout": self.timeout_seconds,
-                        "follow_redirects": True,
-                        "headers": self._BROWSER_HEADERS,
-                    }
+                title_tag = soup.select_one("h1.title-h1")
+                title = title_tag.get_text().strip() if title_tag else ""
 
-                    # Configure proxy if available
-                    if proxy_config["use_proxy"]:
-                        if proxy_config["proxy_url"]:
-                            # WebShare or regular proxy
-                            client_config["proxies"] = {
-                                "http://": proxy_config["proxy_url"],
-                                "https://": proxy_config["proxy_url"]
-                            }
-                            print(f"[proxy] Using {source} proxy for {slug}", flush=True)
-                        elif proxy_config["scrape_do_url"]:
-                            # Scrape.do: use direct URL
-                            target_url = proxy_config["scrape_do_url"]
-                            print(f"[proxy] Using Scrape.do for {slug}", flush=True)
+                poster_tag = soup.select_one("img.poster-image")
+                poster_url = poster_tag.get("src", "") if poster_tag else ""
 
-                    with httpx.Client(**client_config) as client:
-                        response = client.get(target_url)
+                meta_rating = soup.select_one("meta[name='twitter:data1']")
+                rating = 0.0
+                if meta_rating:
+                    try:
+                        rating = float(meta_rating.get("content", "0"))
+                    except ValueError:
+                        pass
 
-                        # Check for proxy or rate limiting issues
-                        if response.status_code in {403, 429, 502, 503, 504}:
-                            print(f"[proxy] {source} failed status={response.status_code} for {slug} (retry {retry_count+1}/{max_retries})", flush=True)
-                            self._record_proxy_failure()
-                            
-                            # If we should try another proxy source, trigger it
-                            if should_trigger_proxy_fallback(response.status_code):
-                                time.sleep(exponential_backoff_seconds(retry_count) * 2)
-                                retry_count += 1
-                                continue
-                            else:
-                                break
+                genre_tags = soup.select("a[href*='/genre/']")
+                genres = [tag.get_text().strip() for tag in genre_tags]
 
-                        soup = BeautifulSoup(response.text, "html.parser")
-                        
-                        # Extract title
-                        title_tag = soup.select_one("h1.title-h1")
-                        title = title_tag.get_text().strip() if title_tag else ""
-                        
-                        # Extract poster URL
-                        poster_tag = soup.select_one("img.poster-image")
-                        poster_url = poster_tag.get("src", "") if poster_tag else ""
-                        
-                        # Extract rating and popularity
-                        meta_rating = soup.select_one("meta[name='twitter:data1']")
-                        rating = 0.0
-                        if meta_rating:
-                            try:
-                                rating = float(meta_rating.get("content", "0"))
-                            except ValueError:
-                                rating = 0.0
+                synopsis_tag = soup.select_one("div.truncate-credits div")
+                synopsis = synopsis_tag.get_text().strip() if synopsis_tag else ""
 
-                        # Extract genres
-                        genre_tags = soup.select("a[href*='/genre/']")
-                        genres = [tag.get_text().strip() for tag in genre_tags]
-                        
-                        # Extract synopsis
-                        synopsis_tag = soup.select_one("div.truncate-credits div")
-                        synopsis = synopsis_tag.get_text().strip() if synopsis_tag else ""
-                        
-                        # Extract cast list
-                        cast_tags = soup.select("span.cast a")
-                        cast = [tag.get_text().strip() for tag in cast_tags[:5]] if cast_tags else []
+                cast_tags = soup.select("span.cast a")
+                cast = [tag.get_text().strip() for tag in cast_tags[:5]] if cast_tags else []
 
-                        # Extract member/watch count as popularity proxy.
-                        popularity = 0
-                        for sel in [
-                            "a.has-icon.icon-watched span",
-                            "li.filmstat-watches a",
-                            "a[href$='/members/']",
-                        ]:
-                            tag = soup.select_one(sel)
-                            if tag:
-                                popularity = _parse_member_count(tag.get_text())
-                                if popularity:
-                                    break
+                popularity = 0
+                for sel in [
+                    "a.has-icon.icon-watched span",
+                    "li.filmstat-watches a",
+                    "a[href$='/members/']",
+                ]:
+                    tag = soup.select_one(sel)
+                    if tag:
+                        popularity = _parse_member_count(tag.get_text())
+                        if popularity:
+                            break
 
-                        movies.append(
-                            LetterboxdMovie(
-                                slug=slug,
-                                title=title,
-                                poster_url=poster_url,
-                                rating=rating,
-                                popularity=popularity,
-                                genres=genres,
-                                synopsis=synopsis,
-                                cast=cast,
-                            )
-                        )
-                        
-                        # Success with this proxy source
-                        self._record_proxy_success()
-                        last_success = True
-                        break
-
-                except httpx.TimeoutException as e:
-                    print(f"[proxy] Timeout for {slug} using {source} (retry {retry_count+1}/{max_retries}): {e}", flush=True)
-                    self._record_proxy_failure()
-                    
-                except httpx.ProxyError as e:
-                    print(f"[proxy] Proxy error for {slug} using {source}: {e}", flush=True)
-                    self._record_proxy_failure()
-                    
-                except Exception as exc:
-                    print(f"[proxy] Error fetching {slug} using {source}: {exc}", flush=True)
-                    self._record_proxy_failure()
-
-                # Retry with backoff
-                retry_count += 1
-                if retry_count < max_retries and not last_success:
-                    sleep_time = exponential_backoff_seconds(retry_count)
-                    print(f"[proxy] Waiting {sleep_time}s before retry {retry_count}/{max_retries}", flush=True)
-                    time.sleep(sleep_time)
-                else:
-                    print(f"[proxy] Giving up on {slug} after {retry_count} retries", flush=True)
+                movies.append(LetterboxdMovie(
+                    slug=slug,
+                    title=title,
+                    poster_url=poster_url,
+                    rating=rating,
+                    popularity=popularity,
+                    genres=genres,
+                    synopsis=synopsis,
+                    cast=cast,
+                ))
+            except Exception as exc:
+                print(f"[scraper] parse error slug={slug}: {exc}", flush=True)
 
         return movies
 
@@ -548,14 +449,7 @@ class HttpLetterboxdScraper:
         results: list[LetterboxdListSummary] = []
 
         try:
-            response = self._http_client.get(
-                url,
-                params={"page": page},
-                headers=self._BROWSER_HEADERS,
-            )
-            if response.status_code in {403, 429}:
-                raise RuntimeError(f"rate_limited status={response.status_code}")
-
+            response = self._fetch(url, params={"page": page})
             soup = BeautifulSoup(response.text, "html.parser")
 
             # Each list entry lives in a <section class="list-set"> block.
@@ -665,14 +559,7 @@ class HttpLetterboxdScraper:
 
         for page_num in range(1, max_pages + 1):
             try:
-                response = self._http_client.get(
-                    list_url,
-                    params={"page": page_num},
-                    headers=self._BROWSER_HEADERS,
-                )
-                if response.status_code in {403, 429}:
-                    print(f"[lists] rate limited fetching list slugs list_id={list_id} page={page_num}", flush=True)
-                    break
+                response = self._fetch(list_url, params={"page": page_num})
                 if response.status_code == 404:
                     break
 
@@ -707,15 +594,5 @@ class HttpLetterboxdScraper:
 
         return slugs
 
-    def _get_proxy_config(self, target_url: str) -> dict:
-        """Get proxy configuration for the current request."""
-        return self._proxy_manager.get_proxy_config(target_url)
 
-    def _record_proxy_success(self) -> None:
-        """Record a successful proxy request."""
-        self._proxy_manager.record_success()
-
-    def _record_proxy_failure(self) -> None:
-        """Record a failed proxy request."""
-        self._proxy_manager.record_failure()
 

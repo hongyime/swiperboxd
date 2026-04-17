@@ -396,6 +396,7 @@ async def start_ingest(
         store.ingest_running.add(payload.user_id)
 
     store.set_ingest_error(payload.user_id, None)
+    store.set_ingest_progress(payload.user_id, 0)  # clear any stale -1 from a prior run
     print(f"[ingest] starting worker source={payload.source} depth={payload.depth_pages}", flush=True)
     threading.Thread(
         target=_run_ingest_worker,

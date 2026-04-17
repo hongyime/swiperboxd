@@ -361,6 +361,10 @@ async function pollProgress() {
   showProgress('Loading your Letterboxd data...');
   console.log('[ingest] polling progress...');
 
+  // Give the background thread a moment to start before the first poll,
+  // so we don't read the initial 0 or a stale value set just before thread start.
+  await delay(300);
+
   while (true) {
     try {
       const res = await api(`/ingest/progress?user_id=${encodeURIComponent(state.username)}`);
