@@ -592,13 +592,20 @@ def _run_user_history_sync(
         )
         print(f"[ingest/sync] watchlist scraper returned {len(live_watchlist)} slugs", flush=True)
         stored = 0
+        failed = 0
         for slug in live_watchlist:
-            store.add_watchlist(user_id, slug)
-            stored += 1
+            try:
+                store.add_watchlist(user_id, slug)
+                stored += 1
+            except Exception as slug_exc:
+                failed += 1
+                print(f"[ingest/sync] watchlist slug failed: {slug}: {slug_exc}", flush=True)
         sync_stats["watchlist_count"] = stored
-        print(f"[ingest/sync] watchlist stored: {stored} slugs for user_id={user_id}", flush=True)
+        if failed:
+            sync_stats["errors"].append(f"watchlist: {failed}/{len(live_watchlist)} slugs failed to store")
+        print(f"[ingest/sync] watchlist stored: {stored} ok, {failed} failed for user_id={user_id}", flush=True)
     except Exception as exc:
-        msg = f"watchlist sync failed: {type(exc).__name__}: {exc}"
+        msg = f"watchlist fetch failed: {type(exc).__name__}: {exc}"
         print(f"[ingest/sync] ERROR: {msg}", flush=True)
         sync_stats["errors"].append(msg)
 
@@ -611,13 +618,20 @@ def _run_user_history_sync(
         )
         print(f"[ingest/sync] diary scraper returned {len(live_diary)} slugs", flush=True)
         stored = 0
+        failed = 0
         for slug in live_diary:
-            store.add_diary(user_id, slug)
-            stored += 1
+            try:
+                store.add_diary(user_id, slug)
+                stored += 1
+            except Exception as slug_exc:
+                failed += 1
+                print(f"[ingest/sync] diary slug failed: {slug}: {slug_exc}", flush=True)
         sync_stats["diary_count"] = stored
-        print(f"[ingest/sync] diary stored: {stored} slugs for user_id={user_id}", flush=True)
+        if failed:
+            sync_stats["errors"].append(f"diary: {failed}/{len(live_diary)} slugs failed to store")
+        print(f"[ingest/sync] diary stored: {stored} ok, {failed} failed for user_id={user_id}", flush=True)
     except Exception as exc:
-        msg = f"diary sync failed: {type(exc).__name__}: {exc}"
+        msg = f"diary fetch failed: {type(exc).__name__}: {exc}"
         print(f"[ingest/sync] ERROR: {msg}", flush=True)
         sync_stats["errors"].append(msg)
 

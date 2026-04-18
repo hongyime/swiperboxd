@@ -356,16 +356,40 @@ class SupabaseStore:
         try:
             self.client.table("exclusions").insert({"user_id": actual_user_id, "movie_slug": slug}).execute()
         except Exception as e:
-            # Ignore duplicate key errors
-            if "duplicate" not in str(e).lower() and "unique" not in str(e).lower():
-                print(f"[store] ERROR: exclusion insert failed for {slug}: {e}", flush=True)
-                raise
+            err = str(e).lower()
+            if "duplicate" in err or "unique" in err:
+                return
+            if "foreign key" in err or "23503" in err:
+                print(f"[store] exclusion FK miss for {slug} — creating placeholder movie", flush=True)
+                self._ensure_movie_placeholder(slug)
+                try:
+                    self.client.table("exclusions").insert({"user_id": actual_user_id, "movie_slug": slug}).execute()
+                except Exception as e2:
+                    if "duplicate" not in str(e2).lower() and "unique" not in str(e2).lower():
+                        print(f"[store] ERROR: exclusion retry failed for {slug}: {e2}", flush=True)
+                        raise
+                return
+            print(f"[store] ERROR: exclusion insert failed for {slug}: {e}", flush=True)
+            raise
 
     def get_exclusions(self, user_id: str) -> set[str]:
         """Get user's exclusion list from Supabase."""
         actual_user_id = self._get_or_create_user_id(user_id)
         response = self.client.table("exclusions").select("movie_slug").eq("user_id", actual_user_id).execute()
         return {row["movie_slug"] for row in response.data}
+
+    def _ensure_movie_placeholder(self, slug: str) -> None:
+        """Create a minimal movie record so FK constraints are satisfied.
+
+        Uses upsert so it's safe to call when the movie already exists.
+        The title is derived from the slug until real metadata is fetched.
+        """
+        title = slug.replace("-", " ").title()
+        self.client.table("movies").upsert(
+            {"slug": slug, "title": title},
+            on_conflict="slug",
+        ).execute()
+        print(f"[store] created placeholder movie for slug={slug}", flush=True)
 
     def add_watchlist(self, user_id: str, slug: str) -> None:
         """Add a movie to user's watchlist in Supabase."""
@@ -376,10 +400,25 @@ class SupabaseStore:
                 "movie_slug": slug
             }).execute()
         except Exception as e:
-            # Ignore duplicate key errors
-            if "duplicate" not in str(e).lower() and "unique" not in str(e).lower():
-                print(f"[store] ERROR: watchlist insert failed for {slug}: {e}", flush=True)
-                raise
+            err = str(e).lower()
+            if "duplicate" in err or "unique" in err:
+                return
+            # FK violation — movie slug not in movies table yet
+            if "foreign key" in err or "23503" in err:
+                print(f"[store] watchlist FK miss for {slug} — creating placeholder movie", flush=True)
+                self._ensure_movie_placeholder(slug)
+                try:
+                    self.client.table("watchlist").insert({
+                        "user_id": actual_user_id,
+                        "movie_slug": slug
+                    }).execute()
+                except Exception as e2:
+                    if "duplicate" not in str(e2).lower() and "unique" not in str(e2).lower():
+                        print(f"[store] ERROR: watchlist retry failed for {slug}: {e2}", flush=True)
+                        raise
+                return
+            print(f"[store] ERROR: watchlist insert failed for {slug}: {e}", flush=True)
+            raise
 
     def get_watchlist(self, user_id: str) -> set[str]:
         """Get user's watchlist from Supabase."""
@@ -397,22 +436,31 @@ class SupabaseStore:
                 "movie_slug": slug
             }).execute()
         except Exception as e:
-            # Ignore duplicate key errors
-            if "duplicate" not in str(e).lower() and "unique" not in str(e).lower():
-                print(f"[store] ERROR: diary insert failed for {slug}: {e}", flush=True)
-                raise
+            err = str(e).lower()
+            if "duplicate" in err or "unique" in err:
+                return
+            # FK violation — movie slug not in movies table yet
+            if "foreign key" in err or "23503" in err:
+                print(f"[store] diary FK miss for {slug} — creating placeholder movie", flush=True)
+                self._ensure_movie_placeholder(slug)
+                try:
+                    self.client.table("diary").insert({
+                        "user_id": actual_user_id,
+                        "movie_slug": slug
+                    }).execute()
+                except Exception as e2:
+                    if "duplicate" not in str(e2).lower() and "unique" not in str(e2).lower():
+                        print(f"[store] ERROR: diary retry failed for {slug}: {e2}", flush=True)
+                        raise
+                return
+            print(f"[store] ERROR: diary insert failed for {slug}: {e}", flush=True)
+            raise
 
     def get_diary(self, user_id: str) -> set[str]:
         """Get user's diary from Supabase."""
         actual_user_id = self._get_or_create_user_id(user_id)
         response = self.client.table("diary").select("movie_slug").eq("user_id", actual_user_id).execute()
         print(f"[store] get_diary: {len(response.data)} slugs for user_id={actual_user_id}", flush=True)
-        return {row["movie_slug"] for row in response.data}
-
-    def get_diary(self, user_id: str) -> set[str]:
-        """Get user's diary from Supabase."""
-        actual_user_id = self._get_or_create_user_id(user_id)
-        response = self.client.table("diary").select("movie_slug").eq("user_id", actual_user_id).execute()
         return {row["movie_slug"] for row in response.data}
 
     def upsert_movie(self, movie: dict) -> None:
