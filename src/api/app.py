@@ -171,6 +171,38 @@ def verify_session(x_session_token: str = Header(..., alias="X-Session-Token")) 
         return ""
 
 
+def verify_extension(x_session_token: str = Header(None, alias="X-Session-Token")) -> str:
+    """Auth for extension endpoints — accepts either:
+      1. A valid user session token (X-Session-Token), OR
+      2. The EXTENSION_API_KEY env var (sent as X-Session-Token by the extension)
+
+    Returns the username if a session token was provided, or "" for API key auth.
+    No registration required when using the API key.
+    """
+    if not x_session_token:
+        raise HTTPException(status_code=401, detail={"code": "missing_auth"})
+
+    # Check API key first (fast path — no crypto needed)
+    ext_key = os.getenv("EXTENSION_API_KEY", "").strip()
+    if ext_key and x_session_token == ext_key:
+        return ""  # authenticated as extension, no specific user
+
+    # Fall back to session token
+    master_key = os.getenv("MASTER_ENCRYPTION_KEY")
+    if master_key:
+        try:
+            raw = decrypt_session_cookie(x_session_token, master_key)
+            try:
+                data = json.loads(raw)
+                return data.get("u", "")
+            except (json.JSONDecodeError, ValueError):
+                return ""
+        except Exception:
+            pass
+
+    raise HTTPException(status_code=401, detail={"code": "invalid_auth"})
+
+
 class AuthSessionRequest(BaseModel):
     username: str = Field(min_length=1)
     session_cookie: str = Field(min_length=1)

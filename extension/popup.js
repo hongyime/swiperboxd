@@ -64,8 +64,6 @@ function renderProgress(state) {
   }
   el("start-btn").disabled = !!state.running;
   el("stop-btn").disabled = !state.running;
-  el("sync-watchlist-btn").disabled = !!state.running;
-  el("sync-diary-btn").disabled = !!state.running;
   el("backfill-lb-ids-btn").disabled = !!state.running;
   el("scrape-list-btn").disabled = !!state.running;
   if (state.lastLog) {
@@ -149,34 +147,6 @@ el("start-btn").addEventListener("click", async () => {
     type: "START_SYNC",
     syncWatchlist: cfg.syncWatchlist !== false,
     syncDiary: cfg.syncDiary !== false,
-  });
-  if (!resp?.ok) logLine("log", `ERROR: ${resp?.error || "could not start"}`);
-});
-
-el("sync-watchlist-btn").addEventListener("click", async () => {
-  const lbCookie = await checkLetterboxdSession();
-  if (!lbCookie) { logLine("log", "ERROR: not signed in to Letterboxd"); return; }
-  logLine("log", "Syncing watchlist…");
-  const resp = await chrome.runtime.sendMessage({
-    type: "START_SYNC",
-    syncWatchlist: true,
-    syncDiary: false,
-    discoverLists: false,
-    fillLists: false,
-  });
-  if (!resp?.ok) logLine("log", `ERROR: ${resp?.error || "could not start"}`);
-});
-
-el("sync-diary-btn").addEventListener("click", async () => {
-  const lbCookie = await checkLetterboxdSession();
-  if (!lbCookie) { logLine("log", "ERROR: not signed in to Letterboxd"); return; }
-  logLine("log", "Syncing diary…");
-  const resp = await chrome.runtime.sendMessage({
-    type: "START_SYNC",
-    syncWatchlist: false,
-    syncDiary: true,
-    discoverLists: false,
-    fillLists: false,
   });
   if (!resp?.ok) logLine("log", `ERROR: ${resp?.error || "could not start"}`);
 });
