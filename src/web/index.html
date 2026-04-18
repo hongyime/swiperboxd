@@ -57,6 +57,22 @@
         <!-- Card Stack -->
         <div class="card-stack" id="card-stack"></div>
 
+        <!-- Action Bar -->
+        <div class="action-bar" id="action-bar">
+          <button class="action-btn dismiss" id="btn-dismiss" title="Skip (←)">
+            <span class="action-icon">✕</span>
+          </button>
+          <button class="action-btn flip" id="btn-flip" title="Details (Space)">
+            <span class="action-icon">ℹ</span>
+          </button>
+          <button class="action-btn watchlist" id="btn-watchlist" title="Watchlist (→)">
+            <span class="action-icon">+</span>
+          </button>
+          <button class="action-btn log" id="btn-log" title="Log (↑)">
+            <span class="action-icon">★</span>
+          </button>
+        </div>
+
         <!-- Loading Skeleton -->
         <div id="loading-skeleton" class="skeleton-stack hidden">
           <div class="skeleton-card"></div>
@@ -71,10 +87,11 @@
         </div>
       </div>
 
-      <!-- Sync Overlay -->
+      <!-- Sync Overlay (shown during initial sync to block swiping) -->
       <div id="sync-overlay" class="sync-overlay hidden">
         <div class="sync-spinner"></div>
-        <span>Syncing...</span>
+        <span id="sync-overlay-text">Syncing your Letterboxd data...</span>
+        <span id="sync-overlay-detail" class="sync-detail"></span>
       </div>
     </div>
   </div>

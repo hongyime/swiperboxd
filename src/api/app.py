@@ -146,6 +146,22 @@ class SwipeActionRequest(BaseModel):
     action: Literal["watchlist", "dismiss", "log"]
 
 
+class ExtensionBatchRequest(BaseModel):
+    user_id: str = Field(min_length=1)
+    slugs: list[str] = Field(default_factory=list)
+    page: int | None = None
+    total_pages: int | None = None
+
+
+class ExtensionSyncStatusRequest(BaseModel):
+    user_id: str = Field(min_length=1)
+    phase: Literal["watchlist", "diary", "idle", "complete", "error"]
+    current_page: int | None = None
+    total_pages: int | None = None
+    slugs_found: int | None = None
+    message: str | None = None
+
+
 @app.get("/health")
 def health():
     store_type = "SupabaseStore" if is_supabase_configured() else "InMemoryStore"
@@ -228,10 +244,24 @@ def list_catalog(q: str | None = None, page: int = Query(default=1, ge=1)):
                q_lower in item.get("description", "").lower()
         ]
     
+    # Filter out lists that have a partial scrape: we started but captured
+    # less than 50% of the film_count. scraped_film_count == 0 is treated as
+    # "not yet attempted" and the list stays visible (the list-detail endpoint
+    # scrapes memberships on demand).
+    before_filter = len(items)
+    items = [
+        item for item in items
+        if item.get("film_count", 0) == 0
+        or item.get("scraped_film_count", 0) == 0
+        or item.get("scraped_film_count", 0) >= item.get("film_count", 1) * 0.5
+    ]
+    if len(items) < before_filter:
+        print(f"[lists] filtered {before_filter - len(items)} partially scraped lists", flush=True)
+
     # Sort: official first, then by like count, then by title
     items.sort(key=lambda item: (
-        not item.get("is_official", False), 
-        -item.get("like_count", 0), 
+        not item.get("is_official", False),
+        -item.get("like_count", 0),
         item.get("title", "")
     ))
     
@@ -372,6 +402,14 @@ def create_auth_session(payload: AuthSessionRequest):
 
     token_payload = json.dumps({"u": payload.username, "c": payload.session_cookie})
     encrypted_cookie = encrypt_session_cookie(token_payload, master_key)
+
+    # Persist encrypted session in Supabase for future server-side operations
+    try:
+        store.save_user_session(payload.username, encrypted_cookie)
+        print(f"[auth] encrypted session stored in DB for user={payload.username}", flush=True)
+    except Exception as exc:
+        print(f"[auth] WARNING: failed to store session in DB: {exc}", flush=True)
+
     return AuthSessionResponse(status="ok", encrypted_session_cookie=encrypted_cookie)
 
 
@@ -456,6 +494,25 @@ async def start_ingest(
             sync_stats["errors"].append(str(exc))
         finally:
             store.ingest_running.discard(payload.user_id)
+
+        # Always include current DB counts so the UI can render cards even when
+        # the live scrape failed (expected on Vercel — Letterboxd blocks AWS IPs).
+        try:
+            db_watchlist = len(store.get_watchlist(payload.user_id))
+            db_diary = len(store.get_diary(payload.user_id))
+        except Exception as exc:
+            print(f"[ingest] could not read DB counts: {exc}", flush=True)
+            db_watchlist = 0
+            db_diary = 0
+        sync_stats["db_watchlist_count"] = db_watchlist
+        sync_stats["db_diary_count"] = db_diary
+        print(
+            f"[ingest] Vercel done: live_watchlist={sync_stats.get('watchlist_count', 0)} "
+            f"live_diary={sync_stats.get('diary_count', 0)} "
+            f"db_watchlist={db_watchlist} db_diary={db_diary} "
+            f"errors={len(sync_stats.get('errors', []))}",
+            flush=True,
+        )
         return {
             "status": "completed",
             "user_id": payload.user_id,
@@ -544,17 +601,109 @@ async def submit_swipe_action(payload: SwipeActionRequest, verified_user: str = 
         raise HTTPException(status_code=429, detail={"code": "sync_lock", "retry_after_ms": retry_after_ms})
 
     movie = store.get_movie(payload.movie_slug)
-    
-    if payload.action == "dismiss":
-        store.add_exclusion(payload.user_id, payload.movie_slug)
-    elif payload.action == "watchlist":
+
+    # Pre-check for duplicates so we can return a distinct 409 the frontend can handle
+    if payload.action == "watchlist":
+        if payload.movie_slug in store.get_watchlist(payload.user_id):
+            return JSONResponse(
+                status_code=409,
+                content={"code": "already_in_watchlist", "action": payload.action, "movie_slug": payload.movie_slug},
+            )
         store.add_watchlist(payload.user_id, payload.movie_slug)
         if movie:
             store.record_genre_preference(payload.user_id, movie.get("genres", []))
     elif payload.action == "log":
+        if payload.movie_slug in store.get_diary(payload.user_id):
+            return JSONResponse(
+                status_code=409,
+                content={"code": "already_in_diary", "action": payload.action, "movie_slug": payload.movie_slug},
+            )
         store.add_diary(payload.user_id, payload.movie_slug)
+    elif payload.action == "dismiss":
+        store.add_exclusion(payload.user_id, payload.movie_slug)
 
     return {"status": "accepted", "action": payload.action, "movie_slug": payload.movie_slug}
+
+
+_EXTENSION_BATCH_LIMIT = 500
+
+
+@app.post("/api/extension/batch/watchlist")
+async def extension_batch_watchlist(
+    payload: ExtensionBatchRequest,
+    verified_user: str = Depends(verify_session),
+):
+    """Push a batch of watchlist slugs scraped by the Chrome extension."""
+    if verified_user and payload.user_id != verified_user:
+        raise HTTPException(status_code=403, detail={"code": "user_id_mismatch"})
+    if len(payload.slugs) > _EXTENSION_BATCH_LIMIT:
+        raise HTTPException(status_code=413, detail={"code": "batch_too_large", "limit": _EXTENSION_BATCH_LIMIT})
+
+    print(
+        f"[extension] watchlist batch user={payload.user_id} "
+        f"page={payload.page}/{payload.total_pages} slugs={len(payload.slugs)}",
+        flush=True,
+    )
+    result = store.batch_add_watchlist(payload.user_id, payload.slugs)
+    return {
+        "status": "ok",
+        "user_id": payload.user_id,
+        "page": payload.page,
+        "total_pages": payload.total_pages,
+        "result": result,
+    }
+
+
+@app.post("/api/extension/batch/diary")
+async def extension_batch_diary(
+    payload: ExtensionBatchRequest,
+    verified_user: str = Depends(verify_session),
+):
+    """Push a batch of diary slugs scraped by the Chrome extension."""
+    if verified_user and payload.user_id != verified_user:
+        raise HTTPException(status_code=403, detail={"code": "user_id_mismatch"})
+    if len(payload.slugs) > _EXTENSION_BATCH_LIMIT:
+        raise HTTPException(status_code=413, detail={"code": "batch_too_large", "limit": _EXTENSION_BATCH_LIMIT})
+
+    print(
+        f"[extension] diary batch user={payload.user_id} "
+        f"page={payload.page}/{payload.total_pages} slugs={len(payload.slugs)}",
+        flush=True,
+    )
+    result = store.batch_add_diary(payload.user_id, payload.slugs)
+    return {
+        "status": "ok",
+        "user_id": payload.user_id,
+        "page": payload.page,
+        "total_pages": payload.total_pages,
+        "result": result,
+    }
+
+
+@app.post("/api/extension/sync-status")
+async def extension_sync_status(
+    payload: ExtensionSyncStatusRequest,
+    verified_user: str = Depends(verify_session),
+):
+    """Report extension sync progress. Mirrors the state into ingest_progress for the UI."""
+    if verified_user and payload.user_id != verified_user:
+        raise HTTPException(status_code=403, detail={"code": "user_id_mismatch"})
+
+    pct_map = {"idle": 0, "watchlist": 25, "diary": 75, "complete": 100, "error": -1}
+    pct = pct_map.get(payload.phase, 0)
+    if payload.current_page and payload.total_pages:
+        base = 0 if payload.phase == "watchlist" else 50
+        span = 45
+        pct = base + int((payload.current_page / max(payload.total_pages, 1)) * span)
+    store.set_ingest_progress(payload.user_id, pct)
+    if payload.phase == "error" and payload.message:
+        store.set_ingest_error(payload.user_id, {"code": "extension_error", "reason": payload.message})
+    print(
+        f"[extension] sync-status user={payload.user_id} phase={payload.phase} "
+        f"page={payload.current_page}/{payload.total_pages} slugs_found={payload.slugs_found} pct={pct}",
+        flush=True,
+    )
+    return {"status": "ok", "progress": pct}
 
 
 def _run_user_history_sync(

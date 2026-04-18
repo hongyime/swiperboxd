@@ -84,7 +84,11 @@ class Store(Protocol):
 
     def weighted_shuffle(self, user_id: str, movies: list[dict]) -> list[dict]: ...
 
+    def save_user_session(self, username: str, encrypted_session: str) -> None: ...
+
     def upsert_list_summary(self, list_summary: dict) -> None: ...
+
+    def update_list_scrape_count(self, list_id: str, count: int) -> None: ...
 
     def get_list_summary(self, list_id: str) -> dict | None: ...
 
@@ -93,6 +97,10 @@ class Store(Protocol):
     def replace_list_memberships(self, list_id: str, movie_slugs: list[str]) -> None: ...
 
     def get_list_memberships(self, list_id: str) -> list[str]: ...
+
+    def batch_add_watchlist(self, user_id: str, slugs: list[str]) -> dict: ...
+
+    def batch_add_diary(self, user_id: str, slugs: list[str]) -> dict: ...
 
 
 @dataclass
@@ -113,7 +121,13 @@ class InMemoryStore:
     genre_weights: dict[str, dict[str, int]] = field(default_factory=dict)
     list_summaries: dict[str, dict[str, Any]] = field(default_factory=dict)
     list_memberships: dict[str, list[str]] = field(default_factory=dict)
+    user_sessions: dict[str, str] = field(default_factory=dict)
     lock: threading.Lock = field(default_factory=threading.Lock)
+
+    def save_user_session(self, username: str, encrypted_session: str) -> None:
+        """Store encrypted session for a user (in-memory)."""
+        with self.lock:
+            self.user_sessions[username] = encrypted_session
 
     def add_exclusion(self, user_id: str, slug: str) -> None:
         """Add a movie to user's exclusion list."""
@@ -244,9 +258,15 @@ class InMemoryStore:
             "comment_count": int(list_summary.get("comment_count", 0) or 0),
             "is_official": bool(list_summary.get("is_official", False)),
             "tags": list_summary.get("tags", []) if isinstance(list_summary.get("tags", []), list) else [],
+            "scraped_film_count": int(list_summary.get("scraped_film_count", 0) or 0),
         }
         with self.lock:
             self.list_summaries[normalized["list_id"]] = normalized
+
+    def update_list_scrape_count(self, list_id: str, count: int) -> None:
+        with self.lock:
+            if list_id in self.list_summaries:
+                self.list_summaries[list_id]["scraped_film_count"] = count
 
     def get_list_summary(self, list_id: str) -> dict | None:
         with self.lock:
@@ -272,6 +292,28 @@ class InMemoryStore:
         with self.lock:
             memberships = self.list_memberships.get(list_id, [])
         return list(memberships)
+
+    def batch_add_watchlist(self, user_id: str, slugs: list[str]) -> dict:
+        added = 0
+        errors: list[str] = []
+        for slug in slugs:
+            try:
+                self.add_watchlist(user_id, slug)
+                added += 1
+            except Exception as exc:
+                errors.append(f"{slug}: {exc}")
+        return {"added": added, "errors": errors, "total": len(slugs)}
+
+    def batch_add_diary(self, user_id: str, slugs: list[str]) -> dict:
+        added = 0
+        errors: list[str] = []
+        for slug in slugs:
+            try:
+                self.add_diary(user_id, slug)
+                added += 1
+            except Exception as exc:
+                errors.append(f"{slug}: {exc}")
+        return {"added": added, "errors": errors, "total": len(slugs)}
 
     def cleanup_expired_progress(self, ttl_seconds: float = 3600.0) -> int:
         """Remove ingest progress entries older than TTL. Returns count removed."""
@@ -349,6 +391,14 @@ class SupabaseStore:
 
         print(f"[store] created user id={new_user.data[0]['id']} for {letterboxd_username}", flush=True)
         return new_user.data[0]["id"]
+
+    def save_user_session(self, username: str, encrypted_session: str) -> None:
+        """Store encrypted session in Supabase users table."""
+        actual_user_id = self._get_or_create_user_id(username)
+        self.client.table("users").update(
+            {"letterboxd_session": encrypted_session}
+        ).eq("id", actual_user_id).execute()
+        print(f"[store] saved encrypted session for user {username}", flush=True)
 
     def add_exclusion(self, user_id: str, slug: str) -> None:
         """Add a movie to user's exclusion list in Supabase."""
@@ -598,8 +648,15 @@ class SupabaseStore:
             "tags": list_summary.get("tags", []) if isinstance(list_summary.get("tags", []), list) else [],
             "updated_at": "now()",
         }
+        if "scraped_film_count" in list_summary:
+            normalized["scraped_film_count"] = int(list_summary["scraped_film_count"] or 0)
         if normalized["list_id"]:
             self.client.table("list_summaries").upsert(normalized, on_conflict="list_id").execute()
+
+    def update_list_scrape_count(self, list_id: str, count: int) -> None:
+        self.client.table("list_summaries").update(
+            {"scraped_film_count": count}
+        ).eq("list_id", list_id).execute()
 
     def get_list_summary(self, list_id: str) -> dict | None:
         response = self.client.table("list_summaries").select("*").eq("list_id", list_id).execute()
@@ -634,3 +691,35 @@ class SupabaseStore:
             .execute()
         )
         return [row["movie_slug"] for row in response.data]
+
+    def batch_add_watchlist(self, user_id: str, slugs: list[str]) -> dict:
+        """Add many watchlist slugs with per-slug error handling. Used by extension batch push."""
+        added = 0
+        errors: list[str] = []
+        for slug in slugs:
+            if not slug:
+                continue
+            try:
+                self.add_watchlist(user_id, slug)
+                added += 1
+            except Exception as exc:
+                errors.append(f"{slug}: {exc}")
+                print(f"[store] batch_add_watchlist error for {slug}: {exc}", flush=True)
+        print(f"[store] batch_add_watchlist: added={added} errors={len(errors)} total={len(slugs)}", flush=True)
+        return {"added": added, "errors": errors, "total": len(slugs)}
+
+    def batch_add_diary(self, user_id: str, slugs: list[str]) -> dict:
+        """Add many diary slugs with per-slug error handling. Used by extension batch push."""
+        added = 0
+        errors: list[str] = []
+        for slug in slugs:
+            if not slug:
+                continue
+            try:
+                self.add_diary(user_id, slug)
+                added += 1
+            except Exception as exc:
+                errors.append(f"{slug}: {exc}")
+                print(f"[store] batch_add_diary error for {slug}: {exc}", flush=True)
+        print(f"[store] batch_add_diary: added={added} errors={len(errors)} total={len(slugs)}", flush=True)
+        return {"added": added, "errors": errors, "total": len(slugs)}

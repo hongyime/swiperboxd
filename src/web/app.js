@@ -24,6 +24,7 @@ const state = {
   deck: [],
   currentIndex: 0,
   isSyncing: false,
+  syncComplete: false,
   flipped: false,
   lists: [],
   selectedListId: null,
@@ -87,6 +88,8 @@ function initLetterboxdAuth() {
       localStorage.setItem('swiperboxd_username', username);
       localStorage.setItem('swiperboxd_token', res.encrypted_session_cookie);
 
+      broadcastAuthToExtension();
+
       console.log('[auth] login success, transitioning to discovery');
       showSuccess('Connected to Letterboxd!');
       setTimeout(() => showDiscovery(), 1000);
@@ -102,8 +105,10 @@ function initLetterboxdAuth() {
     hideSyncBadge();
     localStorage.removeItem('swiperboxd_username');
     localStorage.removeItem('swiperboxd_token');
+    localStorage.removeItem('swiperboxd_initial_sync_done');
     state.username = null;
     state.encryptedSession = null;
+    state.syncComplete = false;
     showAuth();
   });
 }
@@ -116,10 +121,25 @@ function checkSavedSession() {
     console.log('[session] restored from localStorage for user:', username);
     state.username = username;
     state.encryptedSession = session;
+    broadcastAuthToExtension();
     showDiscovery();
   } else {
     console.log('[session] no saved session, showing auth screen');
     showAuth();
+  }
+}
+
+function broadcastAuthToExtension() {
+  if (!state.username || !state.encryptedSession) return;
+  try {
+    window.postMessage({
+      type: 'SWIPERBOXD_AUTH',
+      username: state.username,
+      sessionToken: state.encryptedSession,
+      apiBase: window.location.origin,
+    }, window.location.origin);
+  } catch (e) {
+    console.warn('[auth] extension postMessage failed:', e);
   }
 }
 
@@ -185,6 +205,12 @@ function initDiscovery() {
       profileDropdown.classList.add('hidden');
     }
   });
+
+  // Action bar buttons
+  $('#btn-dismiss')?.addEventListener('click', () => executeSwipe('dismiss'));
+  $('#btn-watchlist')?.addEventListener('click', () => executeSwipe('watchlist'));
+  $('#btn-log')?.addEventListener('click', () => executeSwipe('log'));
+  $('#btn-flip')?.addEventListener('click', () => flipCard());
 
   document.addEventListener('keydown', (e) => {
     if (discoveryScreen.classList.contains('active') && state.deck.length > 0) {
@@ -283,8 +309,23 @@ async function loadDeck() {
   emptyState.classList.add('hidden');
   loadingSkeleton.classList.remove('hidden');
 
-  // Kick off watchlist/diary sync in the background — don't block card display
-  _startIngestBackground();
+  // First sync: show blocking overlay until complete, then load deck
+  // Subsequent syncs: non-blocking badge
+  const isFirstSync = !localStorage.getItem('swiperboxd_initial_sync_done');
+  if (isFirstSync && !state.syncComplete) {
+    console.log('[deck] first sync — showing blocking overlay');
+    syncOverlay.classList.remove('hidden');
+    $('#sync-overlay-text').textContent = 'Syncing your Letterboxd data...';
+    $('#sync-overlay-detail').textContent = 'This may take a moment on first login';
+    await _startIngestBackground();
+    state.syncComplete = true;
+    localStorage.setItem('swiperboxd_initial_sync_done', '1');
+    syncOverlay.classList.add('hidden');
+    console.log('[deck] initial sync done — loading deck');
+  } else {
+    state.syncComplete = true;
+    _startIngestBackground(); // non-blocking
+  }
 
   try {
     console.log('[deck] fetching list deck from DB...');
@@ -340,8 +381,10 @@ async function _startIngestBackground() {
     const s = startRes.sync_stats || {};
     console.log(`[ingest] sync completed inline (Vercel) — watchlist=${s.watchlist_count||0} diary=${s.diary_count||0}`);
     if (s.watchlist_count === 0 && s.diary_count === 0) {
-      console.warn('[ingest] WARNING: both watchlist and diary are empty — check session cookie and Vercel function logs');
+      console.warn('[ingest] WARNING: both watchlist and diary are empty — use the Chrome extension to sync, or check Vercel function logs');
     }
+    const detail = $('#sync-overlay-detail');
+    if (detail) detail.textContent = `Watchlist: ${s.watchlist_count||0} films, Diary: ${s.diary_count||0} films`;
     hideSyncBadge();
     return;
   }
@@ -436,18 +479,21 @@ function createCard(movie, isTop = false) {
   `;
 
   if (isTop) {
+    let _cardDragged = false;
     card.addEventListener('click', (e) => {
-      if (!e.target.closest('.action-btn')) flipCard();
+      if (_cardDragged || e.target.closest('.action-btn')) return;
+      flipCard();
     });
-    initCardTouch(card);
+    initCardTouch(card, (wasDrag) => { _cardDragged = wasDrag; });
   }
 
   return card;
 }
 
-function initCardTouch(card) {
+function initCardTouch(card, onDragState) {
   let startX = 0, startY = 0, currentX = 0, currentY = 0, dragging = false;
   const threshold = 100;
+  const dragDeadzone = 5;
 
   function onStart(x, y) {
     startX = x;
@@ -455,6 +501,7 @@ function initCardTouch(card) {
     currentX = 0;
     currentY = 0;
     dragging = true;
+    if (onDragState) onDragState(false);
     card.style.transition = 'none';
   }
 
@@ -462,6 +509,9 @@ function initCardTouch(card) {
     if (!dragging) return;
     currentX = x - startX;
     currentY = y - startY;
+    if (Math.abs(currentX) > dragDeadzone || Math.abs(currentY) > dragDeadzone) {
+      if (onDragState) onDragState(true);
+    }
     card.style.transform = `translate(${currentX}px, ${currentY}px) rotate(${currentX * 0.1}deg)`;
     // Show swipe indicators
     const watchEl = card.querySelector('.swipe-indicator.watchlist');
@@ -525,6 +575,10 @@ function flipCard() {
 
 async function executeSwipe(action) {
   if (state.isSyncing || state.deck.length === 0) return;
+  if (!state.syncComplete) {
+    console.warn('[swipe] blocked — initial sync not complete yet');
+    return;
+  }
 
   state.isSyncing = true;
   const topCard = cardStack.querySelector('.movie-card:last-child');
@@ -540,6 +594,7 @@ async function executeSwipe(action) {
 
   syncOverlay.classList.remove('hidden');
 
+  let advanceCard = true;
   try {
     await api('/actions/swipe', {
       method: 'POST',
@@ -550,31 +605,45 @@ async function executeSwipe(action) {
       suppression.dismiss(movie.slug);
       console.log(`[suppression] ${movie.slug} suppressed for 24h`);
     }
-
-    state.currentIndex++;
-    state.flipped = false;
-
-    await delay(400);
-    topCard.remove();
-
-    if (state.currentIndex < state.deck.length) {
-      const nextCard = createCard(state.deck[state.currentIndex], true);
-      nextCard.style.transform = 'scale(0.95) translateY(10px)';
-      cardStack.appendChild(nextCard);
-      await delay(10);
-      nextCard.style.transition = 'transform 0.2s ease-out';
-      nextCard.style.transform = '';
-    }
-
-    if (state.currentIndex >= state.deck.length) {
-      console.log('[deck] all cards exhausted');
-      cardStack.classList.add('hidden');
-      emptyState.classList.remove('hidden');
-    }
   } catch (err) {
-    console.error('[swipe] failed:', err.message);
-    topCard.classList.remove('swiping-right', 'swiping-left', 'swiping-up');
-    topCard.style.transform = '';
+    // 409 = duplicate (already in watchlist / diary). Still advance, show toast.
+    if (err.status === 409) {
+      const code = err.code || err.data?.code;
+      if (code === 'already_in_watchlist') showToast('Already in your watchlist');
+      else if (code === 'already_in_diary') showToast('Already in your diary');
+      else showToast('Already saved');
+      console.log(`[swipe] 409 duplicate — advancing anyway code=${code}`);
+    } else {
+      console.error('[swipe] failed:', err.message);
+      advanceCard = false;
+      topCard.classList.remove('swiping-right', 'swiping-left', 'swiping-up');
+      topCard.style.transform = '';
+    }
+  }
+
+  try {
+    if (advanceCard) {
+      state.currentIndex++;
+      state.flipped = false;
+
+      await delay(400);
+      topCard.remove();
+
+      if (state.currentIndex < state.deck.length) {
+        const nextCard = createCard(state.deck[state.currentIndex], true);
+        nextCard.style.transform = 'scale(0.95) translateY(10px)';
+        cardStack.appendChild(nextCard);
+        await delay(10);
+        nextCard.style.transition = 'transform 0.2s ease-out';
+        nextCard.style.transform = '';
+      }
+
+      if (state.currentIndex >= state.deck.length) {
+        console.log('[deck] all cards exhausted');
+        cardStack.classList.add('hidden');
+        emptyState.classList.remove('hidden');
+      }
+    }
   } finally {
     syncOverlay.classList.add('hidden');
     state.isSyncing = false;
@@ -599,10 +668,28 @@ async function api(path, options = {}) {
     const detail = data?.detail;
     const msg = (typeof detail === 'string' ? detail : detail?.reason || detail?.code) || `HTTP ${res.status}`;
     console.error(`[api] ${options.method || 'GET'} ${path} → ${res.status}:`, msg);
-    throw new Error(msg);
+    const err = new Error(msg);
+    err.status = res.status;
+    err.code = typeof detail === 'object' ? detail?.code : (data?.code || null);
+    err.data = data;
+    throw err;
   }
 
   return res.json();
+}
+
+function showToast(message, durationMs = 2200) {
+  let el = document.getElementById('toast');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'toast';
+    el.className = 'toast hidden';
+    document.body.appendChild(el);
+  }
+  el.textContent = message;
+  el.classList.remove('hidden');
+  clearTimeout(el._toastTimer);
+  el._toastTimer = setTimeout(() => el.classList.add('hidden'), durationMs);
 }
 
 function delay(ms) {
