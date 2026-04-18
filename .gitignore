@@ -206,3 +206,6 @@ marimo/_static/
 marimo/_lsp/
 __marimo__/
 .vercel
+
+# Playwright persistent profile (Letterboxd cookie capture)
+.playwright-letterboxd/
