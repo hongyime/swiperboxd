@@ -33,7 +33,15 @@ Usage
     python scripts/periodic_sync.py --only-user bryanseah234
     python scripts/periodic_sync.py --max-watchlist-pages 50 --max-diary-pages 200
     python scripts/periodic_sync.py --refresh-my-session bryanseah234
+    python scripts/periodic_sync.py --refresh-my-session bryanseah234 --manual-cookie
     python scripts/periodic_sync.py --dry-run
+
+Cookie refresh modes
+--------------------
+Default: Playwright opens Chromium with a persistent profile at
+`.playwright-letterboxd/`. If Cloudflare Turnstile blocks the automation
+(error 600010), pass `--manual-cookie` to paste the cookie directly from
+your real browser's DevTools.
 """
 from __future__ import annotations
 
@@ -82,11 +90,45 @@ def _encrypt_session_for_storage(username: str, raw_cookie: str) -> str | None:
     return encrypt_session_cookie(payload, master_key)
 
 
-def browser_capture_cookie(save_to_env: bool = True) -> str | None:
-    """Open Chromium, wait for the user to log in, return the session cookie.
+def manual_paste_cookie(save_to_env: bool = True) -> str | None:
+    """Prompt the operator to paste a cookie grabbed from a real browser.
 
-    Mirrors scripts/seed_supabase.py::_browser_login so both scripts share the
-    same manual-login experience.
+    Letterboxd's sign-in page is now gated by Cloudflare Turnstile, which often
+    flags Playwright's Chromium as automation (error 600010). The most reliable
+    flow: log in with your real Chrome → open DevTools → Application ›
+    Cookies › https://letterboxd.com → copy the value of
+    `letterboxd.user.CURRENT` → paste here.
+    """
+    print(
+        "\n[auth] Manual cookie paste:\n"
+        "  1. Open https://letterboxd.com in your real browser, sign in normally.\n"
+        "  2. DevTools → Application → Cookies → https://letterboxd.com\n"
+        "  3. Copy the value of `letterboxd.user.CURRENT`.\n"
+    )
+    try:
+        cookie_value = input("[auth] Paste cookie value (or blank to cancel): ").strip()
+    except (EOFError, KeyboardInterrupt):
+        cookie_value = ""
+    if not cookie_value:
+        print("[auth] No cookie entered — aborting.")
+        return None
+    if cookie_value and save_to_env:
+        try:
+            set_key(str(ENV_FILE), "LETTERBOXD_SESSION_COOKIE", cookie_value)
+            print(f"[auth] Saved cookie to {ENV_FILE}")
+        except Exception as exc:
+            print(f"[auth] Could not save cookie to .env: {exc}")
+    return cookie_value
+
+
+def browser_capture_cookie(save_to_env: bool = True, persistent: bool = True) -> str | None:
+    """Open Chromium (persistent context by default) and wait for the user to
+    sign in. Cookie captured automatically when Letterboxd sets
+    `letterboxd.user.CURRENT`.
+
+    Persistent mode stores profile data in `.playwright-letterboxd/` inside
+    the repo root so Cloudflare Turnstile only has to be solved once. If
+    Turnstile still blocks (error 600010), fall back to manual paste.
     """
     try:
         from playwright.sync_api import sync_playwright
@@ -94,31 +136,58 @@ def browser_capture_cookie(save_to_env: bool = True) -> str | None:
         print(
             "\n[auth] Playwright not installed.\n"
             "  Run:  pip install playwright && playwright install chromium\n"
-            "  Then re-run with --refresh-my-session.\n"
+            "  …or use --manual-cookie to paste a cookie from your real browser.\n"
         )
         return None
 
-    print("\n[auth] Opening Chromium for manual Letterboxd login…")
-    print("[auth] Sign in in the browser — the cookie will be captured automatically.\n")
+    profile_dir = repo_root / ".playwright-letterboxd"
+    print(f"\n[auth] Opening Chromium (profile: {profile_dir})")
+    print(
+        "[auth] Sign in in the browser. If Cloudflare Turnstile blocks you,\n"
+        "       close the window and re-run with --manual-cookie instead.\n"
+    )
 
     cookie_value: str | None = None
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=False, slow_mo=50)
-        context = browser.new_context()
-        page = context.new_page()
-        page.goto("https://letterboxd.com/sign-in/")
-        for _ in range(180):
-            for c in context.cookies():
-                if c["name"] == "letterboxd.user.CURRENT":
-                    cookie_value = c["value"]
+    try:
+        with sync_playwright() as p:
+            if persistent:
+                context = p.chromium.launch_persistent_context(
+                    user_data_dir=str(profile_dir),
+                    headless=False,
+                    slow_mo=50,
+                    args=["--disable-blink-features=AutomationControlled"],
+                )
+                browser = None
+            else:
+                browser = p.chromium.launch(
+                    headless=False,
+                    slow_mo=50,
+                    args=["--disable-blink-features=AutomationControlled"],
+                )
+                context = browser.new_context()
+
+            page = context.pages[0] if context.pages else context.new_page()
+            page.goto("https://letterboxd.com/sign-in/")
+
+            for _ in range(300):  # 5 min
+                for c in context.cookies():
+                    if c["name"] == "letterboxd.user.CURRENT":
+                        cookie_value = c["value"]
+                        break
+                if cookie_value:
+                    print("[auth] Login detected — cookie extracted.")
                     break
-            if cookie_value:
-                print("[auth] Login detected — cookie extracted.")
-                break
-            time.sleep(1)
-        else:
-            print("[auth] Timed out waiting for login (3 min).")
-        browser.close()
+                time.sleep(1)
+            else:
+                print("[auth] Timed out waiting for login (5 min).")
+
+            if browser is not None:
+                browser.close()
+            else:
+                context.close()
+    except Exception as exc:
+        print(f"[auth] Playwright flow failed: {exc}")
+        return None
 
     if cookie_value and save_to_env:
         try:
@@ -129,9 +198,12 @@ def browser_capture_cookie(save_to_env: bool = True) -> str | None:
     return cookie_value
 
 
-def refresh_user_session(store, username: str) -> bool:
-    """Open browser, capture cookie, encrypt, write to users.letterboxd_session."""
-    raw_cookie = browser_capture_cookie(save_to_env=True)
+def refresh_user_session(store, username: str, use_manual: bool = False) -> bool:
+    """Capture a fresh cookie (browser or manual paste), encrypt it, store it."""
+    if use_manual:
+        raw_cookie = manual_paste_cookie(save_to_env=True)
+    else:
+        raw_cookie = browser_capture_cookie(save_to_env=True)
     if not raw_cookie:
         print("[sync] no cookie captured — aborting refresh")
         return False
@@ -355,14 +427,18 @@ def main() -> None:
                         help="Skip users whose watchlist was written within N minutes")
     parser.add_argument("--max-users", type=int, default=25)
     parser.add_argument("--max-watchlist-pages", type=int, default=50,
-                        help="Cap watchlist pages per user (default: 50 ≈ 1400 films)")
+                        help="Cap watchlist pages per user (default: 50, ~1400 films)")
     parser.add_argument("--max-diary-pages", type=int, default=200,
-                        help="Cap diary pages per user (default: 200 ≈ 10k entries)")
+                        help="Cap diary pages per user (default: 200, ~10k entries)")
     parser.add_argument("--max-movies", type=int, default=200)
     parser.add_argument("--max-lists", type=int, default=25)
     parser.add_argument("--refresh-my-session", type=str, default=None, metavar="USERNAME",
-                        help="Open Chromium to capture a fresh cookie, encrypt it, "
+                        help="Capture a fresh cookie (Playwright by default), encrypt it, "
                              "and save to users.letterboxd_session for USERNAME")
+    parser.add_argument("--manual-cookie", action="store_true",
+                        help="With --refresh-my-session: paste cookie from a real browser "
+                             "instead of launching Playwright (bypasses Cloudflare Turnstile "
+                             "error 600010)")
     parser.add_argument("--auto-refresh-on-403", action="store_true",
                         help="(with --refresh-my-session) retry once if the stored cookie 403s")
     parser.add_argument("--dry-run", action="store_true")
@@ -383,7 +459,7 @@ def main() -> None:
     print(f"[sync] dry_run={args.dry_run}")
 
     if args.refresh_my_session:
-        ok = refresh_user_session(store, args.refresh_my_session)
+        ok = refresh_user_session(store, args.refresh_my_session, use_manual=args.manual_cookie)
         if not ok:
             sys.exit(1)
         if args.users_only or args.backfill_only or args.only_user:
