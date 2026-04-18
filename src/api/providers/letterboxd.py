@@ -225,6 +225,11 @@ class HttpLetterboxdScraper:
         ),
         "Accept-Language": "en-US,en;q=0.9",
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+        # Exclude "br": httpx only decodes Brotli when the optional `brotli`
+        # package is installed, and some proxies pass Brotli-encoded bodies
+        # through unchanged. Omitting br forces gzip/deflate which httpx
+        # handles natively.
+        "Accept-Encoding": "gzip, deflate",
         "Sec-Fetch-Site": "same-origin",
         "Sec-Fetch-Mode": "navigate",
         "Sec-Fetch-Dest": "document",
