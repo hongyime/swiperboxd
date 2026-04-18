@@ -15,6 +15,14 @@
     {
       "path": "/api/cron/refresh-lists",
       "schedule": "0 2 * * *"
+    },
+    {
+      "path": "/api/cron/sync-users",
+      "schedule": "0 */6 * * *"
+    },
+    {
+      "path": "/api/cron/backfill-scrapes",
+      "schedule": "30 3 * * *"
     }
   ]
 }

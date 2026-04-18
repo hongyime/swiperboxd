@@ -86,6 +86,12 @@ class Store(Protocol):
 
     def save_user_session(self, username: str, encrypted_session: str) -> None: ...
 
+    def get_all_user_sessions(self) -> list[dict]: ...
+
+    def get_placeholder_movie_slugs(self, limit: int = 200) -> list[str]: ...
+
+    def get_underscraped_lists(self, limit: int = 50) -> list[dict]: ...
+
     def upsert_list_summary(self, list_summary: dict) -> None: ...
 
     def update_list_scrape_count(self, list_id: str, count: int) -> None: ...
@@ -128,6 +134,39 @@ class InMemoryStore:
         """Store encrypted session for a user (in-memory)."""
         with self.lock:
             self.user_sessions[username] = encrypted_session
+
+    def get_all_user_sessions(self) -> list[dict]:
+        with self.lock:
+            return [
+                {"username": u, "encrypted_session": s}
+                for u, s in self.user_sessions.items()
+                if s
+            ]
+
+    def get_placeholder_movie_slugs(self, limit: int = 200) -> list[str]:
+        """Return movies whose metadata was never backfilled (placeholder title/no poster)."""
+        placeholders: list[str] = []
+        with self.lock:
+            for slug, movie in self.movies.items():
+                if len(placeholders) >= limit:
+                    break
+                expected_placeholder_title = slug.replace("-", " ").title()
+                if movie.get("title") == expected_placeholder_title and not movie.get("poster_url"):
+                    placeholders.append(slug)
+        return placeholders
+
+    def get_underscraped_lists(self, limit: int = 50) -> list[dict]:
+        """Return list summaries where scraped_film_count < 50% of film_count."""
+        out: list[dict] = []
+        with self.lock:
+            for summary in self.list_summaries.values():
+                if len(out) >= limit:
+                    break
+                film_count = int(summary.get("film_count", 0) or 0)
+                scraped = int(summary.get("scraped_film_count", 0) or 0)
+                if film_count > 0 and scraped < film_count * 0.5:
+                    out.append(dict(summary))
+        return out
 
     def add_exclusion(self, user_id: str, slug: str) -> None:
         """Add a movie to user's exclusion list."""
@@ -399,6 +438,76 @@ class SupabaseStore:
             {"letterboxd_session": encrypted_session}
         ).eq("id", actual_user_id).execute()
         print(f"[store] saved encrypted session for user {username}", flush=True)
+
+    def get_all_user_sessions(self) -> list[dict]:
+        """Return every user with a non-null letterboxd_session blob."""
+        response = (
+            self.client.table("users")
+            .select("id, letterboxd_username, letterboxd_session")
+            .not_.is_("letterboxd_session", "null")
+            .execute()
+        )
+        rows = response.data or []
+        out = []
+        for row in rows:
+            if row.get("letterboxd_session") and row.get("letterboxd_username"):
+                out.append({
+                    "user_id": row.get("id"),
+                    "username": row.get("letterboxd_username"),
+                    "encrypted_session": row.get("letterboxd_session"),
+                })
+        print(f"[store] get_all_user_sessions: {len(out)} users with sessions", flush=True)
+        return out
+
+    def get_placeholder_movie_slugs(self, limit: int = 200) -> list[str]:
+        """Return movies that only have the placeholder title from _ensure_movie_placeholder.
+
+        Detection: poster_url is NULL and popularity = 0 and genres = []. The title
+        derived from the slug is hard to filter in SQL, so we pull candidates and
+        check client-side.
+        """
+        response = (
+            self.client.table("movies")
+            .select("slug, title, poster_url, popularity, genres")
+            .is_("poster_url", "null")
+            .limit(max(limit * 2, limit))
+            .execute()
+        )
+        rows = response.data or []
+        placeholders: list[str] = []
+        for row in rows:
+            slug = row.get("slug", "")
+            if not slug:
+                continue
+            expected = slug.replace("-", " ").title()
+            if row.get("title") == expected and not row.get("genres"):
+                placeholders.append(slug)
+            if len(placeholders) >= limit:
+                break
+        print(f"[store] get_placeholder_movie_slugs: {len(placeholders)} placeholders", flush=True)
+        return placeholders
+
+    def get_underscraped_lists(self, limit: int = 50) -> list[dict]:
+        """Return list summaries where scraped_film_count < 50% of film_count."""
+        response = (
+            self.client.table("list_summaries")
+            .select("*")
+            .gt("film_count", 0)
+            .order("film_count", desc=False)
+            .limit(500)
+            .execute()
+        )
+        rows = response.data or []
+        out = []
+        for row in rows:
+            film_count = int(row.get("film_count", 0) or 0)
+            scraped = int(row.get("scraped_film_count", 0) or 0)
+            if film_count > 0 and scraped < film_count * 0.5:
+                out.append(row)
+            if len(out) >= limit:
+                break
+        print(f"[store] get_underscraped_lists: {len(out)} lists under 50% scraped", flush=True)
+        return out
 
     def add_exclusion(self, user_id: str, slug: str) -> None:
         """Add a movie to user's exclusion list in Supabase."""
