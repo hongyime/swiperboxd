@@ -405,12 +405,13 @@ class HttpLetterboxdScraper:
     def pull_diary_slugs(self, session_cookie: str, username: str | None = None, max_pages: int = 200) -> set[str]:
         """Pull film slugs from the authenticated user's diary."""
         slugs: set[str] = set()
-        path = f"/{username}/films/diary/" if username else "/diary/"
-        url = f"{self.base_url}{path}"
-        print(f"[scraper] diary: starting fetch url={url} max_pages={max_pages} cookie_len={len(session_cookie or '')}", flush=True)
+        base_path = f"/{username}/films/diary/" if username else "/diary/"
+        print(f"[scraper] diary: starting fetch base_path={base_path} max_pages={max_pages} cookie_len={len(session_cookie or '')}", flush=True)
         for page in range(1, max_pages + 1):
+            # Letterboxd diary paginates via path segments, not ?page= query params
+            url = f"{self.base_url}{base_path}page/{page}/" if page > 1 else f"{self.base_url}{base_path}"
             try:
-                resp = self._fetch(url, params={"page": page}, session_cookie=session_cookie)
+                resp = self._fetch(url, session_cookie=session_cookie)
                 print(f"[scraper] diary: page={page} status={resp.status_code} body_len={len(resp.text)}", flush=True)
             except RuntimeError as exc:
                 print(f"[scraper] diary: page={page} fetch failed: {exc} — stopping pagination", flush=True)

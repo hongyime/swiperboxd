@@ -500,42 +500,68 @@ def list_deck(list_id: str, user_id: str = Query(min_length=1)):
         raise HTTPException(status_code=404, detail={"code": "list_not_found"})
 
     movie_slugs: list[str] = []
-    try:
-        movie_slugs = scraper.fetch_list_movie_slugs(list_id, list_url=summary.get("url")) or []
-    except Exception as exc:
-        print(f"[deck] scrape failed for {list_id}: {exc} — falling back to cache", flush=True)
-
-    if movie_slugs:
+    # On Vercel, skip the live list scrape — it times out and the cache is
+    # kept fresh by the cron job. Only scrape on long-running servers.
+    if not os.getenv("VERCEL"):
         try:
-            store.replace_list_memberships(list_id, movie_slugs)
-            try:
-                store.update_list_scrape_count(list_id, len(movie_slugs))
-            except Exception as exc:
-                print(f"[deck] update_list_scrape_count skipped: {exc}", flush=True)
+            movie_slugs = scraper.fetch_list_movie_slugs(list_id, list_url=summary.get("url")) or []
         except Exception as exc:
-            print(f"[deck] replace_list_memberships failed: {exc}", flush=True)
-    else:
-        # Scrape returned nothing / failed — use cache
-        movie_slugs = store.get_list_memberships(list_id)
+            print(f"[deck] scrape failed for {list_id}: {exc} — falling back to cache", flush=True)
+
+        if movie_slugs:
+            try:
+                store.replace_list_memberships(list_id, movie_slugs)
+                try:
+                    store.update_list_scrape_count(list_id, len(movie_slugs))
+                except Exception as exc:
+                    print(f"[deck] update_list_scrape_count skipped: {exc}", flush=True)
+            except Exception as exc:
+                print(f"[deck] replace_list_memberships failed: {exc}", flush=True)
+
+    # Always fall back to cached memberships
+    if not movie_slugs:
+        try:
+            movie_slugs = store.get_list_memberships(list_id)
+        except Exception as exc:
+            print(f"[deck] get_list_memberships failed: {exc}", flush=True)
+            raise HTTPException(status_code=500, detail={"code": "store_error", "reason": str(exc)})
         print(f"[deck] using {len(movie_slugs)} cached slugs for {list_id}", flush=True)
 
-    missing = [slug for slug in movie_slugs if not store.get_movie(slug)]
-    try:
-        for movie in scraper.metadata_for_slugs(missing):
-            store.upsert_movie(movie.__dict__)
-    except Exception as exc:
-        print(f"[deck] metadata_for_slugs failed: {exc} — continuing with existing movies", flush=True)
+    # Only fetch missing metadata on non-Vercel (too slow for serverless)
+    if not os.getenv("VERCEL"):
+        missing = [slug for slug in movie_slugs if not store.get_movie(slug)]
+        try:
+            for movie in scraper.metadata_for_slugs(missing):
+                store.upsert_movie(movie.__dict__)
+        except Exception as exc:
+            print(f"[deck] metadata_for_slugs failed: {exc} — continuing with existing movies", flush=True)
 
     # Filter out movies the user has already watchlisted, logged, or dismissed
-    watchlist = store.get_watchlist(user_id)
-    diary = store.get_diary(user_id)
-    exclusions = store.get_exclusions(user_id)
+    try:
+        watchlist = store.get_watchlist(user_id)
+        diary = store.get_diary(user_id)
+        exclusions = store.get_exclusions(user_id)
+    except Exception as exc:
+        print(f"[deck] failed to load user filters: {exc}", flush=True)
+        watchlist, diary, exclusions = set(), set(), set()
     seen = watchlist | diary | exclusions
 
-    movies = [store.get_movie(slug) for slug in store.get_list_memberships(list_id)]
+    try:
+        cached_slugs = store.get_list_memberships(list_id)
+        movies = [store.get_movie(slug) for slug in cached_slugs]
+    except Exception as exc:
+        print(f"[deck] failed to load movies from store: {exc}", flush=True)
+        raise HTTPException(status_code=500, detail={"code": "store_error", "reason": str(exc)})
+
     movies = [m for m in movies if m and m.get("slug") not in seen]
-    movies = store.weighted_shuffle(user_id, movies)
-    print(f"[deck] list={list_id} total={len(store.get_list_memberships(list_id))} after_filter={len(movies)} seen={len(seen)}", flush=True)
+    try:
+        movies = store.weighted_shuffle(user_id, movies)
+    except Exception as exc:
+        print(f"[deck] weighted_shuffle failed: {exc} — using unshuffled", flush=True)
+        import random as _random
+        _random.shuffle(movies)
+
+    print(f"[deck] list={list_id} total={len(movie_slugs)} after_filter={len(movies)} seen={len(seen)}", flush=True)
     return {
         "status": "ok",
         "list": summary,
