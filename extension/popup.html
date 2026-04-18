@@ -10,11 +10,12 @@
       --fg: #f5f5f5;
       --muted: #9a9a9a;
       --accent: #ff8000;
+      --accent-2: #e94560;
       --border: rgba(255,255,255,0.09);
     }
     html, body { margin: 0; padding: 0; }
     body {
-      width: 320px;
+      width: 340px;
       background: var(--bg);
       color: var(--fg);
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
@@ -23,34 +24,20 @@
     header {
       padding: 14px 16px 10px;
       border-bottom: 1px solid var(--border);
-    }
-    h1 {
-      margin: 0;
-      font-size: 15px;
-      letter-spacing: 0.02em;
-    }
-    .subtitle {
-      margin-top: 4px;
-      color: var(--muted);
-      font-size: 11px;
-    }
-    section {
-      padding: 12px 16px;
-      border-bottom: 1px solid var(--border);
-    }
-    section:last-child { border-bottom: none; }
-    .row {
       display: flex;
-      justify-content: space-between;
       align-items: center;
-      margin: 4px 0;
+      gap: 10px;
     }
+    header img.logo { width: 32px; height: 32px; border-radius: 6px; flex-shrink: 0; }
+    header .titles { min-width: 0; }
+    h1 { margin: 0; font-size: 15px; letter-spacing: 0.02em; }
+    .subtitle { margin-top: 2px; color: var(--muted); font-size: 11px; }
+    section { padding: 12px 16px; border-bottom: 1px solid var(--border); }
+    section:last-child { border-bottom: none; }
+    .row { display: flex; justify-content: space-between; align-items: center; margin: 4px 0; }
     .row .label { color: var(--muted); }
     .row .value { color: var(--fg); font-variant-numeric: tabular-nums; }
-    .dot {
-      display: inline-block; width: 8px; height: 8px; border-radius: 50%;
-      margin-right: 6px; background: #666; vertical-align: middle;
-    }
+    .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; background: #666; vertical-align: middle; }
     .dot.ok { background: #3ecf7a; }
     .dot.warn { background: #e6b800; }
     .dot.err { background: #e04f4f; }
@@ -66,43 +53,23 @@
       cursor: pointer;
       margin-top: 6px;
     }
-    button.secondary {
-      background: transparent;
-      color: var(--fg);
-      border: 1px solid var(--border);
-    }
+    button.secondary { background: transparent; color: var(--fg); border: 1px solid var(--border); }
+    button.accent-2 { background: var(--accent-2); color: #fff; }
     button:disabled { opacity: 0.5; cursor: not-allowed; }
-    .progress {
-      height: 4px;
-      background: rgba(255,255,255,0.07);
-      border-radius: 2px;
-      margin-top: 8px;
-      overflow: hidden;
-    }
-    .progress-fill {
-      height: 100%;
-      background: var(--accent);
-      width: 0%;
-      transition: width 0.3s ease;
-    }
+    .progress { height: 4px; background: rgba(255,255,255,0.07); border-radius: 2px; margin-top: 8px; overflow: hidden; }
+    .progress-fill { height: 100%; background: var(--accent); width: 0%; transition: width 0.3s ease; }
     .log {
       margin-top: 8px;
       font-size: 11px;
       color: var(--muted);
-      max-height: 60px;
+      max-height: 70px;
       overflow: auto;
       font-family: ui-monospace, "SF Mono", Menlo, monospace;
       line-height: 1.4;
+      white-space: pre-wrap;
     }
-    label.auto {
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      color: var(--muted);
-      font-size: 11px;
-      margin-top: 8px;
-    }
-    input[type="text"] {
+    label.check { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 11px; margin-top: 8px; }
+    input[type="text"], input[type="url"] {
       width: 100%;
       padding: 6px 8px;
       background: rgba(255,255,255,0.04);
@@ -114,66 +81,98 @@
     }
     .field { margin: 6px 0; }
     .field .k { color: var(--muted); font-size: 11px; margin-bottom: 2px; }
+    .tabs { display: flex; gap: 4px; padding: 6px 10px 0; border-bottom: 1px solid var(--border); }
+    .tab { padding: 6px 10px; cursor: pointer; color: var(--muted); font-size: 12px; border-bottom: 2px solid transparent; }
+    .tab.active { color: var(--fg); border-bottom-color: var(--accent); }
+    .pane { display: none; }
+    .pane.active { display: block; }
+    details { margin-top: 6px; }
+    details summary { cursor: pointer; color: var(--muted); font-size: 11px; padding: 4px 0; }
   </style>
 </head>
 <body>
   <header>
-    <h1>Swiperboxd Sync</h1>
-    <div class="subtitle">Scrape your own Letterboxd via your browser session.</div>
+    <img src="icons/logo.svg" alt="Swiperboxd" class="logo" />
+    <div class="titles">
+      <h1>Swiperboxd Sync</h1>
+      <div class="subtitle">Scrape Letterboxd via your browser session.</div>
+    </div>
   </header>
 
   <section>
     <div class="row">
-      <span class="label"><span id="lb-dot" class="dot"></span>Letterboxd session</span>
+      <span class="label"><span id="lb-dot" class="dot"></span>Letterboxd</span>
       <span id="lb-status" class="value">Checking…</span>
     </div>
     <div class="row">
-      <span class="label"><span id="api-dot" class="dot"></span>Swiperboxd auth</span>
+      <span class="label"><span id="api-dot" class="dot"></span>Swiperboxd</span>
       <span id="api-status" class="value">—</span>
     </div>
+    <button id="connect-btn" class="accent-2">Connect Letterboxd</button>
+    <details>
+      <summary>Advanced: API base URL</summary>
+      <div class="field">
+        <input type="url" id="api-base" placeholder="https://swiperboxd.vercel.app" />
+        <button id="save-api-base" class="secondary">Save</button>
+      </div>
+    </details>
   </section>
 
-  <section id="config-section">
-    <div class="field">
-      <div class="k">API base URL</div>
-      <input type="text" id="api-base" placeholder="https://swiperboxd.vercel.app" />
-    </div>
-    <div class="field">
-      <div class="k">Swiperboxd username</div>
-      <input type="text" id="username" placeholder="letterboxd-username" />
-    </div>
-    <div class="field">
-      <div class="k">Session token</div>
-      <input type="text" id="session-token" placeholder="paste from Swiperboxd login or use auto-detect" />
-    </div>
-    <button id="save-config" class="secondary">Save credentials</button>
-  </section>
+  <div class="tabs">
+    <div class="tab active" data-pane="history">Sync</div>
+    <div class="tab" data-pane="list">One-off list</div>
+  </div>
 
-  <section>
-    <div class="row">
-      <span class="label">Phase</span>
-      <span id="phase" class="value">idle</span>
-    </div>
-    <div class="row">
-      <span class="label">Page</span>
-      <span id="page" class="value">—</span>
-    </div>
-    <div class="row">
-      <span class="label">Watchlist found</span>
-      <span id="wl-count" class="value">0</span>
-    </div>
-    <div class="row">
-      <span class="label">Diary found</span>
-      <span id="diary-count" class="value">0</span>
-    </div>
+  <section id="pane-history" class="pane active">
+    <div class="row"><span class="label">Phase</span><span id="phase" class="value">idle</span></div>
+    <div class="row"><span class="label">Page</span><span id="page" class="value">—</span></div>
+    <div class="row"><span class="label">Watchlist</span><span id="wl-count" class="value">0</span></div>
+    <div class="row"><span class="label">Diary</span><span id="diary-count" class="value">0</span></div>
+    <div class="row"><span class="label">Lists discovered</span><span id="lists-discovered" class="value">0</span></div>
+    <div class="row"><span class="label">Lists filled</span><span id="lists-filled" class="value">0</span></div>
     <div class="progress"><div id="progress-fill" class="progress-fill"></div></div>
+    <label class="check"><input type="checkbox" id="opt-history" checked /> Sync my watchlist + diary</label>
+    <label class="check"><input type="checkbox" id="opt-discover" checked /> Discover popular lists</label>
+    <label class="check"><input type="checkbox" id="opt-fill" checked /> Fetch films for under-scraped lists</label>
+    <details>
+      <summary>Advanced: scrape caps</summary>
+      <div class="field">
+        <div class="k">Discover pages (popular lists, ~12 lists/page)</div>
+        <input type="text" id="discover-pages" placeholder="3" />
+      </div>
+      <div class="field">
+        <div class="k">Max under-scraped lists to fill per run</div>
+        <input type="text" id="fill-max-lists" placeholder="25" />
+      </div>
+      <div class="field">
+        <div class="k">Max film pages per list (~30 films/page)</div>
+        <input type="text" id="fill-list-pages" placeholder="10" />
+      </div>
+      <button id="save-caps" class="secondary">Save caps</button>
+    </details>
     <button id="start-btn">Start sync</button>
     <button id="stop-btn" class="secondary" disabled>Stop sync</button>
-    <label class="auto">
+    <label class="check">
       <input type="checkbox" id="auto-sync" />
-      Auto-sync every 6 hours
+      Auto-sync every 6 hours (while Chrome is running)
     </label>
     <div id="log" class="log"></div>
+  </section>
+
+  <section id="pane-list" class="pane">
+    <div class="field">
+      <div class="k">List URL (letterboxd.com/&lt;owner&gt;/list/&lt;slug&gt;/)</div>
+      <input type="url" id="list-url" placeholder="https://letterboxd.com/dave/list/official-top-250-narrative-feature-films/" />
+    </div>
+    <label class="check">
+      <input type="checkbox" id="fetch-metadata" />
+      Also fetch movie metadata for each film in the list
+    </label>
+    <div class="progress"><div id="list-progress-fill" class="progress-fill"></div></div>
+    <div class="row"><span class="label">Films found</span><span id="list-count" class="value">0</span></div>
+    <div class="row"><span class="label">Page</span><span id="list-page" class="value">—</span></div>
+    <button id="scrape-list-btn">Scrape list</button>
+    <div id="list-log" class="log"></div>
   </section>
 
   <script src="popup.js"></script>

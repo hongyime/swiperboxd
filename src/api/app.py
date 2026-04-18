@@ -102,6 +102,53 @@ def _validate_letterboxd_session(username: str, session_cookie: str) -> None:
         raise RuntimeError(f"network_error: {exc}") from exc
 
 
+def _extract_username_from_cookie(session_cookie: str) -> str | None:
+    """Fetch the Letterboxd settings page with the given cookie and parse out the
+    signed-in username. Returns None if the cookie is invalid or parsing fails.
+
+    Letterboxd exposes the username in several stable places on every
+    authenticated page:
+      • `<body class="signed-in" data-owner="<username>" ...>`
+      • `<a class="navitem account" href="/<username>/" ...>`
+      • `<meta name="twitter:creator" content="@<username>">`
+    We try each in order.
+    """
+    import re as _re
+    import httpx as _httpx
+    base_url = os.getenv("TARGET_PLATFORM_BASE_URL", "https://letterboxd.com").rstrip("/")
+    url = f"{base_url}/settings/"
+    try:
+        with _httpx.Client(
+            cookies={_SESSION_COOKIE_NAME: session_cookie},
+            timeout=15.0,
+            follow_redirects=False,
+        ) as client:
+            resp = client.get(url)
+    except _httpx.RequestError as exc:
+        print(f"[auth] username extraction network error: {exc}", flush=True)
+        return None
+
+    if resp.status_code in {301, 302}:
+        loc = resp.headers.get("location", "")
+        if "sign-in" in loc or "login" in loc:
+            return None
+    elif resp.status_code != 200:
+        return None
+
+    html = resp.text
+    for pattern in (
+        r'data-owner="([a-zA-Z0-9_-]+)"',
+        r'data-current-user="([a-zA-Z0-9_-]+)"',
+        r'data-username="([a-zA-Z0-9_-]+)"',
+        r'<a[^>]+class="[^"]*navitem[^"]*account[^"]*"[^>]+href="/([a-zA-Z0-9_-]+)/"',
+        r'<meta\s+name="twitter:creator"\s+content="@([a-zA-Z0-9_-]+)"',
+    ):
+        m = _re.search(pattern, html)
+        if m:
+            return m.group(1)
+    return None
+
+
 def verify_session(x_session_token: str = Header(..., alias="X-Session-Token")) -> str:
     """Decrypt X-Session-Token and return the verified username.
 
@@ -155,11 +202,74 @@ class ExtensionBatchRequest(BaseModel):
 
 class ExtensionSyncStatusRequest(BaseModel):
     user_id: str = Field(min_length=1)
-    phase: Literal["watchlist", "diary", "idle", "complete", "error"]
+    phase: Literal["watchlist", "diary", "list", "movies", "idle", "complete", "error"]
     current_page: int | None = None
     total_pages: int | None = None
     slugs_found: int | None = None
     message: str | None = None
+
+
+class ExtensionRegisterRequest(BaseModel):
+    letterboxd_session_cookie: str = Field(min_length=1)
+
+
+class ExtensionRegisterResponse(BaseModel):
+    status: Literal["ok"]
+    username: str
+    session_token: str
+    api_base: str
+
+
+class ExtensionMoviePayload(BaseModel):
+    slug: str = Field(min_length=1)
+    title: str = ""
+    poster_url: str = ""
+    rating: float = 0.0
+    popularity: int = 0
+    genres: list[str] = Field(default_factory=list)
+    synopsis: str = ""
+    cast: list[str] = Field(default_factory=list)
+    year: int | None = None
+    director: str | None = None
+
+
+class ExtensionBatchMoviesRequest(BaseModel):
+    movies: list[ExtensionMoviePayload] = Field(default_factory=list)
+
+
+class ExtensionBatchListMoviesRequest(BaseModel):
+    list_id: str = Field(min_length=1)
+    list_url: str | None = None
+    title: str | None = None
+    owner_slug: str | None = None
+    owner_name: str | None = None
+    description: str | None = None
+    film_count: int | None = None
+    slugs: list[str] = Field(default_factory=list)
+    page: int | None = None
+    total_pages: int | None = None
+    replace_memberships: bool = False
+
+
+class ExtensionListSummaryPayload(BaseModel):
+    list_id: str = Field(min_length=1)
+    slug: str = ""
+    url: str = ""
+    title: str = ""
+    owner_name: str = ""
+    owner_slug: str = ""
+    description: str = ""
+    film_count: int = 0
+    like_count: int = 0
+    comment_count: int = 0
+    is_official: bool = False
+    tags: list[str] = Field(default_factory=list)
+
+
+class ExtensionBatchListSummariesRequest(BaseModel):
+    lists: list[ExtensionListSummaryPayload] = Field(default_factory=list)
+    source: str = "popular"
+    page: int | None = None
 
 
 @app.get("/health")
@@ -708,6 +818,203 @@ async def extension_batch_diary(
         "page": payload.page,
         "total_pages": payload.total_pages,
         "result": result,
+    }
+
+
+@app.post("/api/extension/register", response_model=ExtensionRegisterResponse)
+def extension_register(payload: ExtensionRegisterRequest, request: Request):
+    """Self-register an extension install using the user's Letterboxd cookie.
+
+    Flow:
+      1. Validate the cookie against letterboxd.com/settings/
+      2. Parse the signed-in username out of the HTML response
+      3. Encrypt the cookie with MASTER_ENCRYPTION_KEY + persist to Supabase
+      4. Return a Swiperboxd session token + the resolved username
+
+    Needs no prior interaction with the web app.
+    """
+    master_key = os.getenv("MASTER_ENCRYPTION_KEY")
+    if not master_key:
+        raise HTTPException(status_code=500, detail={"code": "missing_master_key"})
+
+    try:
+        _validate_letterboxd_session("", payload.letterboxd_session_cookie)
+    except Exception as exc:
+        raise HTTPException(status_code=401, detail={"code": "invalid_letterboxd_cookie", "reason": str(exc)}) from exc
+
+    username = _extract_username_from_cookie(payload.letterboxd_session_cookie)
+    if not username:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "username_unresolved", "message": "could not parse username from Letterboxd response"},
+        )
+
+    token_payload = json.dumps({"u": username, "c": payload.letterboxd_session_cookie})
+    encrypted = encrypt_session_cookie(token_payload, master_key)
+
+    try:
+        store.save_user_session(username, encrypted)
+    except Exception as exc:
+        print(f"[extension/register] WARNING: failed to persist session: {exc}", flush=True)
+
+    base_url = str(request.base_url).rstrip("/")
+    print(f"[extension/register] registered username={username} api_base={base_url}", flush=True)
+    return ExtensionRegisterResponse(status="ok", username=username, session_token=encrypted, api_base=base_url)
+
+
+@app.post("/api/extension/batch/movies")
+async def extension_batch_movies(
+    payload: ExtensionBatchMoviesRequest,
+    verified_user: str = Depends(verify_session),
+):
+    """Push metadata for films scraped directly from /film/<slug>/ pages."""
+    if len(payload.movies) > _EXTENSION_BATCH_LIMIT:
+        raise HTTPException(status_code=413, detail={"code": "batch_too_large", "limit": _EXTENSION_BATCH_LIMIT})
+
+    stored = 0
+    failed: list[dict] = []
+    for movie in payload.movies:
+        try:
+            record = movie.model_dump()
+            record = normalize_movie_record(record)
+            store.upsert_movie(record)
+            stored += 1
+        except Exception as exc:
+            failed.append({"slug": movie.slug, "error": str(exc)})
+
+    print(
+        f"[extension] movies batch user={verified_user or '?'} "
+        f"stored={stored} failed={len(failed)}",
+        flush=True,
+    )
+    return {"status": "ok", "stored": stored, "failed": failed}
+
+
+@app.post("/api/extension/batch/list-summaries")
+async def extension_batch_list_summaries(
+    payload: ExtensionBatchListSummariesRequest,
+    verified_user: str = Depends(verify_session),
+):
+    """Push an array of list summaries scraped from /lists/popular/."""
+    if len(payload.lists) > _EXTENSION_BATCH_LIMIT:
+        raise HTTPException(status_code=413, detail={"code": "batch_too_large", "limit": _EXTENSION_BATCH_LIMIT})
+
+    stored = 0
+    failed: list[dict] = []
+    for summary in payload.lists:
+        try:
+            record = summary.model_dump()
+            # Preserve existing scraped_film_count by not overriding with zero
+            existing = store.get_list_summary(record["list_id"])
+            if existing and existing.get("scraped_film_count"):
+                record["scraped_film_count"] = existing["scraped_film_count"]
+            else:
+                record["scraped_film_count"] = 0
+            store.upsert_list_summary(record)
+            stored += 1
+        except Exception as exc:
+            failed.append({"list_id": summary.list_id, "error": str(exc)})
+
+    print(
+        f"[extension] list-summaries batch source={payload.source} page={payload.page} "
+        f"stored={stored} failed={len(failed)}",
+        flush=True,
+    )
+    return {"status": "ok", "stored": stored, "failed": failed}
+
+
+@app.get("/api/extension/lists-needing-scrape")
+def extension_lists_needing_scrape(
+    limit: int = Query(default=25, ge=1, le=200),
+    verified_user: str = Depends(verify_session),
+):
+    """Return list_summaries rows that are under 50% scraped (or brand-new).
+
+    Used by the extension to decide which lists still need their films fetched.
+    Returns minimal fields — list_id, url, title, film_count, scraped_film_count.
+    """
+    try:
+        rows = store.get_underscraped_lists(limit=limit)
+    except Exception as exc:
+        print(f"[extension] lists-needing-scrape failed: {exc}", flush=True)
+        return {"status": "error", "lists": [], "reason": str(exc)}
+
+    out = []
+    for row in rows:
+        out.append({
+            "list_id": row.get("list_id"),
+            "url": row.get("url"),
+            "title": row.get("title"),
+            "owner_slug": row.get("owner_slug"),
+            "film_count": int(row.get("film_count", 0) or 0),
+            "scraped_film_count": int(row.get("scraped_film_count", 0) or 0),
+        })
+    return {"status": "ok", "lists": out, "count": len(out)}
+
+
+@app.post("/api/extension/batch/list-movies")
+async def extension_batch_list_movies(
+    payload: ExtensionBatchListMoviesRequest,
+    verified_user: str = Depends(verify_session),
+):
+    """Push film slugs scraped from a Letterboxd list page.
+
+    If the list_summaries row is missing, upserts a skeleton row from the
+    provided metadata. Accumulates scraped_film_count across paginated batches.
+    """
+    if len(payload.slugs) > _EXTENSION_BATCH_LIMIT:
+        raise HTTPException(status_code=413, detail={"code": "batch_too_large", "limit": _EXTENSION_BATCH_LIMIT})
+
+    existing = store.get_list_summary(payload.list_id) if hasattr(store, "get_list_summary") else None
+    if not existing and (payload.title or payload.list_url):
+        summary = {
+            "list_id": payload.list_id,
+            "slug": payload.list_id.split("-", 1)[-1],
+            "url": payload.list_url or "",
+            "title": payload.title or payload.list_id,
+            "owner_name": payload.owner_name or payload.owner_slug or "",
+            "owner_slug": payload.owner_slug or "",
+            "description": payload.description or "",
+            "film_count": payload.film_count or len(payload.slugs),
+            "like_count": 0,
+            "comment_count": 0,
+            "is_official": (payload.owner_slug or "").lower() in {"letterboxd", "official"},
+            "tags": [],
+            "scraped_film_count": 0,
+        }
+        try:
+            store.upsert_list_summary(summary)
+        except Exception as exc:
+            print(f"[extension] list skeleton upsert failed {payload.list_id}: {exc}", flush=True)
+
+    try:
+        if payload.replace_memberships:
+            store.replace_list_memberships(payload.list_id, payload.slugs)
+        else:
+            existing_slugs = set(store.get_list_memberships(payload.list_id))
+            merged = list(existing_slugs) + [s for s in payload.slugs if s not in existing_slugs]
+            store.replace_list_memberships(payload.list_id, merged)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail={"code": "membership_write_failed", "reason": str(exc)}) from exc
+
+    try:
+        count = len(store.get_list_memberships(payload.list_id))
+        store.update_list_scrape_count(payload.list_id, count)
+    except Exception as exc:
+        print(f"[extension] scrape_count update failed {payload.list_id}: {exc}", flush=True)
+        count = len(payload.slugs)
+
+    print(
+        f"[extension] list-movies batch list_id={payload.list_id} "
+        f"page={payload.page}/{payload.total_pages} pushed={len(payload.slugs)} total={count}",
+        flush=True,
+    )
+    return {
+        "status": "ok",
+        "list_id": payload.list_id,
+        "page": payload.page,
+        "total_pages": payload.total_pages,
+        "scraped_film_count": count,
     }
 
 
