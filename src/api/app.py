@@ -277,19 +277,35 @@ def list_catalog(q: str | None = None, page: int = Query(default=1, ge=1)):
 def list_detail(list_id: str):
     summary = store.get_list_summary(list_id)
     if not summary:
-        discovered = scraper.discover_site_lists(page=1)
-        for entry in discovered:
-            store.upsert_list_summary(entry.__dict__)
+        try:
+            discovered = scraper.discover_site_lists(page=1)
+            for entry in discovered:
+                store.upsert_list_summary(entry.__dict__)
+        except Exception as exc:
+            print(f"[list_detail] discover_site_lists failed: {exc}", flush=True)
         summary = store.get_list_summary(list_id)
 
     if not summary:
         raise HTTPException(status_code=404, detail={"code": "list_not_found"})
 
-    movie_slugs = scraper.fetch_list_movie_slugs(list_id, list_url=summary.get("url"))
+    movie_slugs: list[str] = []
+    try:
+        movie_slugs = scraper.fetch_list_movie_slugs(list_id, list_url=summary.get("url")) or []
+    except Exception as exc:
+        print(f"[list_detail] scrape failed for {list_id}: {exc} — falling back to cache", flush=True)
+
     if movie_slugs:
-        store.replace_list_memberships(list_id, movie_slugs)
+        try:
+            store.replace_list_memberships(list_id, movie_slugs)
+            try:
+                store.update_list_scrape_count(list_id, len(movie_slugs))
+            except Exception as exc:
+                print(f"[list_detail] update_list_scrape_count skipped: {exc}", flush=True)
+        except Exception as exc:
+            print(f"[list_detail] replace_list_memberships failed: {exc}", flush=True)
     else:
         movie_slugs = store.get_list_memberships(list_id)
+
     preview = [store.get_movie(slug) for slug in movie_slugs[:4]]
     preview = [movie for movie in preview if movie]
     return {
@@ -306,17 +322,32 @@ def list_deck(list_id: str, user_id: str = Query(min_length=1)):
     if not summary:
         raise HTTPException(status_code=404, detail={"code": "list_not_found"})
 
-    movie_slugs = scraper.fetch_list_movie_slugs(list_id, list_url=summary.get("url"))
+    movie_slugs: list[str] = []
+    try:
+        movie_slugs = scraper.fetch_list_movie_slugs(list_id, list_url=summary.get("url")) or []
+    except Exception as exc:
+        print(f"[deck] scrape failed for {list_id}: {exc} — falling back to cache", flush=True)
+
     if movie_slugs:
-        store.replace_list_memberships(list_id, movie_slugs)
+        try:
+            store.replace_list_memberships(list_id, movie_slugs)
+            try:
+                store.update_list_scrape_count(list_id, len(movie_slugs))
+            except Exception as exc:
+                print(f"[deck] update_list_scrape_count skipped: {exc}", flush=True)
+        except Exception as exc:
+            print(f"[deck] replace_list_memberships failed: {exc}", flush=True)
     else:
-        # Scrape returned nothing (rate-limited / blocked) — fall back to cache
+        # Scrape returned nothing / failed — use cache
         movie_slugs = store.get_list_memberships(list_id)
-        print(f"[deck] scrape returned empty for {list_id}, using {len(movie_slugs)} cached slugs", flush=True)
+        print(f"[deck] using {len(movie_slugs)} cached slugs for {list_id}", flush=True)
 
     missing = [slug for slug in movie_slugs if not store.get_movie(slug)]
-    for movie in scraper.metadata_for_slugs(missing):
-        store.upsert_movie(movie.__dict__)
+    try:
+        for movie in scraper.metadata_for_slugs(missing):
+            store.upsert_movie(movie.__dict__)
+    except Exception as exc:
+        print(f"[deck] metadata_for_slugs failed: {exc} — continuing with existing movies", flush=True)
 
     # Filter out movies the user has already watchlisted, logged, or dismissed
     watchlist = store.get_watchlist(user_id)

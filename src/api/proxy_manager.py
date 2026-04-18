@@ -298,6 +298,9 @@ class ProxyManager:
         self._source_failures: dict[str, int] = {"webshare": 0, "scrape_do": 0}
         # Per-tier consecutive-failure counter (non-scrape_do errors). Reset on success.
         self._consecutive_failures: dict[str, int] = {}
+        # Track tiers we've already logged a circuit-open for, so every subsequent
+        # iter_tiers() call doesn't re-print the same skip message.
+        self._circuit_logged: set[str] = set()
 
         self._init_webshare()
         self._init_scrape_do()
@@ -360,10 +363,13 @@ class ProxyManager:
         def _circuit_open(name: str) -> bool:
             fails = self._consecutive_failures.get(name, 0)
             if fails >= self._SKIP_THRESHOLD:
-                print(
-                    f"[scraper] tier={name} skipped ({fails} consecutive failures)",
-                    flush=True,
-                )
+                if name not in self._circuit_logged:
+                    print(
+                        f"[scraper] tier={name} skipped ({fails} consecutive failures) — "
+                        f"suppressing further skip logs until recovery",
+                        flush=True,
+                    )
+                    self._circuit_logged.add(name)
                 return True
             return False
 
@@ -416,6 +422,7 @@ class ProxyManager:
         self._consecutive_failures[tier] = 0
         if prev >= self._SKIP_THRESHOLD:
             print(f"[scraper] tier={tier} recovered — re-enabling", flush=True)
+        self._circuit_logged.discard(tier)
         self._retry_count = 0
 
     def record_failure_for(self, tier: str) -> None:

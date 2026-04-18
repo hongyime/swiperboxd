@@ -741,6 +741,9 @@ class SupabaseStore:
         random.shuffle(tail)
         return head + tail
 
+    # Flips to True on first PGRST204 to avoid retrying until the migration is run.
+    _scraped_col_missing: bool = False
+
     def upsert_list_summary(self, list_summary: dict) -> None:
         normalized = {
             "list_id": list_summary.get("list_id", ""),
@@ -757,15 +760,44 @@ class SupabaseStore:
             "tags": list_summary.get("tags", []) if isinstance(list_summary.get("tags", []), list) else [],
             "updated_at": "now()",
         }
-        if "scraped_film_count" in list_summary:
+        if "scraped_film_count" in list_summary and not SupabaseStore._scraped_col_missing:
             normalized["scraped_film_count"] = int(list_summary["scraped_film_count"] or 0)
-        if normalized["list_id"]:
+        if not normalized["list_id"]:
+            return
+        try:
             self.client.table("list_summaries").upsert(normalized, on_conflict="list_id").execute()
+        except Exception as exc:
+            if "PGRST204" in str(exc) and "scraped_film_count" in str(exc):
+                # Column not yet migrated on this Supabase instance. Drop the field
+                # and retry; remember for subsequent calls so we don't log-spam.
+                print(
+                    "[store] scraped_film_count column missing — run migration 008. "
+                    "Falling back to schema-without-it for this instance.",
+                    flush=True,
+                )
+                SupabaseStore._scraped_col_missing = True
+                normalized.pop("scraped_film_count", None)
+                self.client.table("list_summaries").upsert(normalized, on_conflict="list_id").execute()
+                return
+            raise
 
     def update_list_scrape_count(self, list_id: str, count: int) -> None:
-        self.client.table("list_summaries").update(
-            {"scraped_film_count": count}
-        ).eq("list_id", list_id).execute()
+        if SupabaseStore._scraped_col_missing:
+            return
+        try:
+            self.client.table("list_summaries").update(
+                {"scraped_film_count": count}
+            ).eq("list_id", list_id).execute()
+        except Exception as exc:
+            if "PGRST204" in str(exc) and "scraped_film_count" in str(exc):
+                print(
+                    "[store] scraped_film_count column missing — skipping update. "
+                    "Run migration 008 on Supabase to enable list-scrape tracking.",
+                    flush=True,
+                )
+                SupabaseStore._scraped_col_missing = True
+                return
+            raise
 
     def get_list_summary(self, list_id: str) -> dict | None:
         response = self.client.table("list_summaries").select("*").eq("list_id", list_id).execute()
