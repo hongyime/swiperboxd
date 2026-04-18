@@ -23,6 +23,7 @@ class LetterboxdMovie:
     genres: list[str]
     synopsis: str
     cast: list[str]
+    lb_film_id: str = ""
 
 
 @dataclass
@@ -170,7 +171,8 @@ def _extract_film_slugs(soup) -> list[str]:
     Tries multiple selector strategies to stay robust against HTML changes:
       1. data-item-slug on react-component divs (2024+ redesign)
       2. data-film-slug on film-poster divs (older)
-      3. href pattern on any <a> tag pointing to /film/slug/
+      3. td.td-film-details anchor — diary table layout
+      4. href pattern on any <a> tag pointing to /film/slug/ (generic fallback)
     """
     slugs = []
     seen: set[str] = set()
@@ -188,7 +190,15 @@ def _extract_film_slugs(soup) -> list[str]:
     for el in soup.select("[data-film-slug]"):
         _add(el["data-film-slug"])
 
-    # Strategy 3: anchor hrefs  /film/<slug>/
+    # Strategy 3: diary table — <td class="td-film-details"><a href="/film/<slug>/...">
+    for td in soup.select("td.td-film-details"):
+        a = td.find("a", href=True)
+        if a:
+            parts = a["href"].strip("/").split("/")
+            if len(parts) >= 2 and parts[0] == "film":
+                _add(parts[1])
+
+    # Strategy 4: generic anchor hrefs /film/<slug>/ — only if nothing found yet
     if not slugs:
         for a in soup.select("a[href]"):
             href = a.get("href", "")
@@ -405,11 +415,10 @@ class HttpLetterboxdScraper:
     def pull_diary_slugs(self, session_cookie: str, username: str | None = None, max_pages: int = 200) -> set[str]:
         """Pull film slugs from the authenticated user's diary."""
         slugs: set[str] = set()
-        base_path = f"/{username}/films/diary/" if username else "/diary/"
+        base_path = f"/{username}/diary/" if username else "/diary/"
         print(f"[scraper] diary: starting fetch base_path={base_path} max_pages={max_pages} cookie_len={len(session_cookie or '')}", flush=True)
         for page in range(1, max_pages + 1):
-            # Letterboxd diary paginates via path segments, not ?page= query params
-            url = f"{self.base_url}{base_path}page/{page}/" if page > 1 else f"{self.base_url}{base_path}"
+            url = f"{self.base_url}{base_path}" if page == 1 else f"{self.base_url}{base_path}page/{page}/"
             try:
                 resp = self._fetch(url, session_cookie=session_cookie)
                 print(f"[scraper] diary: page={page} status={resp.status_code} body_len={len(resp.text)}", flush=True)
@@ -539,6 +548,9 @@ class HttpLetterboxdScraper:
                     except (TypeError, ValueError):
                         pass
 
+                # Letterboxd film LID — from x-letterboxd-identifier response header
+                lb_film_id = resp.headers.get("x-letterboxd-identifier", "")
+
                 movies.append(LetterboxdMovie(
                     slug=slug,
                     title=title,
@@ -548,6 +560,7 @@ class HttpLetterboxdScraper:
                     genres=genres,
                     synopsis=synopsis,
                     cast=cast,
+                    lb_film_id=lb_film_id,
                 ))
             except Exception as exc:
                 print(f"[scraper] parse error slug={slug}: {exc}", flush=True)

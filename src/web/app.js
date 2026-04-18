@@ -35,6 +35,20 @@ const state = {
 // Cancel token for the background ingest poll loop
 let _ingestPollCancelled = false;
 
+// Listen for extension write-back results
+window.addEventListener('message', (event) => {
+  if (event.source !== window) return;
+  const data = event.data;
+  if (!data) return;
+  if (data.type === 'SWIPERBOXD_SWIPE_RESULT') {
+    if (data.lbSynced) {
+      console.log(`[lb-write] ${data.action} synced to Letterboxd: ${data.movieSlug}`);
+    } else {
+      console.warn(`[lb-write] ${data.action} NOT synced to Letterboxd: ${data.movieSlug} — ${data.error || 'extension not installed?'}`);
+    }
+  }
+});
+
 // DOM Elements
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => document.querySelectorAll(sel);
@@ -596,7 +610,7 @@ async function executeSwipe(action) {
 
   let advanceCard = true;
   try {
-    const result = await api('/actions/swipe', {
+    await api('/actions/swipe', {
       method: 'POST',
       body: { user_id: state.username, movie_slug: movie.slug, action }
     });
@@ -604,9 +618,12 @@ async function executeSwipe(action) {
     if (action === 'dismiss') {
       suppression.dismiss(movie.slug);
       console.log(`[suppression] ${movie.slug} suppressed for 24h`);
-    }
-    if (result?.lb_synced === false && action !== 'dismiss') {
-      showToast('Saved locally — Letterboxd sync pending');
+    } else {
+      // Write to Letterboxd directly from the browser (credentials: include uses the live session)
+      letterboxdWrite(action, movie.slug, movie.lb_film_id).then(ok => {
+        if (ok) console.log(`[lb-write] ${action} synced: ${movie.slug}`);
+        else console.warn(`[lb-write] ${action} failed (no lb_film_id or not logged in): ${movie.slug}`);
+      });
     }
   } catch (err) {
     // 409 = duplicate (already in watchlist / diary). Still advance, show toast.
@@ -719,4 +736,60 @@ function showToast(message, durationMs = 2200) {
 
 function delay(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+// Write watchlist/diary directly to Letterboxd from the browser.
+// Uses credentials: "include" so the browser sends the user's Letterboxd session cookie.
+// Works on desktop and mobile PWA — no extension required.
+async function letterboxdWrite(action, slug, lbFilmId) {
+  if (!lbFilmId) {
+    // No LID stored yet — fetch the film page to get it from the response header
+    try {
+      const res = await fetch(`https://letterboxd.com/film/${slug}/`, {
+        credentials: 'include',
+        headers: { 'Accept': 'text/html' },
+      });
+      lbFilmId = res.headers.get('x-letterboxd-identifier') || '';
+      if (lbFilmId) {
+        // Persist it back so future swipes don't need to fetch
+        await api(`/actions/cache-lb-id`, {
+          method: 'POST',
+          body: { movie_slug: slug, lb_film_id: lbFilmId }
+        }).catch(() => {});
+      }
+    } catch (e) {
+      console.warn('[lb-write] could not fetch film page for LID:', e.message);
+      return false;
+    }
+  }
+  if (!lbFilmId) return false;
+
+  try {
+    if (action === 'watchlist') {
+      const res = await fetch(`https://letterboxd.com/api/v0/me/watchlist/${lbFilmId}`, {
+        method: 'PATCH',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ inWatchlist: true }),
+      });
+      return res.ok || res.status === 204;
+    }
+
+    if (action === 'log') {
+      const today = new Date().toISOString().slice(0, 10);
+      const res = await fetch(`https://letterboxd.com/api/v0/log-entries`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          filmId: lbFilmId,
+          diaryDetails: { diaryDate: today, rewatch: false },
+        }),
+      });
+      return res.ok || res.status === 201;
+    }
+  } catch (e) {
+    console.warn(`[lb-write] ${action} error:`, e.message);
+  }
+  return false;
 }

@@ -6,7 +6,7 @@ const DEFAULT_API_BASE = "https://swiperboxd.vercel.app";
 async function getStorage() {
   return await chrome.storage.local.get([
     "apiBase", "username", "sessionToken", "autoSync", "lastSync",
-    "syncHistory", "discoverLists", "fillLists",
+    "syncHistory", "syncWatchlist", "syncDiary", "discoverLists", "fillLists",
     "discoverPages", "fillMaxLists", "fillListPages",
   ]);
 }
@@ -64,6 +64,9 @@ function renderProgress(state) {
   }
   el("start-btn").disabled = !!state.running;
   el("stop-btn").disabled = !state.running;
+  el("sync-watchlist-btn").disabled = !!state.running;
+  el("sync-diary-btn").disabled = !!state.running;
+  el("backfill-lb-ids-btn").disabled = !!state.running;
   el("scrape-list-btn").disabled = !!state.running;
   if (state.lastLog) {
     const target = (state.phase === "list" || state.phase === "movies") ? "list-log" : "log";
@@ -75,7 +78,8 @@ async function refreshStatus() {
   const cfg = await getStorage();
   el("api-base").value = cfg.apiBase || DEFAULT_API_BASE;
   el("auto-sync").checked = !!cfg.autoSync;
-  el("opt-history").checked = cfg.syncHistory !== false;
+  el("opt-watchlist").checked = cfg.syncWatchlist !== false;
+  el("opt-diary").checked = cfg.syncDiary !== false;
   el("opt-discover").checked = cfg.discoverLists !== false;
   el("opt-fill").checked = cfg.fillLists !== false;
   el("discover-pages").value = cfg.discoverPages ?? "";
@@ -113,13 +117,14 @@ el("save-api-base").addEventListener("click", async () => {
 
 async function persistSyncOptions() {
   await setStorage({
-    syncHistory: el("opt-history").checked,
+    syncWatchlist: el("opt-watchlist").checked,
+    syncDiary: el("opt-diary").checked,
     discoverLists: el("opt-discover").checked,
     fillLists: el("opt-fill").checked,
   });
 }
 
-["opt-history", "opt-discover", "opt-fill"].forEach((id) => {
+["opt-watchlist", "opt-diary", "opt-discover", "opt-fill"].forEach((id) => {
   el(id).addEventListener("change", persistSyncOptions);
 });
 
@@ -138,9 +143,49 @@ el("start-btn").addEventListener("click", async () => {
   const lbCookie = await checkLetterboxdSession();
   if (!lbCookie) { logLine("log", "ERROR: not signed in to Letterboxd"); return; }
   await persistSyncOptions();
-  logLine("log", "Starting sync…");
-  const resp = await chrome.runtime.sendMessage({ type: "START_SYNC" });
+  const cfg = await getStorage();
+  logLine("log", "Starting full sync…");
+  const resp = await chrome.runtime.sendMessage({
+    type: "START_SYNC",
+    syncWatchlist: cfg.syncWatchlist !== false,
+    syncDiary: cfg.syncDiary !== false,
+  });
   if (!resp?.ok) logLine("log", `ERROR: ${resp?.error || "could not start"}`);
+});
+
+el("sync-watchlist-btn").addEventListener("click", async () => {
+  const lbCookie = await checkLetterboxdSession();
+  if (!lbCookie) { logLine("log", "ERROR: not signed in to Letterboxd"); return; }
+  logLine("log", "Syncing watchlist…");
+  const resp = await chrome.runtime.sendMessage({
+    type: "START_SYNC",
+    syncWatchlist: true,
+    syncDiary: false,
+    discoverLists: false,
+    fillLists: false,
+  });
+  if (!resp?.ok) logLine("log", `ERROR: ${resp?.error || "could not start"}`);
+});
+
+el("sync-diary-btn").addEventListener("click", async () => {
+  const lbCookie = await checkLetterboxdSession();
+  if (!lbCookie) { logLine("log", "ERROR: not signed in to Letterboxd"); return; }
+  logLine("log", "Syncing diary…");
+  const resp = await chrome.runtime.sendMessage({
+    type: "START_SYNC",
+    syncWatchlist: false,
+    syncDiary: true,
+    discoverLists: false,
+    fillLists: false,
+  });
+  if (!resp?.ok) logLine("log", `ERROR: ${resp?.error || "could not start"}`);
+});
+
+el("backfill-lb-ids-btn").addEventListener("click", async () => {
+  logLine("log", "Backfilling Letterboxd IDs…");
+  const resp = await chrome.runtime.sendMessage({ type: "BACKFILL_LB_IDS" });
+  if (resp?.ok) logLine("log", `Backfill done — updated=${resp.updated} failed=${resp.failed}`);
+  else logLine("log", `ERROR: ${resp?.error || "backfill failed"}`);
 });
 
 el("stop-btn").addEventListener("click", async () => {

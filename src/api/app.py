@@ -59,73 +59,6 @@ app.include_router(cron_router, prefix="/api/cron", tags=["cron"])
 _SESSION_COOKIE_NAME = "letterboxd.user.CURRENT"
 
 
-def _push_to_letterboxd(action: str, movie_slug: str, session_cookie: str) -> bool:
-    """Write a watchlist or diary entry back to Letterboxd using the user's session cookie.
-
-    Returns True on success, False on failure (non-fatal — local DB is already updated).
-    """
-    import httpx as _httpx
-    base_url = os.getenv("TARGET_PLATFORM_BASE_URL", "https://letterboxd.com").rstrip("/")
-
-    try:
-        with _httpx.Client(
-            cookies={_SESSION_COOKIE_NAME: session_cookie},
-            timeout=15.0,
-            follow_redirects=True,
-        ) as client:
-            # First fetch the film page to get the CSRF token
-            film_resp = client.get(f"{base_url}/film/{movie_slug}/")
-            if film_resp.status_code != 200:
-                print(f"[lb-write] film page fetch failed status={film_resp.status_code} slug={movie_slug}", flush=True)
-                return False
-
-            # Extract __csrf token from the page
-            import re as _re
-            csrf_match = _re.search(r'name="__csrf"\s+value="([^"]+)"', film_resp.text)
-            if not csrf_match:
-                # Try meta tag
-                csrf_match = _re.search(r'<meta[^>]+name="csrf-token"[^>]+content="([^"]+)"', film_resp.text)
-            if not csrf_match:
-                print(f"[lb-write] could not find CSRF token for slug={movie_slug}", flush=True)
-                return False
-            csrf_token = csrf_match.group(1)
-
-            if action == "watchlist":
-                resp = client.post(
-                    f"{base_url}/film/{movie_slug}/watchlist/",
-                    data={"__csrf": csrf_token},
-                    headers={"Referer": f"{base_url}/film/{movie_slug}/"},
-                )
-                success = resp.status_code in {200, 201, 302}
-                print(f"[lb-write] watchlist slug={movie_slug} status={resp.status_code}", flush=True)
-                return success
-
-            elif action == "log":
-                # Add to diary via the /diary/save/ endpoint
-                resp = client.post(
-                    f"{base_url}/diary/save/",
-                    data={
-                        "__csrf": csrf_token,
-                        "filmSlug": movie_slug,
-                        "specifiedDate": "false",
-                        "rating": "",
-                        "review": "",
-                        "containsSpoilers": "false",
-                        "rewatch": "false",
-                    },
-                    headers={"Referer": f"{base_url}/film/{movie_slug}/"},
-                )
-                success = resp.status_code in {200, 201, 302}
-                print(f"[lb-write] diary slug={movie_slug} status={resp.status_code}", flush=True)
-                return success
-
-    except Exception as exc:
-        print(f"[lb-write] ERROR action={action} slug={movie_slug}: {exc}", flush=True)
-        return False
-
-    return False
-
-
 def _matches_profile(profile: str, movie: dict) -> bool:
     movie = normalize_movie_record(movie)
     try:
@@ -826,13 +759,28 @@ def get_discovery_details(slug: str = Query(min_length=1)):
     }
 
 
+class CacheLbIdRequest(BaseModel):
+    movie_slug: str = Field(min_length=1)
+    lb_film_id: str = Field(min_length=1)
+
+
+@app.post("/actions/cache-lb-id")
+async def cache_lb_film_id(payload: CacheLbIdRequest, verified_user: str = Depends(verify_session)):
+    """Persist the Letterboxd film LID discovered client-side."""
+    try:
+        store.upsert_movie({"slug": payload.movie_slug, "lb_film_id": payload.lb_film_id})
+    except Exception as exc:
+        print(f"[cache-lb-id] failed {payload.movie_slug}: {exc}", flush=True)
+    return {"status": "ok"}
+
+
 @app.post("/actions/swipe")
 async def submit_swipe_action(
     payload: SwipeActionRequest,
     verified_user: str = Depends(verify_session),
-    x_session_token: str = Header(None, alias="X-Session-Token"),
 ):
-    """Submit a swipe action and write back to Letterboxd."""
+    """Submit a swipe action — saves to Supabase. Letterboxd write-back is handled
+    client-side by the browser extension using the user's live session cookie."""
     if verified_user and payload.user_id != verified_user:
         raise HTTPException(status_code=403, detail={"code": "user_id_mismatch"})
     limited, retry_after_ms = store.should_rate_limit(payload.user_id, lock_ms=500)
@@ -841,7 +789,6 @@ async def submit_swipe_action(
 
     movie = store.get_movie(payload.movie_slug)
 
-    # Pre-check for duplicates so we can return a distinct 409 the frontend can handle
     if payload.action == "watchlist":
         if payload.movie_slug in store.get_watchlist(payload.user_id):
             return JSONResponse(
@@ -861,30 +808,7 @@ async def submit_swipe_action(
     elif payload.action == "dismiss":
         store.add_exclusion(payload.user_id, payload.movie_slug)
 
-    # Write back to Letterboxd for watchlist/log actions
-    lb_synced = False
-    if payload.action in {"watchlist", "log"} and x_session_token:
-        master_key = os.getenv("MASTER_ENCRYPTION_KEY")
-        if master_key:
-            try:
-                raw = decrypt_session_cookie(x_session_token, master_key)
-                data = json.loads(raw)
-                session_cookie = data.get("c")
-                if session_cookie:
-                    import asyncio as _asyncio
-                    lb_synced = await _asyncio.wait_for(
-                        _asyncio.to_thread(_push_to_letterboxd, payload.action, payload.movie_slug, session_cookie),
-                        timeout=12.0,
-                    )
-            except Exception as exc:
-                print(f"[swipe] lb write-back failed: {exc}", flush=True)
-
-    return {
-        "status": "accepted",
-        "action": payload.action,
-        "movie_slug": payload.movie_slug,
-        "lb_synced": lb_synced,
-    }
+    return {"status": "accepted", "action": payload.action, "movie_slug": payload.movie_slug}
 
 
 _EXTENSION_BATCH_LIMIT = 500
@@ -1042,6 +966,27 @@ async def extension_batch_list_summaries(
         flush=True,
     )
     return {"status": "ok", "stored": stored, "failed": failed}
+
+
+@app.get("/api/extension/movies-missing-lb-id")
+def extension_movies_missing_lb_id(
+    limit: int = Query(default=500, ge=1, le=2000),
+    verified_user: str = Depends(verify_session),
+):
+    """Return slugs of movies that have no lb_film_id yet — used by the extension backfill."""
+    try:
+        response = (
+            store.client.table("movies")
+            .select("slug")
+            .is_("lb_film_id", "null")
+            .limit(limit)
+            .execute()
+        )
+        slugs = [r["slug"] for r in (response.data or []) if r.get("slug")]
+    except Exception as exc:
+        print(f"[extension] movies-missing-lb-id failed: {exc}", flush=True)
+        return {"status": "error", "slugs": [], "reason": str(exc)}
+    return {"status": "ok", "count": len(slugs), "slugs": slugs}
 
 
 @app.get("/api/extension/lists-needing-scrape")

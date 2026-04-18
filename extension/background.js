@@ -138,14 +138,25 @@ function extractSlugsFromHtml(html) {
   const seen = new Set();
   const add = (s) => { if (s && !seen.has(s)) { seen.add(s); slugs.push(s); } };
   let m;
+
+  // Strategy 1: react-component data-item-slug (2024+ poster grid)
   const re1 = /data-item-slug="([^"]+)"/g;
   while ((m = re1.exec(html)) !== null) add(m[1]);
+
+  // Strategy 2: film-poster data-film-slug (older poster grid)
   const re2 = /data-film-slug="([^"]+)"/g;
   while ((m = re2.exec(html)) !== null) add(m[1]);
+
+  // Strategy 3: diary table — <td class="td-film-details"><a href="/film/<slug>/...">
+  const re3 = /class="[^"]*td-film-details[^"]*"[^>]*>[\s\S]*?href="\/film\/([a-z0-9][a-z0-9-]*)(?:\/[^"]*)?"[^>]*>/g;
+  while ((m = re3.exec(html)) !== null) add(m[1]);
+
+  // Strategy 4: generic /film/<slug>/ hrefs — only if nothing found yet
   if (slugs.length === 0) {
-    const re3 = /href="\/film\/([a-z0-9][a-z0-9-]*)\/?"/g;
-    while ((m = re3.exec(html)) !== null) add(m[1]);
+    const re4 = /href="\/film\/([a-z0-9][a-z0-9-]*)\/?"/g;
+    while ((m = re4.exec(html)) !== null) add(m[1]);
   }
+
   return slugs;
 }
 
@@ -538,23 +549,28 @@ async function scrapeListType({ cfg, pathFn, batchEndpoint, phaseName, onFound }
       break;
     }
     const path = pathFn(page);
+    log(`${phaseName}: fetching page ${page}${totalPages ? `/${totalPages}` : ""} …`);
     let html;
     try {
       html = await fetchLetterboxdPage(path);
     } catch (e) {
-      log(`ERROR: ${e.message}`);
+      log(`ERROR: ${phaseName} page ${page} fetch failed: ${e.message}`);
       await reportStatus(cfg, "error", { message: e.message });
       throw e;
     }
     if (totalPages === null) {
       totalPages = detectTotalPages(html) || 1;
       syncState.totalPages = totalPages;
+      log(`${phaseName}: ${totalPages} page(s) total`);
     }
     syncState.currentPage = page;
     const slugs = extractSlugsFromHtml(html);
-    log(`${phaseName} page ${page}/${totalPages}: ${slugs.length} slugs`);
+    log(`${phaseName} page ${page}/${totalPages}: ${slugs.length} slugs found`);
 
-    if (slugs.length === 0) break;
+    if (slugs.length === 0) {
+      log(`${phaseName}: no slugs on page ${page} — stopping`);
+      break;
+    }
 
     buffer.push(...slugs);
     totalFound += slugs.length;
@@ -562,6 +578,7 @@ async function scrapeListType({ cfg, pathFn, batchEndpoint, phaseName, onFound }
 
     if (buffer.length >= BATCH_FLUSH_THRESHOLD || page === totalPages) {
       const toPush = buffer.splice(0, buffer.length);
+      log(`${phaseName}: pushing ${toPush.length} slugs to API…`);
       try {
         const result = await apiPost(cfg, batchEndpoint, {
           user_id: cfg.username,
@@ -569,9 +586,9 @@ async function scrapeListType({ cfg, pathFn, batchEndpoint, phaseName, onFound }
           page,
           total_pages: totalPages,
         });
-        log(`pushed ${toPush.length} → added=${result?.result?.added ?? "?"}`);
+        log(`${phaseName}: pushed ${toPush.length} → added=${result?.result?.added ?? "?"}`);
       } catch (e) {
-        log(`ERROR pushing batch: ${e.message}`);
+        log(`ERROR: ${phaseName} push failed: ${e.message}`);
         await reportStatus(cfg, "error", { message: e.message });
         throw e;
       }
@@ -584,13 +601,18 @@ async function scrapeListType({ cfg, pathFn, batchEndpoint, phaseName, onFound }
     });
     broadcast();
 
-    if (page >= totalPages) break;
+    if (page >= totalPages) {
+      log(`${phaseName}: all ${totalPages} page(s) done, ${totalFound} total slugs`);
+      break;
+    }
     page += 1;
+    log(`${phaseName}: waiting before page ${page}…`);
     await sleep(PAGE_DELAY_MS);
   }
 
   if (buffer.length) {
     const toPush = buffer.splice(0, buffer.length);
+    log(`${phaseName}: flushing final ${toPush.length} slugs…`);
     try {
       const result = await apiPost(cfg, batchEndpoint, {
         user_id: cfg.username,
@@ -598,52 +620,61 @@ async function scrapeListType({ cfg, pathFn, batchEndpoint, phaseName, onFound }
         page,
         total_pages: totalPages,
       });
-      log(`flushed final ${toPush.length} → added=${result?.result?.added ?? "?"}`);
+      log(`${phaseName}: flushed → added=${result?.result?.added ?? "?"}`);
     } catch (e) {
-      log(`ERROR flushing: ${e.message}`);
+      log(`ERROR: ${phaseName} final flush failed: ${e.message}`);
       throw e;
     }
   }
   return totalFound;
 }
 
-async function scrapeUserHistory(cfg) {
-  syncState.phase = "watchlist";
-  syncState.currentPage = 0;
-  syncState.totalPages = 0;
-  broadcast();
-  const wl = await scrapeListType({
-    cfg,
-    pathFn: (p) => p === 1
-      ? `/${encodeURIComponent(cfg.username)}/watchlist/`
-      : `/${encodeURIComponent(cfg.username)}/watchlist/page/${p}/`,
-    batchEndpoint: "/api/extension/batch/watchlist",
-    phaseName: "watchlist",
-    onFound: (n) => {
-      syncState.watchlistFound = n;
-      syncState.percent = Math.min(49, Math.floor((syncState.currentPage / Math.max(1, syncState.totalPages)) * 45));
-      broadcast();
-    },
-  });
-  if (syncState.stopRequested) return { watchlist: wl, diary: 0, stopped: true };
+async function scrapeUserHistory(cfg, settings = {}) {
+  const doWatchlist = settings.syncWatchlist !== false;
+  const doDiary = settings.syncDiary !== false;
+  let wl = 0, diary = 0;
 
-  syncState.phase = "diary";
-  syncState.currentPage = 0;
-  syncState.totalPages = 0;
-  broadcast();
-  const diary = await scrapeListType({
-    cfg,
-    pathFn: (p) => p === 1
-      ? `/${encodeURIComponent(cfg.username)}/films/diary/`
-      : `/${encodeURIComponent(cfg.username)}/films/diary/page/${p}/`,
-    batchEndpoint: "/api/extension/batch/diary",
-    phaseName: "diary",
-    onFound: (n) => {
-      syncState.diaryFound = n;
-      syncState.percent = 50 + Math.min(49, Math.floor((syncState.currentPage / Math.max(1, syncState.totalPages)) * 45));
-      broadcast();
-    },
-  });
+  if (doWatchlist) {
+    syncState.phase = "watchlist";
+    syncState.currentPage = 0;
+    syncState.totalPages = 0;
+    broadcast();
+    wl = await scrapeListType({
+      cfg,
+      pathFn: (p) => p === 1
+        ? `/${encodeURIComponent(cfg.username)}/watchlist/`
+        : `/${encodeURIComponent(cfg.username)}/watchlist/page/${p}/`,
+      batchEndpoint: "/api/extension/batch/watchlist",
+      phaseName: "watchlist",
+      onFound: (n) => {
+        syncState.watchlistFound = n;
+        syncState.percent = Math.min(49, Math.floor((syncState.currentPage / Math.max(1, syncState.totalPages)) * 45));
+        broadcast();
+      },
+    });
+    if (syncState.stopRequested) return { watchlist: wl, diary: 0, stopped: true };
+  }
+
+  if (doDiary) {
+    syncState.phase = "diary";
+    syncState.currentPage = 0;
+    syncState.totalPages = 0;
+    broadcast();
+    diary = await scrapeListType({
+      cfg,
+      pathFn: (p) => p === 1
+        ? `/${encodeURIComponent(cfg.username)}/diary/`
+        : `/${encodeURIComponent(cfg.username)}/diary/page/${p}/`,
+      batchEndpoint: "/api/extension/batch/diary",
+      phaseName: "diary",
+      onFound: (n) => {
+        syncState.diaryFound = n;
+        syncState.percent = 50 + Math.min(49, Math.floor((syncState.currentPage / Math.max(1, syncState.totalPages)) * 45));
+        broadcast();
+      },
+    });
+  }
+
   return { watchlist: wl, diary, stopped: false };
 }
 
@@ -750,8 +781,23 @@ async function scrapeMoviesMetadata(cfg, slugs) {
     for (const slug of chunk) {
       if (syncState.stopRequested) break;
       try {
-        const html = await fetchLetterboxdPage(`/film/${slug}/`);
-        movies.push(parseMovieFromHtml(slug, html));
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 20000);
+        let lbFilmId = "";
+        try {
+          const res = await fetchWithRetry(`${LB_BASE}/film/${slug}/`, {
+            credentials: "include",
+            headers: { "Accept": "text/html", "User-Agent": navigator.userAgent },
+            signal: controller.signal,
+          });
+          lbFilmId = res.headers.get("x-letterboxd-identifier") || "";
+          const html = await res.text();
+          const movie = parseMovieFromHtml(slug, html);
+          movie.lb_film_id = lbFilmId;
+          movies.push(movie);
+        } finally {
+          clearTimeout(timeoutId);
+        }
       } catch (e) {
         log(`ERROR metadata ${slug}: ${e.message}`);
       }
@@ -774,6 +820,124 @@ async function scrapeMoviesMetadata(cfg, slugs) {
   return { processed };
 }
 
+// ── Letterboxd write-back (runs in browser, uses real session cookie) ────────
+
+async function writeToLetterboxd(action, movieSlug) {
+  // Step 1: fetch the film page to get the CSRF token (browser session included)
+  const filmUrl = `${LB_BASE}/film/${movieSlug}/`;
+  const filmRes = await fetch(filmUrl, {
+    credentials: "include",
+    headers: { "Accept": "text/html" },
+  });
+  if (!filmRes.ok) throw new Error(`film page ${filmRes.status}`);
+  const html = await filmRes.text();
+
+  // Extract __csrf token — present in a hidden input on every authenticated page
+  const csrfMatch = html.match(/name="__csrf"\s+value="([^"]+)"/)
+    || html.match(/<meta[^>]+name="csrf-token"[^>]+content="([^"]+)"/);
+  if (!csrfMatch) throw new Error("CSRF token not found — are you signed in to Letterboxd?");
+  const csrf = csrfMatch[1];
+
+  if (action === "watchlist") {
+    // Letterboxd watchlist toggle endpoint (AJAX, used by the web UI)
+    const res = await fetch(`${LB_BASE}/s/save-film-watch`, {
+      method: "POST",
+      credentials: "include",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+        "X-Requested-With": "XMLHttpRequest",
+        "Referer": filmUrl,
+      },
+      body: new URLSearchParams({
+        __csrf: csrf,
+        filmSlug: movieSlug,
+        inWatchlist: "true",
+      }).toString(),
+    });
+    if (!res.ok) throw new Error(`watchlist write ${res.status}`);
+    log(`[lb-write] watchlist added: ${movieSlug}`);
+    return true;
+  }
+
+  if (action === "log") {
+    // Diary save endpoint — logs the film as watched today
+    const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+    const res = await fetch(`${LB_BASE}/s/save-film-watch`, {
+      method: "POST",
+      credentials: "include",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+        "X-Requested-With": "XMLHttpRequest",
+        "Referer": filmUrl,
+      },
+      body: new URLSearchParams({
+        __csrf: csrf,
+        filmSlug: movieSlug,
+        viewingDateStr: today,
+        specifiedDate: "true",
+        rewatch: "false",
+        rating: "",
+        review: "",
+        containsSpoilers: "false",
+      }).toString(),
+    });
+    if (!res.ok) throw new Error(`diary write ${res.status}`);
+    log(`[lb-write] diary logged: ${movieSlug}`);
+    return true;
+  }
+
+  return false; // dismiss — no Letterboxd write needed
+}
+
+// ── Letterboxd LID backfill ──────────────────────────────────────────────────
+
+async function backfillLbFilmIds() {
+  const cfg = await getConfig();
+  if (!cfg.username || !cfg.sessionToken) throw new Error("Not registered — connect first");
+
+  log("backfill: fetching movies missing lb_film_id…");
+
+  // Ask the API for slugs that have no lb_film_id yet
+  const url = `${cfg.apiBase || DEFAULT_API_BASE}/api/extension/movies-missing-lb-id?limit=500`;
+  const res = await fetchWithRetry(url, {
+    headers: cfg.sessionToken ? { "X-Session-Token": cfg.sessionToken } : {},
+  });
+  if (!res.ok) throw new Error(`movies-missing-lb-id ${res.status}`);
+  const { slugs } = await res.json();
+
+  log(`backfill: ${slugs.length} movies to update`);
+  let updated = 0, failed = 0;
+
+  for (let i = 0; i < slugs.length; i++) {
+    if (syncState.stopRequested) break;
+    const slug = slugs[i];
+    try {
+      // Fetch the film page — x-letterboxd-identifier header contains the LID
+      const filmRes = await fetchWithRetry(`${LB_BASE}/film/${slug}/`, {
+        credentials: "include",
+        headers: { "Accept": "text/html", "User-Agent": navigator.userAgent },
+      });
+      const lbFilmId = filmRes.headers.get("x-letterboxd-identifier") || "";
+      if (lbFilmId) {
+        await apiPost(cfg, "/actions/cache-lb-id", { movie_slug: slug, lb_film_id: lbFilmId });
+        updated++;
+      } else {
+        failed++;
+      }
+    } catch (e) {
+      failed++;
+    }
+
+    if ((i + 1) % 20 === 0) {
+      log(`backfill: ${i + 1}/${slugs.length} — updated=${updated} failed=${failed}`);
+    }
+    await sleep(300);
+  }
+
+  log(`backfill: done — updated=${updated} failed=${failed}`);
+  return { updated, failed };
+}
+
 // ── Entry points ─────────────────────────────────────────────────────────────
 
 async function ensureConfig() {
@@ -792,6 +956,8 @@ async function runSync(opts = {}) {
 
   const stored = await chrome.storage.local.get([
     "syncHistory",
+    "syncWatchlist",
+    "syncDiary",
     "discoverLists",
     "fillLists",
     "discoverPages",
@@ -799,7 +965,8 @@ async function runSync(opts = {}) {
     "fillListPages",
   ]);
   const settings = {
-    syncHistory: opts.syncHistory ?? (stored.syncHistory ?? true),
+    syncWatchlist: opts.syncWatchlist ?? (stored.syncWatchlist ?? true),
+    syncDiary: opts.syncDiary ?? (stored.syncDiary ?? true),
     discoverLists: opts.discoverLists ?? (stored.discoverLists ?? true),
     fillLists: opts.fillLists ?? (stored.fillLists ?? true),
     discoverPages: opts.discoverPages ?? stored.discoverPages ?? DEFAULT_DISCOVER_PAGES,
@@ -815,8 +982,8 @@ async function runSync(opts = {}) {
   try {
     const cfg = await ensureConfig();
 
-    if (settings.syncHistory && !syncState.stopRequested) {
-      const history = await scrapeUserHistory(cfg);
+    if ((settings.syncWatchlist || settings.syncDiary) && !syncState.stopRequested) {
+      const history = await scrapeUserHistory(cfg, settings);
       summary.watchlist = history.watchlist;
       summary.diary = history.diary;
       if (history.stopped) summary.stopped = true;
@@ -916,7 +1083,12 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         sendResponse({ ok: true, state: syncState });
         return;
       case "START_SYNC":
-        sendResponse(await runSync());
+        sendResponse(await runSync({
+          syncWatchlist: msg.syncWatchlist,
+          syncDiary: msg.syncDiary,
+          discoverLists: msg.discoverLists,
+          fillLists: msg.fillLists,
+        }));
         return;
       case "STOP_SYNC":
         syncState.stopRequested = true;
@@ -966,9 +1138,21 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         });
         sendResponse({ ok: true });
         return;
-      case "CONTENT_SCRAPE_RESULT":
-        // Content script on letterboxd.com pushed scraped data up; forward to API
-        sendResponse({ ok: true });
+      case "LB_WRITE":
+        try {
+          const ok = await writeToLetterboxd(msg.action, msg.movieSlug);
+          sendResponse({ ok });
+        } catch (e) {
+          sendResponse({ ok: false, error: e.message });
+        }
+        return;
+      case "BACKFILL_LB_IDS":
+        try {
+          const result = await backfillLbFilmIds();
+          sendResponse({ ok: true, ...result });
+        } catch (e) {
+          sendResponse({ ok: false, error: e.message });
+        }
         return;
       default:
         sendResponse({ ok: false, error: "unknown type" });

@@ -42,6 +42,7 @@ def normalize_movie_record(movie: dict) -> dict:
         "genres": genres,
         "synopsis": movie.get("synopsis", "") or "",
         "cast": cast,
+        "lb_film_id": movie.get("lb_film_id", "") or "",
     }
 
 
@@ -646,13 +647,12 @@ class SupabaseStore:
             "synopsis": normalized.get("synopsis", ""),
             "cast": normalized.get("cast", []),
         }
-        
-        # Add optional fields
         if "year" in movie:
             record["year"] = movie["year"]
         if "director" in movie:
             record["director"] = movie["director"]
-            
+        if movie.get("lb_film_id"):
+            record["lb_film_id"] = movie["lb_film_id"]
         self.client.table("movies").upsert(record, on_conflict="slug").execute()
 
     def get_movie(self, slug: str) -> dict | None:

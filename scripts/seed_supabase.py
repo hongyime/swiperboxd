@@ -124,6 +124,7 @@ def main() -> None:
     parser.add_argument("--lists-pages", type=int, default=3, help="Pages of popular lists to scrape (default: 3)")
     parser.add_argument("--skip-movies", action="store_true", help="Save lists + memberships only, skip movie metadata")
     parser.add_argument("--movies-only", action="store_true", help="Fill in missing movie metadata; skip list scraping")
+    parser.add_argument("--backfill-lb-ids", action="store_true", help="Fetch lb_film_id for all movies missing it")
     parser.add_argument("--no-resume", action="store_true", help="Re-scrape everything, ignore existing DB data")
     parser.add_argument("--dry-run", action="store_true", help="Scrape but don't write to Supabase")
     args = parser.parse_args()
@@ -150,6 +151,10 @@ def main() -> None:
 
     if args.movies_only:
         _fetch_missing_movies(scraper, store, args)
+        return
+
+    if args.backfill_lb_ids:
+        _backfill_lb_film_ids(scraper, store, args)
         return
 
     # ── Step 1: Discover lists page by page ────────────────────────────────
@@ -340,6 +345,67 @@ def _fetch_missing_movies(scraper, store, args) -> None:
 
     w, sk, f = _fetch_and_save_movies(missing, "all lists", scraper, store, args)
     _print_summary(store, args, w, sk, f)
+
+
+def _backfill_lb_film_ids(scraper, store, args) -> None:
+    """--backfill-lb-ids: fetch lb_film_id for every movie that doesn't have one yet.
+
+    The LID comes from the x-letterboxd-identifier response header on the film page.
+    Only makes one HTTP request per movie — no HTML parsing needed.
+    """
+    if args.dry_run or store is None:
+        print("[backfill] requires a live Supabase connection (not --dry-run)")
+        return
+
+    print("\n[backfill] Loading movies missing lb_film_id...")
+    rows = (
+        store.client.table("movies")
+        .select("slug")
+        .is_("lb_film_id", "null")
+        .execute()
+        .data
+    )
+    slugs = [r["slug"] for r in rows if r.get("slug")]
+    print(f"[backfill] {len(slugs)} movies need lb_film_id")
+
+    if not slugs:
+        print("[backfill] Nothing to do.")
+        return
+
+    import httpx as _httpx
+    updated = failed = 0
+    for i, slug in enumerate(slugs, 1):
+        url = f"{scraper.base_url}/film/{slug}/"
+        try:
+            # HEAD request is enough — we only need the response header
+            with _httpx.Client(
+                timeout=10.0,
+                follow_redirects=True,
+                headers=scraper._BROWSER_HEADERS,
+            ) as client:
+                resp = client.head(url)
+            lb_film_id = resp.headers.get("x-letterboxd-identifier", "")
+            if not lb_film_id:
+                # HEAD may not return custom headers on all CDN configs — fall back to GET
+                resp = scraper._fetch(url)
+                lb_film_id = resp.headers.get("x-letterboxd-identifier", "")
+
+            if lb_film_id:
+                store.client.table("movies").update(
+                    {"lb_film_id": lb_film_id}
+                ).eq("slug", slug).execute()
+                updated += 1
+                print(f"  [{i}/{len(slugs)}] {slug} → {lb_film_id}")
+            else:
+                failed += 1
+                print(f"  [{i}/{len(slugs)}] {slug} → no LID in headers")
+        except Exception as exc:
+            failed += 1
+            print(f"  [{i}/{len(slugs)}] {slug} → ERROR: {exc}")
+
+        time.sleep(0.3)  # be polite
+
+    print(f"\n[backfill] Done. updated={updated} failed/missing={failed}")
 
 
 def _print_summary(store, args, written=0, skipped=0, failed=0) -> None:

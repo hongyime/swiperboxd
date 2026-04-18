@@ -131,7 +131,8 @@
     <div class="row"><span class="label">Lists discovered</span><span id="lists-discovered" class="value">0</span></div>
     <div class="row"><span class="label">Lists filled</span><span id="lists-filled" class="value">0</span></div>
     <div class="progress"><div id="progress-fill" class="progress-fill"></div></div>
-    <label class="check"><input type="checkbox" id="opt-history" checked /> Sync my watchlist + diary</label>
+    <label class="check"><input type="checkbox" id="opt-watchlist" checked /> Sync my watchlist</label>
+    <label class="check"><input type="checkbox" id="opt-diary" checked /> Sync my diary</label>
     <label class="check"><input type="checkbox" id="opt-discover" checked /> Discover popular lists</label>
     <label class="check"><input type="checkbox" id="opt-fill" checked /> Fetch films for under-scraped lists</label>
     <details>
@@ -150,8 +151,11 @@
       </div>
       <button id="save-caps" class="secondary">Save caps</button>
     </details>
-    <button id="start-btn">Start sync</button>
-    <button id="stop-btn" class="secondary" disabled>Stop sync</button>
+    <button id="start-btn">Start full sync</button>
+    <button id="sync-watchlist-btn" class="secondary">Sync watchlist only</button>
+    <button id="sync-diary-btn" class="secondary">Sync diary only</button>
+    <button id="backfill-lb-ids-btn" class="secondary">Backfill Letterboxd IDs</button>
+    <button id="stop-btn" class="secondary" disabled>Stop</button>
     <label class="check">
       <input type="checkbox" id="auto-sync" />
       Auto-sync every 6 hours (while Chrome is running)
