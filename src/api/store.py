@@ -108,6 +108,8 @@ class Store(Protocol):
 
     def batch_add_diary(self, user_id: str, slugs: list[str]) -> dict: ...
 
+    def get_movies_by_slugs(self, slugs: list[str]) -> dict[str, dict]: ...
+
 
 @dataclass
 class InMemoryStore:
@@ -353,6 +355,15 @@ class InMemoryStore:
             except Exception as exc:
                 errors.append(f"{slug}: {exc}")
         return {"added": added, "errors": errors, "total": len(slugs)}
+
+    def get_movies_by_slugs(self, slugs: list[str]) -> dict[str, dict]:
+        """Return a slug→movie dict for all requested slugs (in-memory)."""
+        with self.lock:
+            return {
+                slug: normalize_movie_record(self.movies[slug])
+                for slug in slugs
+                if slug in self.movies
+            }
 
     def cleanup_expired_progress(self, ttl_seconds: float = 3600.0) -> int:
         """Remove ingest progress entries older than TTL. Returns count removed."""
@@ -655,6 +666,23 @@ class SupabaseStore:
         """Get all movies from Supabase cache."""
         response = self.client.table("movies").select("*").execute()
         return [normalize_movie_record(row) for row in response.data]
+
+    def get_movies_by_slugs(self, slugs: list[str]) -> dict[str, dict]:
+        """Fetch multiple movies in a single query. Returns slug→movie dict."""
+        if not slugs:
+            return {}
+        # Supabase .in_() filter — single round-trip for all slugs
+        response = (
+            self.client.table("movies")
+            .select("*")
+            .in_("slug", list(slugs))
+            .execute()
+        )
+        return {
+            row["slug"]: normalize_movie_record(row)
+            for row in (response.data or [])
+            if row.get("slug")
+        }
 
     def set_ingest_progress(self, user_id: str, value: int) -> None:
         """Set ingest progress (in-memory only - for performance)."""

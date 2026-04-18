@@ -490,7 +490,7 @@ async function scrapeOneListForFill(cfg, listRow, maxPages) {
     if (syncState.stopRequested) break;
     let html;
     try {
-      html = await fetchLetterboxdPage(`${info.basePath}/page/${page}/`);
+      html = await fetchLetterboxdPage(page === 1 ? `${info.basePath}/` : `${info.basePath}/page/${page}/`);
     } catch (e) {
       log(`fill ${info.listId} page ${page}: ${e.message}`);
       break;
@@ -614,7 +614,9 @@ async function scrapeUserHistory(cfg) {
   broadcast();
   const wl = await scrapeListType({
     cfg,
-    pathFn: (p) => `/${encodeURIComponent(cfg.username)}/watchlist/page/${p}/`,
+    pathFn: (p) => p === 1
+      ? `/${encodeURIComponent(cfg.username)}/watchlist/`
+      : `/${encodeURIComponent(cfg.username)}/watchlist/page/${p}/`,
     batchEndpoint: "/api/extension/batch/watchlist",
     phaseName: "watchlist",
     onFound: (n) => {
@@ -631,7 +633,9 @@ async function scrapeUserHistory(cfg) {
   broadcast();
   const diary = await scrapeListType({
     cfg,
-    pathFn: (p) => `/${encodeURIComponent(cfg.username)}/films/diary/page/${p}/`,
+    pathFn: (p) => p === 1
+      ? `/${encodeURIComponent(cfg.username)}/films/diary/`
+      : `/${encodeURIComponent(cfg.username)}/films/diary/page/${p}/`,
     batchEndpoint: "/api/extension/batch/diary",
     phaseName: "diary",
     onFound: (n) => {
@@ -679,7 +683,7 @@ async function scrapePublicList(cfg, listUrl) {
 
   while (page <= MAX_PAGES_HARD_CAP) {
     if (syncState.stopRequested) { log(`Stop requested at list page ${page}`); break; }
-    const path = `${info.basePath}/page/${page}/`;
+    const path = page === 1 ? `${info.basePath}/` : `${info.basePath}/page/${page}/`;
     let html;
     try {
       html = await fetchLetterboxdPage(path);

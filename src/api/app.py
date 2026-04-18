@@ -548,7 +548,8 @@ def list_deck(list_id: str, user_id: str = Query(min_length=1)):
 
     try:
         cached_slugs = store.get_list_memberships(list_id)
-        movies = [store.get_movie(slug) for slug in cached_slugs]
+        movies_by_slug = store.get_movies_by_slugs(cached_slugs)
+        movies = [movies_by_slug[slug] for slug in cached_slugs if slug in movies_by_slug]
     except Exception as exc:
         print(f"[deck] failed to load movies from store: {exc}", flush=True)
         raise HTTPException(status_code=500, detail={"code": "store_error", "reason": str(exc)})
