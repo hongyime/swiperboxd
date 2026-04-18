@@ -326,9 +326,15 @@ body {
   cursor: grab;
   transform-origin: center bottom;
   transition: transform 0.1s ease-out;
-  user-select: none;
   -webkit-user-select: none;
+  user-select: none;
   transform-style: preserve-3d;
+}
+
+/* Non-top cards in the stack are dimmed so only the top card is in focus */
+.movie-card:not(:last-child) {
+  opacity: 0.55;
+  pointer-events: none;
 }
 
 .movie-card:active {

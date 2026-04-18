@@ -114,15 +114,22 @@ async function fetchWithRetry(url, opts = {}, maxAttempts = 3) {
 
 async function fetchLetterboxdPage(path) {
   const url = path.startsWith("http") ? path : `${LB_BASE}${path}`;
-  const res = await fetchWithRetry(url, {
-    credentials: "include",
-    headers: {
-      "Accept": "text/html",
-      "User-Agent": navigator.userAgent,
-    },
-  });
-  if (!res.ok) throw new Error(`letterboxd ${res.status} on ${path}`);
-  return await res.text();
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 20000); // 20s timeout
+  try {
+    const res = await fetchWithRetry(url, {
+      credentials: "include",
+      headers: {
+        "Accept": "text/html",
+        "User-Agent": navigator.userAgent,
+      },
+      signal: controller.signal,
+    });
+    if (!res.ok) throw new Error(`letterboxd ${res.status} on ${path}`);
+    return await res.text();
+  } finally {
+    clearTimeout(timeoutId);
+  }
 }
 
 function extractSlugsFromHtml(html) {

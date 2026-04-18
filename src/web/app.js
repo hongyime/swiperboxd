@@ -442,16 +442,18 @@ function renderDeck() {
   cardStack.classList.remove('hidden');
   cardStack.innerHTML = '';
 
-  const cardsToShow = state.deck.slice(0, 3);
-  cardsToShow.reverse().forEach((movie, i) => {
-    const isTop = i === cardsToShow.length - 1;
+  // Show up to 3 cards starting from currentIndex (top card is last in DOM = highest z-index)
+  const remaining = state.deck.slice(state.currentIndex, state.currentIndex + 3);
+  remaining.reverse().forEach((movie, i) => {
+    const isTop = i === remaining.length - 1;
     const card = createCard(movie, isTop);
-    card.style.zIndex = cardsToShow.length - i;
-    card.style.transform = `scale(${1 - (cardsToShow.length - 1 - i) * 0.05}) translateY(${(cardsToShow.length - 1 - i) * 10}px)`;
+    const depth = remaining.length - 1 - i; // 0 = top, 1 = second, 2 = third
+    card.style.zIndex = remaining.length - depth;
+    card.style.transform = `scale(${1 - depth * 0.05}) translateY(${depth * 10}px)`;
     cardStack.appendChild(card);
   });
 
-  console.log(`[deck] rendered ${cardsToShow.length} card(s), ${state.deck.length} total in deck`);
+  console.log(`[deck] rendered ${remaining.length} card(s), currentIndex=${state.currentIndex} total=${state.deck.length}`);
 }
 
 function createCard(movie, isTop = false) {
@@ -592,11 +594,9 @@ async function executeSwipe(action) {
     navigator.vibrate(action === 'watchlist' ? 50 : action === 'dismiss' ? 10 : 30);
   }
 
-  syncOverlay.classList.remove('hidden');
-
   let advanceCard = true;
   try {
-    await api('/actions/swipe', {
+    const result = await api('/actions/swipe', {
       method: 'POST',
       body: { user_id: state.username, movie_slug: movie.slug, action }
     });
@@ -604,6 +604,9 @@ async function executeSwipe(action) {
     if (action === 'dismiss') {
       suppression.dismiss(movie.slug);
       console.log(`[suppression] ${movie.slug} suppressed for 24h`);
+    }
+    if (result?.lb_synced === false && action !== 'dismiss') {
+      showToast('Saved locally — Letterboxd sync pending');
     }
   } catch (err) {
     // 409 = duplicate (already in watchlist / diary). Still advance, show toast.
@@ -629,13 +632,36 @@ async function executeSwipe(action) {
       await delay(400);
       topCard.remove();
 
-      if (state.currentIndex < state.deck.length) {
-        const nextCard = createCard(state.deck[state.currentIndex], true);
-        nextCard.style.transform = 'scale(0.95) translateY(10px)';
-        cardStack.appendChild(nextCard);
-        await delay(10);
-        nextCard.style.transition = 'transform 0.2s ease-out';
-        nextCard.style.transform = '';
+      // Promote remaining back cards (animate their transforms)
+      const backCards = [...cardStack.querySelectorAll('.movie-card')];
+      backCards.forEach((card, i) => {
+        const depth = backCards.length - 1 - i; // 0 = new top
+        card.style.transition = 'transform 0.2s ease-out';
+        card.style.transform = `scale(${1 - depth * 0.05}) translateY(${depth * 10}px)`;
+        card.style.zIndex = backCards.length - depth;
+      });
+
+      // Make the new top card interactive
+      const newTop = cardStack.querySelector('.movie-card:last-child');
+      if (newTop && !newTop._touchInited) {
+        newTop._touchInited = true;
+        let _cardDragged = false;
+        newTop.addEventListener('click', (e) => {
+          if (_cardDragged || e.target.closest('.action-btn')) return;
+          flipCard();
+        });
+        initCardTouch(newTop, (wasDrag) => { _cardDragged = wasDrag; });
+      }
+
+      // Append the next queued card at the back if available
+      const nextBackIndex = state.currentIndex + 2;
+      if (nextBackIndex < state.deck.length) {
+        const newBackCard = createCard(state.deck[nextBackIndex], false);
+        const totalCards = cardStack.querySelectorAll('.movie-card').length + 1;
+        const depth = totalCards - 1;
+        newBackCard.style.zIndex = 1;
+        newBackCard.style.transform = `scale(${1 - depth * 0.05}) translateY(${depth * 10}px)`;
+        cardStack.insertBefore(newBackCard, cardStack.firstChild);
       }
 
       if (state.currentIndex >= state.deck.length) {
@@ -645,7 +671,6 @@ async function executeSwipe(action) {
       }
     }
   } finally {
-    syncOverlay.classList.add('hidden');
     state.isSyncing = false;
   }
 }
