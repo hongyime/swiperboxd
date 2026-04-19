@@ -1,6 +1,8 @@
 // Swiperboxd Sync — content script
 // Runs on the Swiperboxd web app and listens for postMessages from the page.
 
+console.log("[swiperboxd-ext] content script injected on", window.location.href);
+
 window.addEventListener("message", (event) => {
   if (event.source !== window) return;
   const data = event.data;
