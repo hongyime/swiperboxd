@@ -2,6 +2,10 @@
 
 const el = (id) => document.getElementById(id);
 const DEFAULT_API_BASE = "https://swiperboxd.vercel.app";
+const SYNC_LOG_KEY = "swiperboxd-sync-log";
+
+// Keep the service worker alive while this popup is open
+const _port = chrome.runtime.connect({ name: "popup" });
 
 async function getStorage() {
   return await chrome.storage.local.get([
@@ -15,7 +19,30 @@ async function setStorage(obj) { await chrome.storage.local.set(obj); }
 function logLine(target, msg) {
   const log = el(target);
   const time = new Date().toLocaleTimeString();
-  log.textContent = `[${time}] ${msg}\n` + log.textContent;
+  const line = `[${time}] ${msg}`;
+  log.textContent = line + "\n" + log.textContent;
+  // Persist popup-originated log lines too
+  if (target === "log") {
+    chrome.storage.local.get(SYNC_LOG_KEY).then((data) => {
+      const entries = Array.isArray(data[SYNC_LOG_KEY]) ? data[SYNC_LOG_KEY] : [];
+      entries.push(line);
+      if (entries.length > 300) entries.splice(0, entries.length - 300);
+      chrome.storage.local.set({ [SYNC_LOG_KEY]: entries });
+    }).catch(() => {});
+  }
+}
+
+async function loadLogHistory() {
+  try {
+    const data = await chrome.storage.local.get(SYNC_LOG_KEY);
+    const entries = Array.isArray(data[SYNC_LOG_KEY]) ? data[SYNC_LOG_KEY] : [];
+    if (entries.length) {
+      // Show newest first (entries are oldest-first in storage)
+      el("log").textContent = [...entries].reverse().join("\n");
+    }
+  } catch (e) {
+    console.warn("[popup] loadLogHistory failed:", e);
+  }
 }
 
 async function checkLetterboxdSession() {
@@ -85,6 +112,9 @@ async function refreshStatus() {
   el("fill-list-pages").value = cfg.fillListPages ?? "";
   renderApiStatus(cfg);
   await checkLetterboxdSession();
+  // Load full log history from storage first (survives popup close/SW restart)
+  await loadLogHistory();
+  // Then overlay current live state
   const resp = await chrome.runtime.sendMessage({ type: "GET_STATE" }).catch(() => null);
   if (resp && resp.state) renderProgress(resp.state);
 }
@@ -194,6 +224,11 @@ document.querySelectorAll(".tab").forEach((t) => {
 
 chrome.runtime.onMessage.addListener((msg) => {
   if (msg && msg.type === "SYNC_STATE") renderProgress(msg.state);
+});
+
+el("clear-log-btn")?.addEventListener("click", async () => {
+  await chrome.storage.local.set({ [SYNC_LOG_KEY]: [] });
+  el("log").textContent = "";
 });
 
 refreshStatus();

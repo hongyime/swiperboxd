@@ -62,12 +62,32 @@
       margin-top: 8px;
       font-size: 11px;
       color: var(--muted);
-      max-height: 70px;
+      max-height: 160px;
       overflow: auto;
       font-family: ui-monospace, "SF Mono", Menlo, monospace;
-      line-height: 1.4;
+      line-height: 1.5;
       white-space: pre-wrap;
     }
+    .log-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-top: 8px;
+    }
+    .log-label { font-size: 11px; color: var(--muted); }
+    .clear-btn {
+      width: auto;
+      padding: 2px 8px;
+      font-size: 10px;
+      font-weight: 500;
+      background: transparent;
+      color: var(--muted);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      margin-top: 0;
+      cursor: pointer;
+    }
+    .clear-btn:hover { color: var(--fg); }
     label.check { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 11px; margin-top: 8px; }
     input[type="text"], input[type="url"] {
       width: 100%;
@@ -158,6 +178,10 @@
       <input type="checkbox" id="auto-sync" />
       Auto-sync every 6 hours (while Chrome is running)
     </label>
+    <div class="log-header">
+      <span class="log-label">Log (persists across popup close)</span>
+      <button id="clear-log-btn" class="clear-btn">Clear</button>
+    </div>
     <div id="log" class="log"></div>
   </section>
 

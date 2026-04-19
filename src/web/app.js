@@ -25,25 +25,32 @@ const state = {
   listSearchQuery: '',
 };
 
-// Listen for extension write-back results
-window.addEventListener('message', (event) => {
-  if (event.source !== window) return;
-  const { data } = event;
-  if (!data) return;
-  if (data.type === 'SWIPERBOXD_SWIPE_RESULT') {
-    if (data.lbSynced) {
-      console.log(`[lb-write] ${data.action} synced to Letterboxd: ${data.movieSlug}`);
-    } else {
-      console.warn(`[lb-write] ${data.action} NOT synced: ${data.movieSlug} — ${data.error || 'extension not installed?'}`);
+function requestExtensionSwipe(action, movieSlug, timeoutMs = 8000) {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      window.removeEventListener('message', handler);
+      resolve({ lbSynced: false, error: 'extension timed out — is it installed and signed in to Letterboxd?' });
+    }, timeoutMs);
+    function handler(event) {
+      if (event.source !== window) return;
+      const d = event.data;
+      if (d?.type === 'SWIPERBOXD_SWIPE_RESULT' && d.movieSlug === movieSlug && d.action === action) {
+        clearTimeout(timer);
+        window.removeEventListener('message', handler);
+        resolve({ lbSynced: d.lbSynced, error: d.error });
+      }
     }
-  }
-});
+    window.addEventListener('message', handler);
+    window.postMessage({ type: 'SWIPERBOXD_SWIPE', action, movieSlug }, window.location.origin);
+  });
+}
 
 // ==================== DOM REFS ====================
 
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => document.querySelectorAll(sel);
 
+const setupScreen     = $('#setup-screen');
 const authScreen      = $('#auth-screen');
 const discoveryScreen = $('#discovery-screen');
 const loginForm       = $('#letterboxd-login-form');
@@ -68,6 +75,16 @@ document.addEventListener('DOMContentLoaded', () => {
 // ==================== AUTH ====================
 
 function initAuth() {
+  $('#setup-continue-btn')?.addEventListener('click', () => {
+    setupScreen.classList.remove('active');
+    authScreen.classList.add('active');
+  });
+
+  $('#back-to-setup-btn')?.addEventListener('click', () => {
+    authScreen.classList.remove('active');
+    setupScreen.classList.add('active');
+  });
+
   loginForm.addEventListener('submit', async (e) => {
     e.preventDefault();
     const username = $('#letterboxd-username').value.trim();
@@ -109,7 +126,9 @@ function checkSavedSession() {
     broadcastAuthToExtension();
     showDiscovery();
   } else {
-    showAuth();
+    // No saved session — show setup guide first
+    setupScreen.classList.add('active');
+    authScreen.classList.remove('active');
   }
 }
 
@@ -128,6 +147,7 @@ function broadcastAuthToExtension() {
 }
 
 function showAuth() {
+  setupScreen.classList.remove('active');
   authScreen.classList.add('active');
   discoveryScreen.classList.remove('active');
 }
@@ -374,32 +394,41 @@ async function executeSwipe(action) {
 
   let advanceCard = true;
   try {
-    await api('/actions/swipe', {
-      method: 'POST',
-      body: { user_id: state.username, movie_slug: movie.slug, action },
-    });
-
     if (action === 'dismiss') {
       suppression.dismiss(movie.slug);
+      await api('/actions/swipe', {
+        method: 'POST',
+        body: { user_id: state.username, movie_slug: movie.slug, action },
+      });
     } else {
-      // Route write-back through extension (uses live Letterboxd session cookie)
-      window.postMessage(
-        { type: 'SWIPERBOXD_SWIPE', action, movieSlug: movie.slug },
-        window.location.origin,
-      );
+      const result = await requestExtensionSwipe(action, movie.slug);
+      if (!result.lbSynced) {
+        showToast(result.error || 'Letterboxd write failed — extension not responding');
+        advanceCard = false;
+        topCard.classList.remove('swiping-right', 'swiping-left', 'swiping-up');
+      } else {
+        try {
+          await api('/actions/swipe', {
+            method: 'POST',
+            body: { user_id: state.username, movie_slug: movie.slug, action },
+          });
+        } catch (err) {
+          if (err.status === 409) {
+            const code = err.code || err.data?.code;
+            showToast(
+              code === 'already_in_watchlist' ? 'Already in your watchlist' :
+              code === 'already_in_diary'     ? 'Already in your diary'     : 'Already saved'
+            );
+          } else {
+            console.error('[swipe] supabase write failed:', err.message);
+          }
+        }
+      }
     }
   } catch (err) {
-    if (err.status === 409) {
-      const code = err.code || err.data?.code;
-      showToast(
-        code === 'already_in_watchlist' ? 'Already in your watchlist' :
-        code === 'already_in_diary'     ? 'Already in your diary'     : 'Already saved'
-      );
-    } else {
-      console.error('[swipe] failed:', err.message);
-      advanceCard = false;
-      topCard.classList.remove('swiping-right', 'swiping-left', 'swiping-up');
-    }
+    console.error('[swipe] failed:', err.message);
+    advanceCard = false;
+    topCard.classList.remove('swiping-right', 'swiping-left', 'swiping-up');
   }
 
   try {

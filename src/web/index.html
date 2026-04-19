@@ -11,8 +11,8 @@
 <body>
   <div id="app">
 
-    <!-- ==================== AUTH SCREEN ==================== -->
-    <div id="auth-screen" class="screen active">
+    <!-- ==================== SETUP SCREEN ==================== -->
+    <div id="setup-screen" class="screen active">
       <div class="logo">
         <img src="/web/logo.svg" alt="Swiperboxd" class="logo-img" />
         <h1>Swiperboxd</h1>
@@ -31,7 +31,7 @@
           <span class="step-num">2</span>
           <div class="step-body">
             <strong>Load the Chrome extension</strong>
-            <span>In Chrome go to <code>chrome://extensions</code> → enable Developer mode → Load unpacked → select the <code>extension/</code> folder from this repo. Click the extension icon and press <em>Connect</em>, then <em>Start Sync</em> to import your watchlist, diary and lists.</span>
+            <span>In Chrome go to <code>chrome://extensions</code> → enable Developer mode → Load unpacked → select the <code>extension/</code> folder from this repo. Click the extension icon, press <em>Connect</em>, then <em>Start Sync</em> to import your watchlist, diary and lists.</span>
           </div>
         </div>
         <div class="setup-step">
@@ -41,22 +41,27 @@
             <span>Open DevTools (F12) → Application → Cookies → letterboxd.com → copy the value of <code>letterboxd.user.CURRENT</code>.</span>
           </div>
         </div>
-        <div class="setup-step">
-          <span class="step-num">4</span>
-          <div class="step-body">
-            <strong>Connect below</strong>
-            <span>Paste your Letterboxd username and that cookie value, then click Connect.</span>
-          </div>
-        </div>
+      </div>
+
+      <button id="setup-continue-btn" class="btn-primary" style="max-width:420px;width:100%">Continue →</button>
+    </div>
+
+    <!-- ==================== AUTH SCREEN ==================== -->
+    <div id="auth-screen" class="screen">
+      <div class="logo">
+        <img src="/web/logo.svg" alt="Swiperboxd" class="logo-img" />
+        <h1>Connect your account</h1>
+        <p>Paste your Letterboxd username and session cookie</p>
       </div>
 
       <form id="letterboxd-login-form" class="auth-form">
         <input type="text" id="letterboxd-username" placeholder="Letterboxd username" autocomplete="username" required />
-        <textarea id="letterboxd-session-cookie" placeholder="letterboxd.user.CURRENT cookie value" rows="4" required autocomplete="off"></textarea>
+        <textarea id="letterboxd-session-cookie" placeholder="letterboxd.user.CURRENT cookie value" rows="5" required autocomplete="off"></textarea>
         <button type="submit" class="btn-primary">Connect</button>
       </form>
       <div id="auth-error" class="error-msg hidden"></div>
       <div id="auth-success" class="success-msg hidden"></div>
+      <button id="back-to-setup-btn" class="btn-text" style="margin-top:1rem">← Back to setup guide</button>
     </div>
 
     <!-- ==================== DISCOVERY SCREEN ==================== -->

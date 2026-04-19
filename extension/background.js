@@ -16,12 +16,15 @@
 
 const DEFAULT_API_BASE = "https://swiperboxd.vercel.app";
 const LB_BASE = "https://letterboxd.com";
-const BATCH_FLUSH_THRESHOLD = 50;   // flush slug buffer every N slugs or every page
-const METADATA_BATCH_SIZE = 10;     // /film/<slug>/ is heavy; keep batches small
+const BATCH_FLUSH_THRESHOLD = 50;
+const METADATA_BATCH_SIZE = 10;
 const MAX_PAGES_HARD_CAP = 300;
 const PAGE_DELAY_MS = 900;
 const MOVIE_DELAY_MS = 600;
 const ALARM_NAME = "swiperboxd-periodic-sync";
+const SYNC_LOG_KEY = "swiperboxd-sync-log";
+const SYNC_RUNNING_KEY = "swiperboxd-sync-running";
+const MAX_LOG_ENTRIES = 300;
 
 // Public-list discovery defaults (overridable via chrome.storage)
 const DEFAULT_DISCOVER_PAGES = 3;    // /lists/popular/page/1..N
@@ -70,6 +73,7 @@ function log(msg) {
   console.log("[swiperboxd-ext]", msg);
   syncState.lastLog = msg;
   broadcast();
+  appendLogToStorage(msg);
 }
 
 async function getConfig() {
@@ -87,6 +91,17 @@ async function getLetterboxdCookie() {
 
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
+}
+
+// Persist a log line to chrome.storage so it survives popup close/SW restart
+function appendLogToStorage(line) {
+  const entry = `[${new Date().toLocaleTimeString()}] ${line}`;
+  chrome.storage.local.get(SYNC_LOG_KEY).then((data) => {
+    const entries = Array.isArray(data[SYNC_LOG_KEY]) ? data[SYNC_LOG_KEY] : [];
+    entries.push(entry);
+    if (entries.length > MAX_LOG_ENTRIES) entries.splice(0, entries.length - MAX_LOG_ENTRIES);
+    chrome.storage.local.set({ [SYNC_LOG_KEY]: entries });
+  }).catch(() => {});
 }
 
 async function fetchWithRetry(url, opts = {}, maxAttempts = 3) {
@@ -1011,6 +1026,9 @@ async function runSync(opts = {}) {
   resetState("starting", "sync starting");
   broadcast();
 
+  // Persist a "running" marker so we can detect if the SW is killed mid-sync
+  await chrome.storage.local.set({ [SYNC_RUNNING_KEY]: true });
+
   const summary = { watchlist: 0, diary: 0, discovered: 0, filled: 0, stopped: false };
 
   try {
@@ -1059,6 +1077,7 @@ async function runSync(opts = {}) {
   } finally {
     syncState.running = false;
     broadcast();
+    chrome.storage.local.set({ [SYNC_RUNNING_KEY]: false }).catch(() => {});
   }
 }
 
@@ -1206,3 +1225,22 @@ chrome.runtime.onInstalled.addListener(async () => {
   const cfg = await getConfig();
   if (cfg.autoSync) chrome.alarms.create(ALARM_NAME, { periodInMinutes: 360 });
 });
+
+// Keep SW alive while the popup is open (long-lived port connection)
+chrome.runtime.onConnect.addListener((port) => {
+  if (port.name !== "popup") return;
+  console.log("[swiperboxd-ext] popup connected — SW kept alive");
+  port.onDisconnect.addListener(() => {
+    console.log("[swiperboxd-ext] popup disconnected");
+  });
+});
+
+// Detect if the SW was killed mid-sync (running flag still set from previous run)
+chrome.storage.local.get(SYNC_RUNNING_KEY).then((data) => {
+  if (data[SYNC_RUNNING_KEY]) {
+    const msg = "⚠️ Chrome killed the service worker while sync was running — sync was interrupted. Press Start Sync to retry.";
+    console.warn("[swiperboxd-ext]", msg);
+    appendLogToStorage(msg);
+    chrome.storage.local.set({ [SYNC_RUNNING_KEY]: false });
+  }
+}).catch(() => {});
