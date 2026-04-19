@@ -23,6 +23,7 @@
     "https://letterboxd.com/*",
     "https://*.letterboxd.com/*",
     "https://swiperboxd.vercel.app/*",
+    "https://swiperboxd.hong-yi.me/*",
     "http://localhost/*",
     "http://localhost:8000/*",
     "http://127.0.0.1/*",
@@ -36,6 +37,7 @@
     {
       "matches": [
         "https://swiperboxd.vercel.app/*",
+        "https://swiperboxd.hong-yi.me/*",
         "http://localhost/*",
         "http://localhost:8000/*",
         "http://127.0.0.1/*",

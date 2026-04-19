@@ -393,7 +393,10 @@ async function loadLists(query = '') {
   }
 
   if (!state.selectedListId && state.lists.length > 0) {
-    const pick = state.lists[Math.floor(Math.random() * state.lists.length)];
+    // Pick the top-ranked list deterministically (backend already sorts by
+    // official + popularity). Random selection can land users on an empty list
+    // and create a false "sync is broken" impression.
+    const pick = state.lists[0];
     state.selectedListId = pick.list_id;
     state.selectedListTitle = pick.title;
     currentProfileSpan.textContent = state.selectedListTitle;
@@ -464,11 +467,22 @@ async function loadDeck() {
     if (state.deck.length > 0) {
       renderDeck();
     } else {
-      setEmptyState(
-        '🎬',
-        'No movies to show',
-        'Open the Chrome extension popup and click Start Sync to load your Letterboxd data into Swiperboxd.',
-      );
+      if (state.hasSynced) {
+        const listLabel = state.selectedListTitle && state.selectedListTitle !== 'Choose a List'
+          ? `"${state.selectedListTitle}"`
+          : 'This list';
+        setEmptyState(
+          '🎬',
+          'No movies left in this list',
+          `${listLabel} has no unseen movies for your account right now. Try another list, or run Start Sync to pull in more data.`,
+        );
+      } else {
+        setEmptyState(
+          '🎬',
+          'No movies to show',
+          'Open the Chrome extension popup and click Start Sync to load your Letterboxd data into Swiperboxd.',
+        );
+      }
     }
   } catch (err) {
     console.error('[deck] load failed:', err.message);

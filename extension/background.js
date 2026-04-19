@@ -871,6 +871,42 @@ async function scrapeMoviesMetadata(cfg, slugs) {
 
 // ── Letterboxd write-back (runs in browser, uses real session cookie) ────────
 
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function extractFilmIdFromHtml(movieSlug, html) {
+  // Prefer the poster block for this exact slug, then fall back to first film-id.
+  const specific = new RegExp(
+    `data-item-slug="${escapeRegExp(movieSlug)}"[^>]*data-film-id="(\\d+)"`,
+    "i",
+  );
+  const exact = html.match(specific);
+  if (exact && exact[1]) return exact[1];
+
+  const generic = html.match(/data-film-id="(\d+)"/i);
+  return generic && generic[1] ? generic[1] : "";
+}
+
+async function postLetterboxdForm(path, params, filmUrl) {
+  const res = await fetch(`${LB_BASE}${path}`, {
+    method: "POST",
+    credentials: "include",
+    headers: {
+      "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+      "X-Requested-With": "XMLHttpRequest",
+      "Referer": filmUrl,
+    },
+    body: new URLSearchParams(params).toString(),
+  });
+  const text = await res.text().catch(() => "");
+  return { ok: res.ok, status: res.status, text };
+}
+
+function shortResponse(text, max = 180) {
+  return String(text || "").replace(/\s+/g, " ").trim().slice(0, max);
+}
+
 async function writeToLetterboxd(action, movieSlug) {
   // Step 1: fetch the film page to get the CSRF token (browser session included)
   const filmUrl = `${LB_BASE}/film/${movieSlug}/`;
@@ -879,6 +915,7 @@ async function writeToLetterboxd(action, movieSlug) {
     headers: { "Accept": "text/html" },
   });
   if (!filmRes.ok) throw new Error(`film page ${filmRes.status}`);
+  const lbIdentifier = filmRes.headers.get("x-letterboxd-identifier") || "";
   const html = await filmRes.text();
 
   // Extract __csrf token — present in a hidden input on every authenticated page
@@ -886,40 +923,71 @@ async function writeToLetterboxd(action, movieSlug) {
     || html.match(/<meta[^>]+name="csrf-token"[^>]+content="([^"]+)"/);
   if (!csrfMatch) throw new Error("CSRF token not found — are you signed in to Letterboxd?");
   const csrf = csrfMatch[1];
+  const filmId = extractFilmIdFromHtml(movieSlug, html);
+  log(`[lb-write] action=${action} slug=${movieSlug} filmId=${filmId || "(none)"} lid=${lbIdentifier || "(none)"}`);
 
   if (action === "watchlist") {
-    // Letterboxd watchlist toggle endpoint (AJAX, used by the web UI)
-    const res = await fetch(`${LB_BASE}/s/save-film-watch`, {
-      method: "POST",
-      credentials: "include",
-      headers: {
-        "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-        "X-Requested-With": "XMLHttpRequest",
-        "Referer": filmUrl,
-      },
-      body: new URLSearchParams({
+    // Legacy endpoint used by older Letterboxd markup.
+    const legacy = await postLetterboxdForm(
+      "/s/save-film-watch",
+      {
         __csrf: csrf,
         filmSlug: movieSlug,
         inWatchlist: "true",
-      }).toString(),
-    });
-    if (!res.ok) throw new Error(`watchlist write ${res.status}`);
-    log(`[lb-write] watchlist added: ${movieSlug}`);
-    return true;
+      },
+      filmUrl,
+    );
+    if (legacy.ok) {
+      log(`[lb-write] watchlist added via legacy endpoint: ${movieSlug}`);
+      return true;
+    }
+
+    // Modern Letterboxd flow uses add-film-to-list with filmId.
+    if (filmId) {
+      const modern = await postLetterboxdForm(
+        "/s/add-film-to-list",
+        { __csrf: csrf, filmId: String(filmId) },
+        filmUrl,
+      );
+      if (modern.ok) {
+        log(`[lb-write] watchlist added via /s/add-film-to-list: ${movieSlug}`);
+        return true;
+      }
+
+      // Additional fallback used by bulk-watchlist actions.
+      const bulk = await postLetterboxdForm(
+        "/watchlist/add-films/",
+        {
+          __csrf: csrf,
+          filmId: String(filmId),
+          filmIds: String(filmId),
+          "filmIds[]": String(filmId),
+        },
+        filmUrl,
+      );
+      if (bulk.ok) {
+        log(`[lb-write] watchlist added via /watchlist/add-films/: ${movieSlug}`);
+        return true;
+      }
+
+      throw new Error(
+        `watchlist write failed legacy=${legacy.status} modern=${modern.status} bulk=${bulk.status} `
+        + `legacyBody="${shortResponse(legacy.text)}" modernBody="${shortResponse(modern.text)}" bulkBody="${shortResponse(bulk.text)}"`
+      );
+    }
+
+    throw new Error(
+      `watchlist write failed legacy=${legacy.status}; could not resolve filmId; `
+      + `legacyBody="${shortResponse(legacy.text)}"`
+    );
   }
 
   if (action === "log") {
     // Diary save endpoint — logs the film as watched today
     const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
-    const res = await fetch(`${LB_BASE}/s/save-film-watch`, {
-      method: "POST",
-      credentials: "include",
-      headers: {
-        "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-        "X-Requested-With": "XMLHttpRequest",
-        "Referer": filmUrl,
-      },
-      body: new URLSearchParams({
+    const legacy = await postLetterboxdForm(
+      "/s/save-film-watch",
+      {
         __csrf: csrf,
         filmSlug: movieSlug,
         viewingDateStr: today,
@@ -928,11 +996,47 @@ async function writeToLetterboxd(action, movieSlug) {
         rating: "",
         review: "",
         containsSpoilers: "false",
-      }).toString(),
-    });
-    if (!res.ok) throw new Error(`diary write ${res.status}`);
-    log(`[lb-write] diary logged: ${movieSlug}`);
-    return true;
+      },
+      filmUrl,
+    );
+    if (legacy.ok) {
+      log(`[lb-write] diary logged via legacy endpoint: ${movieSlug}`);
+      return true;
+    }
+
+    // Modern diary form endpoint.
+    if (filmId) {
+      const modern = await postLetterboxdForm(
+        "/s/save-diary-entry",
+        {
+          __csrf: csrf,
+          viewingId: "",
+          viewingableUid: `film:${filmId}`,
+          viewingDateStr: today,
+          specifiedDate: "true",
+          rewatch: "false",
+          rating: "",
+          review: "",
+          containsSpoilers: "false",
+          tags: "",
+          liked: "false",
+        },
+        filmUrl,
+      );
+      if (modern.ok) {
+        log(`[lb-write] diary logged via /s/save-diary-entry: ${movieSlug}`);
+        return true;
+      }
+      throw new Error(
+        `diary write failed legacy=${legacy.status} modern=${modern.status} `
+        + `legacyBody="${shortResponse(legacy.text)}" modernBody="${shortResponse(modern.text)}"`
+      );
+    }
+
+    throw new Error(
+      `diary write failed legacy=${legacy.status}; could not resolve filmId; `
+      + `legacyBody="${shortResponse(legacy.text)}"`
+    );
   }
 
   return false; // dismiss — no Letterboxd write needed
