@@ -52,11 +52,7 @@ const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => document.querySelectorAll(sel);
 
 const setupScreen     = $('#setup-screen');
-const authScreen      = $('#auth-screen');
 const discoveryScreen = $('#discovery-screen');
-const loginForm       = $('#letterboxd-login-form');
-const errorDiv        = $('#auth-error');
-const successDiv      = $('#auth-success');
 const cardStack       = $('#card-stack');
 const loadingSkeleton = $('#loading-skeleton');
 const emptyState      = $('#empty-state');

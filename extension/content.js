@@ -8,6 +8,22 @@ window.addEventListener("message", (event) => {
   const data = event.data;
   if (!data || !data.type) return;
 
+  // Webapp requesting auth state from extension
+  if (data.type === "SWIPERBOXD_GET_AUTH") {
+    try {
+      chrome.runtime.sendMessage({ type: "GET_WEBAPP_AUTH" }, (resp) => {
+        if (chrome.runtime.lastError) {
+          window.postMessage({ type: "SWIPERBOXD_AUTH_RESULT", ok: false, error: chrome.runtime.lastError.message }, window.location.origin);
+          return;
+        }
+        window.postMessage({ type: "SWIPERBOXD_AUTH_RESULT", ...resp }, window.location.origin);
+      });
+    } catch (e) {
+      window.postMessage({ type: "SWIPERBOXD_AUTH_RESULT", ok: false, error: e.message }, window.location.origin);
+    }
+    return;
+  }
+
   // Forward auth credentials to service worker
   if (data.type === "SWIPERBOXD_AUTH") {
     if (!data.username || !data.sessionToken) return;
