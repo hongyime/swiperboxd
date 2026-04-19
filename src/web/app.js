@@ -148,11 +148,12 @@ function broadcastAuthToExtension() {
 
 function showAuth() {
   setupScreen.classList.remove('active');
-  authScreen.classList.add('active');
   discoveryScreen.classList.remove('active');
+  authScreen.classList.add('active');
 }
 
 function showDiscovery() {
+  setupScreen.classList.remove('active');
   authScreen.classList.remove('active');
   discoveryScreen.classList.add('active');
   loadLists();

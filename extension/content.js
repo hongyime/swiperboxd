@@ -25,13 +25,27 @@ window.addEventListener("message", (event) => {
   // Forward swipe actions to service worker so it can write to Letterboxd
   if (data.type === "SWIPERBOXD_SWIPE") {
     if (!data.action || !data.movieSlug) return;
+    console.log("[swiperboxd-ext] forwarding swipe to SW:", data.action, data.movieSlug);
+    const replyFail = (error) => window.postMessage({
+      type: "SWIPERBOXD_SWIPE_RESULT",
+      action: data.action,
+      movieSlug: data.movieSlug,
+      lbSynced: false,
+      error,
+    }, window.location.origin);
+
     try {
       chrome.runtime.sendMessage({
         type: "LB_WRITE",
         action: data.action,
         movieSlug: data.movieSlug,
       }, (resp) => {
-        // Relay result back to the web app
+        if (chrome.runtime.lastError) {
+          console.warn("[swiperboxd-ext] SW message error:", chrome.runtime.lastError.message);
+          replyFail(chrome.runtime.lastError.message);
+          return;
+        }
+        console.log("[swiperboxd-ext] LB_WRITE response:", resp);
         window.postMessage({
           type: "SWIPERBOXD_SWIPE_RESULT",
           action: data.action,
@@ -42,6 +56,7 @@ window.addEventListener("message", (event) => {
       });
     } catch (e) {
       console.warn("[swiperboxd-ext] swipe forward failed:", e);
+      replyFail(e.message);
     }
   }
 });
