@@ -127,6 +127,54 @@ window.addEventListener("message", (event) => {
       replyFail(e.message);
     }
   }
+
+  // Trigger initial bidirectional cross-sync from the web app.
+  if (data.type === "SWIPERBOXD_CROSS_SYNC") {
+    contentLog("forwarding cross-sync request to service worker", {
+      requestId: data.requestId || null,
+      maxPushPerKind: data.maxPushPerKind || null,
+    });
+
+    const reply = (payload) => window.postMessage({
+      type: "SWIPERBOXD_CROSS_SYNC_RESULT",
+      requestId: data.requestId || null,
+      ...payload,
+    }, window.location.origin);
+
+    try {
+      chrome.runtime.sendMessage({
+        type: "LB_CROSS_SYNC",
+        maxPushPerKind: data.maxPushPerKind,
+      }, (resp) => {
+        if (chrome.runtime.lastError) {
+          const error = chrome.runtime.lastError.message;
+          contentLog("LB_CROSS_SYNC runtime error", {
+            requestId: data.requestId || null,
+            error,
+          });
+          reply({ ok: false, error, summary: null });
+          return;
+        }
+
+        contentLog("LB_CROSS_SYNC response", {
+          requestId: data.requestId || null,
+          ok: resp?.ok === true,
+          error: resp?.error || null,
+        });
+        reply({
+          ok: resp?.ok === true,
+          error: resp?.error || null,
+          summary: resp || null,
+        });
+      });
+    } catch (e) {
+      contentLog("LB_CROSS_SYNC threw", {
+        requestId: data.requestId || null,
+        error: e.message,
+      });
+      reply({ ok: false, error: e.message, summary: null });
+    }
+  }
 });
 
 // Advertise presence so the web app knows the extension is installed.

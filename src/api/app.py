@@ -263,6 +263,7 @@ class ExtensionMoviePayload(BaseModel):
     cast: list[str] = Field(default_factory=list)
     year: int | None = None
     director: str | None = None
+    lb_film_id: str = ""
 
 
 class ExtensionBatchMoviesRequest(BaseModel):
@@ -364,6 +365,43 @@ def user_sync_status(username: str):
     except Exception as exc:
         print(f"[sync-status] failed for {username}: {exc}", flush=True)
         return {"has_synced": False, "watchlist_count": 0, "diary_count": 0}
+
+
+@app.get("/api/extension/user-history")
+def extension_user_history(
+    verified_user: str = Depends(verify_session),
+    user_id: str | None = Query(default=None),
+    include_watchlist: bool = Query(default=True),
+    include_diary: bool = Query(default=True),
+    limit: int = Query(default=10000, ge=1, le=50000),
+):
+    """Return user watchlist/diary slug sets for extension-side cross-sync.
+
+    Uses the authenticated user from the session token when available.
+    For backward-compatible old-format tokens (no bound username), user_id query
+    is required.
+    """
+    if verified_user and user_id and user_id != verified_user:
+        raise HTTPException(status_code=403, detail={"code": "user_id_mismatch"})
+
+    resolved_user = verified_user or user_id
+    if not resolved_user:
+        raise HTTPException(status_code=400, detail={"code": "user_id_required"})
+
+    try:
+        watchlist_slugs = sorted(store.get_watchlist(resolved_user)) if include_watchlist else []
+        diary_slugs = sorted(store.get_diary(resolved_user)) if include_diary else []
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail={"code": "store_error", "reason": str(exc)}) from exc
+
+    return {
+        "status": "ok",
+        "user_id": resolved_user,
+        "watchlist_slugs": watchlist_slugs[:limit],
+        "diary_slugs": diary_slugs[:limit],
+        "watchlist_count": len(watchlist_slugs),
+        "diary_count": len(diary_slugs),
+    }
 
 
 @app.get("/lists/catalog")
@@ -1031,7 +1069,7 @@ def extension_movies_needing_backfill(
         response = (
             store.client.table("movies")
             .select("slug")
-            .or_("title.is.null,title.eq.,poster_url.is.null,poster_url.eq.,lb_film_id.is.null")
+            .or_("title.is.null,title.eq.,poster_url.is.null,poster_url.eq.,lb_film_id.is.null,lb_film_id.eq.")
             .limit(limit)
             .execute()
         )

@@ -654,6 +654,8 @@ async function scrapeUserHistory(cfg, settings = {}) {
   const doDiary = settings.syncDiary !== false;
   let wl = 0, diary = 0;
   const allSlugs = new Set();
+  const watchlistSlugs = new Set();
+  const diarySlugs = new Set();
 
   if (doWatchlist) {
     syncState.phase = "watchlist";
@@ -673,10 +675,21 @@ async function scrapeUserHistory(cfg, settings = {}) {
         broadcast();
       },
       onSlugsCollected: (slugs) => {
-        slugs.forEach(s => allSlugs.add(s));
+        slugs.forEach((s) => {
+          allSlugs.add(s);
+          watchlistSlugs.add(s);
+        });
       },
     });
-    if (syncState.stopRequested) return { watchlist: wl, diary: 0, stopped: true };
+    if (syncState.stopRequested) {
+      return {
+        watchlist: wl,
+        diary: 0,
+        stopped: true,
+        watchlist_slugs: Array.from(watchlistSlugs),
+        diary_slugs: Array.from(diarySlugs),
+      };
+    }
   }
 
   if (doDiary) {
@@ -697,10 +710,21 @@ async function scrapeUserHistory(cfg, settings = {}) {
         broadcast();
       },
       onSlugsCollected: (slugs) => {
-        slugs.forEach(s => allSlugs.add(s));
+        slugs.forEach((s) => {
+          allSlugs.add(s);
+          diarySlugs.add(s);
+        });
       },
     });
-    if (syncState.stopRequested) return { watchlist: wl, diary, stopped: true };
+    if (syncState.stopRequested) {
+      return {
+        watchlist: wl,
+        diary,
+        stopped: true,
+        watchlist_slugs: Array.from(watchlistSlugs),
+        diary_slugs: Array.from(diarySlugs),
+      };
+    }
   }
 
   // NEW: Fetch metadata for all collected slugs
@@ -724,7 +748,14 @@ async function scrapeUserHistory(cfg, settings = {}) {
 
   syncState.percent = 100;
   broadcast();
-  return { watchlist: wl, diary, stopped: false, metadata_fetched: metadataFetched };
+  return {
+    watchlist: wl,
+    diary,
+    stopped: false,
+    metadata_fetched: metadataFetched,
+    watchlist_slugs: Array.from(watchlistSlugs),
+    diary_slugs: Array.from(diarySlugs),
+  };
 }
 
 function parseListUrl(rawUrl) {
@@ -888,6 +919,33 @@ function extractFilmIdFromHtml(movieSlug, html) {
   return generic && generic[1] ? generic[1] : "";
 }
 
+function collectFilmIdCandidates(movieSlug, html, lbIdentifier = "") {
+  const candidates = [];
+  const seen = new Set();
+
+  const add = (raw) => {
+    const value = String(raw || "").trim();
+    if (!value || !/^\d+$/.test(value) || seen.has(value)) return;
+    seen.add(value);
+    candidates.push(value);
+  };
+
+  add(extractFilmIdFromHtml(movieSlug, html));
+
+  const byViewingableUid = html.match(/viewingableUid[^\d]{0,20}film:(\d+)/i);
+  if (byViewingableUid && byViewingableUid[1]) add(byViewingableUid[1]);
+
+  const byFilmUrl = new RegExp(
+    `href="/film/${escapeRegExp(movieSlug)}/[^\"]*"[^>]*data-film-id="(\\d+)"`,
+    "i",
+  );
+  const slugScoped = html.match(byFilmUrl);
+  if (slugScoped && slugScoped[1]) add(slugScoped[1]);
+
+  add(lbIdentifier);
+  return candidates;
+}
+
 function extractRealCsrfFromHtml(html) {
   // Modern Letterboxd pages expose runtime CSRF in inline script.
   const scriptMatches = [...html.matchAll(/supermodelCSRF\s*=\s*'([^']*)'/g)];
@@ -950,32 +1008,63 @@ function summarizeAttempt(attempts) {
     .join(" | ");
 }
 
-async function verifyWatchlistContainsSlug(username, movieSlug, maxPages = 2) {
-  if (!username) return { verified: false, reason: "no_username" };
+async function verifyWatchlistContainsSlug(username, movieSlug, opts = {}) {
+  const maxPages = Math.max(1, Number(opts.maxPages || 2));
+  const maxProbes = Math.max(1, Number(opts.maxProbes || 3));
+  const delayMs = Math.max(0, Number(opts.delayMs || 250));
+  const includeGenericPath = opts.includeGenericPath !== false;
 
-  // Give Letterboxd a brief moment to persist UI-side writes before checking.
-  for (let probe = 1; probe <= 3; probe++) {
-    for (let page = 1; page <= maxPages; page++) {
-      const path = page === 1
+  const pathBuilders = [];
+  if (username) {
+    pathBuilders.push({
+      name: "username_watchlist",
+      makePath: (page) => page === 1
         ? `/${encodeURIComponent(username)}/watchlist/`
-        : `/${encodeURIComponent(username)}/watchlist/page/${page}/`;
-      let html;
-      try {
-        html = await fetchLetterboxdPage(path);
-      } catch (e) {
-        return { verified: false, reason: `verify_fetch_failed:${e.message}` };
-      }
+        : `/${encodeURIComponent(username)}/watchlist/page/${page}/`,
+    });
+  }
+  if (includeGenericPath) {
+    pathBuilders.push({
+      name: "generic_watchlist",
+      makePath: (page) => page === 1 ? "/watchlist/" : `/watchlist/page/${page}/`,
+    });
+  }
 
-      const slugs = extractSlugsFromHtml(html);
-      if (slugs.includes(movieSlug)) {
-        return { verified: true, reason: `found_on_page_${page}` };
-      }
+  let lastFetchError = "";
+  let hadSuccessfulFetch = false;
 
-      const total = detectTotalPages(html) || 1;
-      if (page >= total) break;
+  // Give Letterboxd enough time to persist user-side writes before checking.
+  for (let probe = 1; probe <= maxProbes; probe++) {
+    for (const pathBuilder of pathBuilders) {
+      for (let page = 1; page <= maxPages; page++) {
+        const path = pathBuilder.makePath(page);
+        let html;
+        try {
+          html = await fetchLetterboxdPage(path);
+          hadSuccessfulFetch = true;
+        } catch (e) {
+          lastFetchError = `${path}:${e.message}`;
+          break;
+        }
+
+        const slugs = extractSlugsFromHtml(html);
+        if (slugs.includes(movieSlug)) {
+          return {
+            verified: true,
+            reason: `found_on_page_${page}:${pathBuilder.name}:probe_${probe}`,
+          };
+        }
+
+        const total = Math.min(maxPages, detectTotalPages(html) || 1);
+        if (page >= total) break;
+      }
     }
 
-    if (probe < 3) await sleep(250);
+    if (probe < maxProbes) await sleep(delayMs);
+  }
+
+  if (!hadSuccessfulFetch && lastFetchError) {
+    return { verified: false, reason: `verify_fetch_failed:${lastFetchError}` };
   }
 
   return { verified: false, reason: "slug_not_found_in_watchlist" };
@@ -1025,13 +1114,15 @@ async function writeToLetterboxd(action, movieSlug) {
   const csrf = extractRealCsrfFromHtml(html);
   if (!csrf) throw new Error("CSRF token not found — sign in to Letterboxd again and retry.");
 
-  const filmId = extractFilmIdFromHtml(movieSlug, html);
+  const filmIdCandidates = collectFilmIdCandidates(movieSlug, html, lbIdentifier);
+  const filmId = filmIdCandidates[0] || "";
   const signedIn = isSignedInFilmHtml(html);
   const watchlistPath = extractWatchlistActionPathFromHtml(html);
   const diaryPath = extractDiaryActionPathFromHtml(html);
   log(
     `[lb-write] action=${action} slug=${movieSlug} filmId=${filmId || "(none)"} `
-    + `lid=${lbIdentifier || "(none)"} signedIn=${signedIn} watchlistPath=${watchlistPath} diaryPath=${diaryPath}`
+    + `lid=${lbIdentifier || "(none)"} candidates=${filmIdCandidates.join(",") || "(none)"} `
+    + `signedIn=${signedIn} watchlistPath=${watchlistPath} diaryPath=${diaryPath}`
   );
 
   const cfg = await getConfig();
@@ -1044,7 +1135,12 @@ async function writeToLetterboxd(action, movieSlug) {
       const res = await postLetterboxdForm(path, params, filmUrl);
       let verification = { verified: false, reason: "request_not_ok" };
       if (res.ok) {
-        verification = await verifyWatchlistContainsSlug(username, movieSlug);
+        verification = await verifyWatchlistContainsSlug(username, movieSlug, {
+          maxPages: 2,
+          maxProbes: 3,
+          delayMs: 250,
+          includeGenericPath: true,
+        });
       }
       const attempt = {
         name,
@@ -1059,24 +1155,26 @@ async function writeToLetterboxd(action, movieSlug) {
     }
 
     // Prefer watchlist-specific endpoint first.
-    if (filmId) {
-      const ok = await tryWatchlistEndpoint(
-        "watchlist_action_markup",
-        watchlistPath,
-        {
-          __csrf: csrf,
-          filmId: String(filmId),
-          filmIds: String(filmId),
-          "filmIds[]": String(filmId),
-          films: String(filmId),
-          filmSlug: movieSlug,
-          filmSlugs: movieSlug,
-          "filmSlugs[]": movieSlug,
-        },
-      );
-      if (ok) {
-        log(`[lb-write] watchlist added via /watchlist/add-films/: ${movieSlug}`);
-        return true;
+    if (filmIdCandidates.length) {
+      for (const candidateId of filmIdCandidates) {
+        const ok = await tryWatchlistEndpoint(
+          `watchlist_action_markup#${candidateId}`,
+          watchlistPath,
+          {
+            __csrf: csrf,
+            filmId: String(candidateId),
+            filmIds: String(candidateId),
+            "filmIds[]": String(candidateId),
+            films: String(candidateId),
+            filmSlug: movieSlug,
+            filmSlugs: movieSlug,
+            "filmSlugs[]": movieSlug,
+          },
+        );
+        if (ok) {
+          log(`[lb-write] watchlist added via /watchlist/add-films/: ${movieSlug}`);
+          return true;
+        }
       }
     }
 
@@ -1098,15 +1196,17 @@ async function writeToLetterboxd(action, movieSlug) {
     }
 
     // Keep as last fallback, but no longer trust HTTP 200 without verification.
-    if (filmId) {
-      const ok = await tryWatchlistEndpoint(
-        "add_film_to_list",
-        "/s/add-film-to-list",
-        { __csrf: csrf, filmId: String(filmId) },
-      );
-      if (ok) {
-        log(`[lb-write] watchlist added via /s/add-film-to-list: ${movieSlug}`);
-        return true;
+    if (filmIdCandidates.length) {
+      for (const candidateId of filmIdCandidates) {
+        const ok = await tryWatchlistEndpoint(
+          `add_film_to_list#${candidateId}`,
+          "/s/add-film-to-list",
+          { __csrf: csrf, filmId: String(candidateId) },
+        );
+        if (ok) {
+          log(`[lb-write] watchlist added via /s/add-film-to-list: ${movieSlug}`);
+          return true;
+        }
       }
     }
 
@@ -1363,6 +1463,167 @@ async function runSync(opts = {}) {
   }
 }
 
+async function fetchSupabaseUserHistory(cfg, userId) {
+  if (!userId) throw new Error("missing userId for user-history lookup");
+  const url = `${cfg.apiBase || DEFAULT_API_BASE}/api/extension/user-history?user_id=${encodeURIComponent(userId)}&include_watchlist=true&include_diary=true&limit=10000`;
+  const res = await fetchWithRetry(url, {
+    method: "GET",
+    headers: cfg.sessionToken ? { "X-Session-Token": cfg.sessionToken } : {},
+  });
+  if (!res.ok) {
+    const txt = await res.text().catch(() => "");
+    throw new Error(`user-history ${res.status}: ${txt.slice(0, 240)}`);
+  }
+  const payload = await res.json().catch(() => ({}));
+  return {
+    watchlist_slugs: Array.isArray(payload.watchlist_slugs) ? payload.watchlist_slugs : [],
+    diary_slugs: Array.isArray(payload.diary_slugs) ? payload.diary_slugs : [],
+  };
+}
+
+async function runCrossSync(opts = {}) {
+  if (syncState.running) return { ok: false, error: "already running" };
+
+  const rawMaxPush = Number.isFinite(Number(opts.maxPushPerKind))
+    ? Number(opts.maxPushPerKind)
+    : 300;
+  const maxPushPerKind = Math.max(0, Math.min(2000, Math.floor(rawMaxPush)));
+
+  resetState("cross_sync", "cross-sync starting");
+  broadcast();
+
+  await chrome.storage.local.set({ [SYNC_RUNNING_KEY]: true });
+
+  const summary = {
+    watchlistPulled: 0,
+    diaryPulled: 0,
+    watchlistPending: 0,
+    diaryPending: 0,
+    watchlistPushed: 0,
+    diaryPushed: 0,
+    watchlistFailed: 0,
+    diaryFailed: 0,
+    stopped: false,
+  };
+
+  try {
+    const cfg = await ensureConfig();
+
+    const history = await scrapeUserHistory(cfg, { syncWatchlist: true, syncDiary: true });
+    summary.watchlistPulled = history.watchlist || 0;
+    summary.diaryPulled = history.diary || 0;
+
+    if (syncState.stopRequested || history.stopped) {
+      summary.stopped = true;
+      syncState.phase = "idle";
+      syncState.percent = 0;
+      return { ok: true, ...summary };
+    }
+
+    const letterboxdWatchlist = new Set(history.watchlist_slugs || []);
+    const letterboxdDiary = new Set(history.diary_slugs || []);
+
+    const supabaseHistory = await fetchSupabaseUserHistory(cfg, cfg.username);
+    const watchlistToPush = supabaseHistory.watchlist_slugs
+      .filter((slug) => slug && !letterboxdWatchlist.has(slug))
+      .slice(0, maxPushPerKind);
+    const diaryToPush = supabaseHistory.diary_slugs
+      .filter((slug) => slug && !letterboxdDiary.has(slug))
+      .slice(0, maxPushPerKind);
+
+    summary.watchlistPending = watchlistToPush.length;
+    summary.diaryPending = diaryToPush.length;
+
+    log(
+      `[cross-sync] pending pushes watchlist=${summary.watchlistPending} `
+      + `diary=${summary.diaryPending} maxPushPerKind=${maxPushPerKind}`
+    );
+
+    syncState.phase = "cross_push_watchlist";
+    syncState.currentPage = 0;
+    syncState.totalPages = watchlistToPush.length;
+    syncState.percent = 75;
+    broadcast();
+
+    for (let i = 0; i < watchlistToPush.length; i++) {
+      if (syncState.stopRequested) {
+        summary.stopped = true;
+        break;
+      }
+      const slug = watchlistToPush[i];
+      syncState.currentPage = i + 1;
+      syncState.percent = 75 + Math.floor(((i + 1) / Math.max(1, watchlistToPush.length)) * 12);
+      broadcast();
+      try {
+        const ok = await writeToLetterboxd("watchlist", slug);
+        if (ok) summary.watchlistPushed += 1;
+        else summary.watchlistFailed += 1;
+      } catch (e) {
+        summary.watchlistFailed += 1;
+        log(`[cross-sync] watchlist push failed slug=${slug}: ${e.message}`);
+      }
+      await sleep(350);
+    }
+
+    if (!summary.stopped) {
+      syncState.phase = "cross_push_diary";
+      syncState.currentPage = 0;
+      syncState.totalPages = diaryToPush.length;
+      syncState.percent = 87;
+      broadcast();
+
+      for (let i = 0; i < diaryToPush.length; i++) {
+        if (syncState.stopRequested) {
+          summary.stopped = true;
+          break;
+        }
+        const slug = diaryToPush[i];
+        syncState.currentPage = i + 1;
+        syncState.percent = 87 + Math.floor(((i + 1) / Math.max(1, diaryToPush.length)) * 12);
+        broadcast();
+        try {
+          const ok = await writeToLetterboxd("log", slug);
+          if (ok) summary.diaryPushed += 1;
+          else summary.diaryFailed += 1;
+        } catch (e) {
+          summary.diaryFailed += 1;
+          log(`[cross-sync] diary push failed slug=${slug}: ${e.message}`);
+        }
+        await sleep(350);
+      }
+    }
+
+    if (summary.stopped) {
+      syncState.phase = "idle";
+      syncState.percent = 0;
+      await reportStatus(cfg, "idle", { message: "cross-sync stopped by user" });
+    } else {
+      syncState.phase = "complete";
+      syncState.percent = 100;
+      await reportStatus(cfg, "complete", {
+        slugs_found: summary.watchlistPulled + summary.diaryPulled,
+      });
+      await chrome.storage.local.set({ lastCrossSync: Date.now() });
+    }
+
+    log(
+      `[cross-sync] done pulled watchlist=${summary.watchlistPulled} diary=${summary.diaryPulled} `
+      + `pushed watchlist=${summary.watchlistPushed}/${summary.watchlistPending} `
+      + `diary=${summary.diaryPushed}/${summary.diaryPending}`
+    );
+    return { ok: true, ...summary };
+  } catch (e) {
+    syncState.phase = "error";
+    syncState.percent = -1;
+    log(`[cross-sync] FATAL: ${e.message}`);
+    return { ok: false, error: e.message, ...summary };
+  } finally {
+    syncState.running = false;
+    broadcast();
+    chrome.storage.local.set({ [SYNC_RUNNING_KEY]: false }).catch(() => {});
+  }
+}
+
 async function runListScrape(listUrl, opts = {}) {
   if (syncState.running) return { ok: false, error: "already running" };
   syncState = { ...syncState, running: true, stopRequested: false, phase: "list", percent: 0, lastLog: "list scrape starting" };
@@ -1493,19 +1754,57 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
           sendResponse({ ok: false, error: e.message });
         }
         return;
+      case "LB_CROSS_SYNC":
+        sendResponse(await runCrossSync({ maxPushPerKind: msg.maxPushPerKind }));
+        return;
       case "BACKFILL":
         try {
           const cfgB = await ensureConfig();
-          const urlB = `${cfgB.apiBase || DEFAULT_API_BASE}/api/extension/movies-needing-backfill?limit=500`;
-          const resB = await fetchWithRetry(urlB, {
-            headers: cfgB.sessionToken ? { "X-Session-Token": cfgB.sessionToken } : {},
+          const limit = 500;
+          const maxRounds = 8;
+          const seenSlugs = new Set();
+          let rounds = 0;
+          let totalProcessed = 0;
+          let totalCandidates = 0;
+
+          while (rounds < maxRounds) {
+            rounds += 1;
+            const urlB = `${cfgB.apiBase || DEFAULT_API_BASE}/api/extension/movies-needing-backfill?limit=${limit}`;
+            const resB = await fetchWithRetry(urlB, {
+              headers: cfgB.sessionToken ? { "X-Session-Token": cfgB.sessionToken } : {},
+            });
+            if (!resB.ok) throw new Error(`movies-needing-backfill ${resB.status}`);
+
+            const payloadB = await resB.json().catch(() => ({}));
+            const backfillSlugs = Array.isArray(payloadB.slugs) ? payloadB.slugs : [];
+            totalCandidates += backfillSlugs.length;
+            log(`backfill round=${rounds}: fetched ${backfillSlugs.length} candidate slugs`);
+
+            if (!backfillSlugs.length) break;
+
+            const slugsToProcess = backfillSlugs.filter((slug) => {
+              if (!slug || seenSlugs.has(slug)) return false;
+              seenSlugs.add(slug);
+              return true;
+            });
+
+            if (!slugsToProcess.length) {
+              log("backfill: no new slugs to process; stopping early to avoid looping the same 500 records");
+              break;
+            }
+
+            const resultB = await runMetadataScrape(slugsToProcess);
+            totalProcessed += Number(resultB.processed || 0);
+
+            if (backfillSlugs.length < limit) break;
+          }
+
+          sendResponse({
+            ok: true,
+            processed: totalProcessed,
+            rounds,
+            candidates: totalCandidates,
           });
-          if (!resB.ok) throw new Error(`movies-needing-backfill ${resB.status}`);
-          const { slugs: backfillSlugs, count: backfillCount } = await resB.json();
-          log(`backfill: ${backfillCount} movies need metadata`);
-          if (!backfillSlugs.length) { sendResponse({ ok: true, processed: 0 }); return; }
-          const resultB = await runMetadataScrape(backfillSlugs);
-          sendResponse({ ok: true, ...resultB });
         } catch (e) {
           sendResponse({ ok: false, error: e.message });
         }

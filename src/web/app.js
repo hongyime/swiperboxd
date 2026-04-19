@@ -55,11 +55,15 @@ const extensionBridge = {
   presentSignals: [],
   authAttempts: 0,
   swipeAttempts: 0,
+  crossSyncAttempts: 0,
   lastAuthRequestId: null,
   lastAuthError: null,
   lastAuthStartedAt: null,
   lastAuthCompletedAt: null,
 };
+
+const CROSS_SYNC_COOLDOWN_MS = 6 * 60 * 60 * 1000;
+const crossSyncAttemptedUsers = new Set();
 
 function extLog(message, meta) {
   const ts = new Date().toISOString();
@@ -106,7 +110,7 @@ window.addEventListener('message', (event) => {
   }
 });
 
-function requestExtensionSwipe(action, movieSlug, timeoutMs = 8000) {
+function requestExtensionSwipe(action, movieSlug, timeoutMs = 20000) {
   return new Promise((resolve) => {
     const requestId = `swipe-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     extensionBridge.swipeAttempts += 1;
@@ -167,6 +171,103 @@ function requestExtensionSwipe(action, movieSlug, timeoutMs = 8000) {
       action,
       movieSlug,
       requestId,
+      sentAt: Date.now(),
+    }, window.location.origin);
+  });
+}
+
+function crossSyncStorageKey(username) {
+  return `swiperboxd.cross-sync.${String(username || '').toLowerCase()}`;
+}
+
+function shouldRunCrossSync(username) {
+  if (!username) return false;
+  try {
+    const key = crossSyncStorageKey(username);
+    const last = Number(localStorage.getItem(key) || '0');
+    if (!Number.isFinite(last) || last <= 0) return true;
+    return (Date.now() - last) >= CROSS_SYNC_COOLDOWN_MS;
+  } catch {
+    return true;
+  }
+}
+
+function markCrossSyncSuccess(username) {
+  if (!username) return;
+  try {
+    localStorage.setItem(crossSyncStorageKey(username), String(Date.now()));
+  } catch {
+    // ignore storage errors; cross-sync can still run again later
+  }
+}
+
+function setCrossSyncBadge(variant = 'idle', text = 'Sync pending') {
+  const badge = $('#cross-sync-badge');
+  if (!badge) return;
+  badge.classList.remove('sync-badge-idle', 'sync-badge-running', 'sync-badge-success', 'sync-badge-error');
+  badge.classList.add(`sync-badge-${variant}`);
+  badge.textContent = text;
+}
+
+function requestExtensionCrossSync(timeoutMs = 180000, maxPushPerKind = 300) {
+  return new Promise((resolve) => {
+    const requestId = `cross-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    extensionBridge.crossSyncAttempts += 1;
+    extLog('starting cross-sync bridge request', {
+      requestId,
+      timeoutMs,
+      maxPushPerKind,
+      attempt: extensionBridge.crossSyncAttempts,
+      diagnostics: extensionDiagnostics(),
+    });
+
+    const timer = setTimeout(() => {
+      window.removeEventListener('message', handler);
+      extLog('cross-sync bridge timed out', {
+        requestId,
+        diagnostics: extensionDiagnostics(),
+      });
+      resolve({
+        ok: false,
+        error: 'cross-sync timed out — open extension popup and run Start Sync once, then retry.',
+        requestId,
+        summary: null,
+      });
+    }, timeoutMs);
+
+    function handler(event) {
+      if (event.source !== window) return;
+      const d = event.data;
+      if (d?.type === 'SWIPERBOXD_EXT_PRESENT') noteExtensionPresence(d);
+      if (d?.type === 'SWIPERBOXD_CROSS_SYNC_RESULT') {
+        if (d.requestId && d.requestId !== requestId) {
+          extLog('ignoring cross-sync result for different request id', {
+            expected: requestId,
+            actual: d.requestId,
+          });
+          return;
+        }
+        clearTimeout(timer);
+        window.removeEventListener('message', handler);
+        extLog('received cross-sync bridge response', {
+          requestId,
+          ok: d.ok === true,
+          error: d.error || null,
+        });
+        resolve({
+          ok: d.ok === true,
+          error: d.error || null,
+          summary: d.summary || null,
+          requestId: d.requestId || requestId,
+        });
+      }
+    }
+
+    window.addEventListener('message', handler);
+    window.postMessage({
+      type: 'SWIPERBOXD_CROSS_SYNC',
+      requestId,
+      maxPushPerKind,
       sentAt: Date.now(),
     }, window.location.origin);
   });
@@ -321,6 +422,42 @@ function checkSavedSession() {
   });
 }
 
+async function maybeRunInitialCrossSync() {
+  const username = state.username;
+  if (!username || username === '_guest_') return;
+  if (crossSyncAttemptedUsers.has(username)) return;
+  if (!shouldRunCrossSync(username)) {
+    setCrossSyncBadge('success', 'Synced');
+    return;
+  }
+
+  crossSyncAttemptedUsers.add(username);
+  setCrossSyncBadge('running', 'Syncing…');
+  showToast('Syncing Letterboxd ↔ Supabase…');
+
+  const result = await requestExtensionCrossSync(180000, 300);
+  if (!result.ok) {
+    setCrossSyncBadge('error', 'Sync failed');
+    extLog('initial cross-sync failed', {
+      username,
+      requestId: result.requestId || null,
+      error: result.error || null,
+    });
+    showToast(result.error || 'Cross-sync failed — open extension popup and run Start Sync');
+    return;
+  }
+
+  markCrossSyncSuccess(username);
+  const summary = result.summary || {};
+  const pulled = Number(summary.watchlistPulled || 0) + Number(summary.diaryPulled || 0);
+  const pushed = Number(summary.watchlistPushed || 0) + Number(summary.diaryPushed || 0);
+  setCrossSyncBadge('success', `Synced • +${pulled}/${pushed}`);
+  showToast(`Cross-sync complete • pulled ${pulled}, pushed ${pushed}`);
+
+  // Refresh synced-state and deck once cross-sync has completed.
+  await loadLists(state.listSearchQuery || '');
+}
+
 function applyWriteAccess() {
   const hint = $('#browse-mode-hint');
   const watchlistBtn = $('#btn-watchlist');
@@ -343,6 +480,7 @@ function applyWriteAccess() {
 function showDiscovery() {
   setupScreen.classList.remove('active');
   discoveryScreen.classList.add('active');
+  setCrossSyncBadge('idle', 'Sync pending');
   loadLists();
 }
 
@@ -437,6 +575,14 @@ async function loadLists(query = '') {
   }
 
   applyWriteAccess();
+  if (!state.username || state.username === '_guest_') {
+    setCrossSyncBadge('idle', 'Connect extension');
+  } else if (!shouldRunCrossSync(state.username)) {
+    setCrossSyncBadge('success', 'Synced');
+  } else {
+    setCrossSyncBadge('idle', 'Sync pending');
+  }
+  void maybeRunInitialCrossSync();
   if (state.selectedListId) loadDeck();
 }
 

@@ -42,7 +42,7 @@ def test_encrypt_roundtrip():
 
 def test_auth_session_endpoint(monkeypatch):
     import src.api.app as app_module
-    monkeypatch.setattr(app_module, "_validate_letterboxd_session", lambda username, cookie: None)
+    monkeypatch.setattr(app_module, "_extract_username_from_cookie", lambda cookie: "u")
     response = client.post("/auth/session", json={"username": "u", "session_cookie": "fake-session-value"})
     assert response.status_code == 200
     body = response.json()
@@ -117,6 +117,66 @@ def test_list_catalog_returns_mixed_lists():
     assert payload["results"]
     assert any(item["is_official"] for item in payload["results"])
     assert any(not item["is_official"] for item in payload["results"])
+
+
+def test_extension_user_history_exports_watchlist_and_diary_sets():
+    seed_watchlist = client.post(
+        "/api/extension/batch/watchlist",
+        headers=_NEW_FORMAT_HEADERS,
+        json={
+            "user_id": "testuser",
+            "slugs": ["film-c", "film-d"],
+        },
+    )
+    assert seed_watchlist.status_code == 200
+
+    seed_diary = client.post(
+        "/api/extension/batch/diary",
+        headers=_NEW_FORMAT_HEADERS,
+        json={
+            "user_id": "testuser",
+            "slugs": ["film-a"],
+        },
+    )
+    assert seed_diary.status_code == 200
+
+    response = client.get("/api/extension/user-history", headers=_NEW_FORMAT_HEADERS)
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "ok"
+    assert body["user_id"] == "testuser"
+    assert "film-c" in body["watchlist_slugs"]
+    assert "film-d" in body["watchlist_slugs"]
+    assert "film-a" in body["diary_slugs"]
+
+
+def test_extension_batch_movies_persists_lb_film_id():
+    import src.api.app as app_module
+
+    response = client.post(
+        "/api/extension/batch/movies",
+        headers=_NEW_FORMAT_HEADERS,
+        json={
+            "movies": [
+                {
+                    "slug": "film-lid",
+                    "title": "Film With LID",
+                    "poster_url": "https://example.com/poster.jpg",
+                    "rating": 4.1,
+                    "popularity": 101,
+                    "genres": ["Drama"],
+                    "synopsis": "x",
+                    "cast": ["A", "B"],
+                    "lb_film_id": "123456",
+                }
+            ]
+        },
+    )
+    assert response.status_code == 200
+
+    movie = app_module.store.get_movie("film-lid")
+    assert movie is not None
+    assert movie["lb_film_id"] == "123456"
 
 
 def test_list_detail_returns_preview():
