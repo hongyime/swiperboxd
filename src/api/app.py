@@ -613,7 +613,15 @@ def list_deck(list_id: str, user_id: str = Query(min_length=1)):
         import random as _random
         _random.shuffle(movies)
 
-    print(f"[deck] list={list_id} total={len(movie_slugs)} after_filter={len(movies)} seen={len(seen)}", flush=True)
+    print(
+        f"[deck] list={list_id} total_in_list={len(movie_slugs)} "
+        f"with_metadata={len([m for m in movies if m])} "
+        f"after_filter={len(movies)} "
+        f"seen={len(seen)} "
+        f"watchlist={len(watchlist)} diary={len(diary)} exclusions={len(exclusions)} "
+        f"returned={len(movies[:20])}",
+        flush=True,
+    )
     return {
         "status": "ok",
         "list": summary,

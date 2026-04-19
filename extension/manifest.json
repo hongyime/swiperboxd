@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Swiperboxd Sync",
   "description": "Sync your Letterboxd watchlist and diary into Swiperboxd using your own browser session.",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "action": {
     "default_popup": "popup.html",
     "default_icon": {

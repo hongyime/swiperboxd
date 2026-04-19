@@ -928,6 +928,9 @@ function collectFilmIdCandidates(movieSlug, html, lbIdentifier = "") {
   const add = (raw) => {
     const value = String(raw || "").trim();
     if (!value || !/^\d+$/.test(value) || seen.has(value)) return;
+    // Reject obvious non-filmId values (too small, likely list/session IDs)
+    const numVal = parseInt(value, 10);
+    if (numVal < 1000) return; // Film IDs are typically 5+ digits
     seen.add(value);
     candidates.push(value);
   };
@@ -944,7 +947,7 @@ function collectFilmIdCandidates(movieSlug, html, lbIdentifier = "") {
   const slugScoped = html.match(byFilmUrl);
   if (slugScoped && slugScoped[1]) add(slugScoped[1]);
 
-  add(lbIdentifier);
+  // Do NOT add lbIdentifier as fallback — it's not a filmId (likely session or list ID)
   return candidates;
 }
 
@@ -1137,10 +1140,20 @@ async function writeToLetterboxd(action, movieSlug) {
     const attempts = [];
 
     async function tryWatchlistEndpoint(name, path, params) {
-      log(`[lb-write] trying ${name} with params: filmId=${params.filmId||params["filmIds[]"]||"(none)"} filmSlug=${params.filmSlug||"(none)"}`);
+      const usedFilmId = params.filmId || params["filmIds[]"] || "(none)";
+      log(`[lb-write] trying ${name} filmId=${usedFilmId} candidates=${filmIdCandidates.join(",")}`);
       const res = await postLetterboxdForm(path, params, filmUrl);
       let verification = { verified: false, reason: "request_not_ok" };
       if (res.ok) {
+        // If HTML extraction didn't find valid ID, try parsing response JSON
+        if (!filmIdCandidates.length && res.text && res.text.includes('"filmId"')) {
+          try {
+            const json = JSON.parse(res.text);
+            if (json.filmId) {
+              log(`[lb-write] extracted filmId=${json.filmId} from response (no candidates found in HTML)`);
+            }
+          } catch (_) {}
+        }
         verification = await verifyWatchlistContainsSlug(username, movieSlug, {
           maxPages: 2,
           maxProbes: 3,

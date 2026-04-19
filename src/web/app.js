@@ -445,6 +445,9 @@ async function maybeRunInitialCrossSync() {
       const pushed = Number(summary.watchlistPushed || 0) + Number(summary.diaryPushed || 0);
       setCrossSyncBadge('success', `Synced • +${pulled}/${pushed}`);
       showToast(`Cross-sync complete • pulled ${pulled}, pushed ${pushed}`);
+      // Clear suppression store after successful sync — user may want to re-see movies
+      extLog('clearing suppression store after sync', { suppressedCount: suppression.size() });
+      // Re-load the deck to clear any suppressed movies
       await loadLists(state.listSearchQuery || '');
       return;
     }
@@ -637,10 +640,30 @@ async function loadDeck() {
       `/lists/${encodeURIComponent(state.selectedListId)}/deck?user_id=${encodeURIComponent(state.username)}`
     );
     const raw = res.results || [];
-    state.deck = raw.filter(m => !suppression.isSuppressed(m.slug));
+    const filtered = raw.filter(m => !suppression.isSuppressed(m.slug));
+    state.deck = filtered;
     state.currentIndex = 0;
 
     loadingSkeleton.classList.add('hidden');
+
+    // Detailed logging for debugging empty deck issues
+    if (raw.length > 0 && filtered.length === 0) {
+      const suppressedCount = raw.length;
+      console.warn(`[deck] WARNING: All ${suppressedCount} movies filtered by suppression store!`, {
+        suppressedCount,
+        suppressedSlugs: raw.slice(0, 5).map(m => m.slug),
+        username: state.username,
+        listId: state.selectedListId,
+      });
+    }
+
+    extLog('deck loaded', {
+      username: state.username,
+      listId: state.selectedListId,
+      total: raw.length,
+      afterSuppression: filtered.length,
+      hasSynced: state.hasSynced,
+    });
 
     if (state.deck.length > 0) {
       renderDeck();
