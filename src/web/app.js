@@ -435,27 +435,37 @@ async function maybeRunInitialCrossSync() {
   setCrossSyncBadge('running', 'Syncing…');
   showToast('Syncing Letterboxd ↔ Supabase…');
 
-  const result = await requestExtensionCrossSync(180000, 300);
-  if (!result.ok) {
-    setCrossSyncBadge('error', 'Sync failed');
-    extLog('initial cross-sync failed', {
+  let lastError = null;
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    const result = await requestExtensionCrossSync(180000, 300);
+    if (result.ok) {
+      markCrossSyncSuccess(username);
+      const summary = result.summary || {};
+      const pulled = Number(summary.watchlistPulled || 0) + Number(summary.diaryPulled || 0);
+      const pushed = Number(summary.watchlistPushed || 0) + Number(summary.diaryPushed || 0);
+      setCrossSyncBadge('success', `Synced • +${pulled}/${pushed}`);
+      showToast(`Cross-sync complete • pulled ${pulled}, pushed ${pushed}`);
+      await loadLists(state.listSearchQuery || '');
+      return;
+    }
+    lastError = result.error;
+    extLog(`initial cross-sync attempt ${attempt}/2 failed`, {
       username,
       requestId: result.requestId || null,
       error: result.error || null,
     });
-    showToast(result.error || 'Cross-sync failed — open extension popup and run Start Sync');
-    return;
+    if (attempt < 2) {
+      showToast('Sync failed, retrying…');
+      await new Promise(r => setTimeout(r, 1500 * attempt));
+    }
   }
 
-  markCrossSyncSuccess(username);
-  const summary = result.summary || {};
-  const pulled = Number(summary.watchlistPulled || 0) + Number(summary.diaryPulled || 0);
-  const pushed = Number(summary.watchlistPushed || 0) + Number(summary.diaryPushed || 0);
-  setCrossSyncBadge('success', `Synced • +${pulled}/${pushed}`);
-  showToast(`Cross-sync complete • pulled ${pulled}, pushed ${pushed}`);
-
-  // Refresh synced-state and deck once cross-sync has completed.
-  await loadLists(state.listSearchQuery || '');
+  setCrossSyncBadge('error', 'Sync failed');
+  extLog('initial cross-sync FAILED after retries', {
+    username,
+    error: lastError,
+  });
+  showToast(lastError || 'Cross-sync failed — open extension popup and run Start Sync');
 }
 
 function applyWriteAccess() {

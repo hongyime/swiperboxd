@@ -116,9 +116,11 @@ async function fetchWithRetry(url, opts = {}, maxAttempts = 3) {
       }
     } catch (e) {
       lastErr = e;
+      log(`[fetch-retry] attempt ${attempt}/${maxAttempts} failed: ${e.message} url=${url.slice(0, 80)}`);
     }
     if (attempt < maxAttempts) {
       const backoff = 400 * Math.pow(2, attempt - 1) + Math.random() * 300;
+      log(`[fetch-retry] backing off ${Math.round(backoff)}ms before attempt ${attempt + 1}`);
       await sleep(backoff);
     }
   }
@@ -984,6 +986,8 @@ function extractDiaryActionPathFromHtml(html) {
 }
 
 async function postLetterboxdForm(path, params, filmUrl) {
+  const body = new URLSearchParams(params).toString();
+  log(`[lb-post] ${path} body_len=${body.length} params=${JSON.stringify(Object.keys(params))}`);
   const res = await fetch(`${LB_BASE}${path}`, {
     method: "POST",
     credentials: "include",
@@ -992,9 +996,10 @@ async function postLetterboxdForm(path, params, filmUrl) {
       "X-Requested-With": "XMLHttpRequest",
       "Referer": filmUrl,
     },
-    body: new URLSearchParams(params).toString(),
+    body,
   });
   const text = await res.text().catch(() => "");
+  log(`[lb-post] ${path} response status=${res.status} body_sample="${shortResponse(text, 120)}"`);
   return { ok: res.ok, status: res.status, text };
 }
 
@@ -1132,6 +1137,7 @@ async function writeToLetterboxd(action, movieSlug) {
     const attempts = [];
 
     async function tryWatchlistEndpoint(name, path, params) {
+      log(`[lb-write] trying ${name} with params: filmId=${params.filmId||params["filmIds[]"]||"(none)"} filmSlug=${params.filmSlug||"(none)"}`);
       const res = await postLetterboxdForm(path, params, filmUrl);
       let verification = { verified: false, reason: "request_not_ok" };
       if (res.ok) {
@@ -1150,7 +1156,7 @@ async function writeToLetterboxd(action, movieSlug) {
         body: shortResponse(res.text),
       };
       attempts.push(attempt);
-      log(`[lb-write] watchlist attempt=${name} status=${res.status} verified=${attempt.verified} reason=${attempt.reason}`);
+      log(`[lb-write] watchlist attempt=${name} status=${res.status} verified=${attempt.verified} reason=${attempt.reason} body_snippet="${attempt.body}"`);
       return attempt.verified;
     }
 
@@ -1523,7 +1529,14 @@ async function runCrossSync(opts = {}) {
     const letterboxdWatchlist = new Set(history.watchlist_slugs || []);
     const letterboxdDiary = new Set(history.diary_slugs || []);
 
-    const supabaseHistory = await fetchSupabaseUserHistory(cfg, cfg.username);
+    let supabaseHistory;
+    try {
+      supabaseHistory = await fetchSupabaseUserHistory(cfg, cfg.username);
+    } catch (e) {
+      log(`[cross-sync] WARNING: failed to fetch supabase history: ${e.message} — retrying once`);
+      await sleep(1000);
+      supabaseHistory = await fetchSupabaseUserHistory(cfg, cfg.username);
+    }
     const watchlistToPush = supabaseHistory.watchlist_slugs
       .filter((slug) => slug && !letterboxdWatchlist.has(slug))
       .slice(0, maxPushPerKind);
@@ -1555,12 +1568,23 @@ async function runCrossSync(opts = {}) {
       syncState.percent = 75 + Math.floor(((i + 1) / Math.max(1, watchlistToPush.length)) * 12);
       broadcast();
       try {
-        const ok = await writeToLetterboxd("watchlist", slug);
-        if (ok) summary.watchlistPushed += 1;
-        else summary.watchlistFailed += 1;
+        let retries = 0;
+        let ok = false;
+        while (retries < 2 && !ok) {
+          try {
+            ok = await writeToLetterboxd("watchlist", slug);
+            if (ok) summary.watchlistPushed += 1;
+            else summary.watchlistFailed += 1;
+          } catch (e) {
+            retries++;
+            if (retries >= 2) throw e;
+            log(`[cross-sync] watchlist retry ${retries}/2 for slug=${slug}: ${e.message}`);
+            await sleep(500 * retries);
+          }
+        }
       } catch (e) {
         summary.watchlistFailed += 1;
-        log(`[cross-sync] watchlist push failed slug=${slug}: ${e.message}`);
+        log(`[cross-sync] watchlist push FAILED slug=${slug}: ${e.message}`);
       }
       await sleep(350);
     }
@@ -1582,12 +1606,23 @@ async function runCrossSync(opts = {}) {
         syncState.percent = 87 + Math.floor(((i + 1) / Math.max(1, diaryToPush.length)) * 12);
         broadcast();
         try {
-          const ok = await writeToLetterboxd("log", slug);
-          if (ok) summary.diaryPushed += 1;
-          else summary.diaryFailed += 1;
+          let retries = 0;
+          let ok = false;
+          while (retries < 2 && !ok) {
+            try {
+              ok = await writeToLetterboxd("log", slug);
+              if (ok) summary.diaryPushed += 1;
+              else summary.diaryFailed += 1;
+            } catch (e) {
+              retries++;
+              if (retries >= 2) throw e;
+              log(`[cross-sync] diary retry ${retries}/2 for slug=${slug}: ${e.message}`);
+              await sleep(500 * retries);
+            }
+          }
         } catch (e) {
           summary.diaryFailed += 1;
-          log(`[cross-sync] diary push failed slug=${slug}: ${e.message}`);
+          log(`[cross-sync] diary push FAILED slug=${slug}: ${e.message}`);
         }
         await sleep(350);
       }

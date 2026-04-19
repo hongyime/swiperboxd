@@ -13,6 +13,8 @@ load_dotenv()
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from pydantic import BaseModel, Field
 
 from .security import decrypt_session_cookie, encrypt_session_cookie
@@ -36,6 +38,31 @@ if SCRAPER_BACKEND == "mock" and os.getenv("APP_ENV", "development") != "develop
 scraper = HttpLetterboxdScraper() if SCRAPER_BACKEND == "http" else MockLetterboxdScraper()
 app = FastAPI(title="Swiperboxd API", version="0.6.0")
 
+# CORS: Allow web app and extension to communicate
+allowed_origins = [
+    "https://swiperboxd.vercel.app",
+    "https://swiperboxd.hong-yi.me",
+    "http://localhost:3000",
+    "http://localhost:8000",
+    "http://127.0.0.1:3000",
+    "http://127.0.0.1:8000",
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=allowed_origins,
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["*"],
+    max_age=3600,
+)
+
+# Security: Reject requests from untrusted hosts
+app.add_middleware(
+    TrustedHostMiddleware,
+    allowed_hosts=["swiperboxd.vercel.app", "swiperboxd.hong-yi.me", "localhost", "127.0.0.1"],
+)
+
 # Conditional store selection
 if is_supabase_configured():
     from .store import SupabaseStore
@@ -57,6 +84,33 @@ app.include_router(cron_router, prefix="/api/cron", tags=["cron"])
 
 
 _SESSION_COOKIE_NAME = "letterboxd.user.CURRENT"
+
+
+@app.middleware("http")
+async def add_security_headers(request: Request, call_next):
+    """Add security headers to all responses."""
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["X-XSS-Protection"] = "1; mode=block"
+    response.headers["Referrer-Policy"] = "no-referrer-when-downgrade"
+    if os.getenv("APP_ENV") == "production":
+        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    return response
+
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    """Enhanced error responses with request context."""
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={
+            "status": "error",
+            "code": exc.detail.get("code", "http_error") if isinstance(exc.detail, dict) else "http_error",
+            "message": exc.detail.get("message", str(exc.detail)) if isinstance(exc.detail, dict) else str(exc.detail),
+            "path": str(request.url.path),
+        },
+    )
 
 
 def _matches_profile(profile: str, movie: dict) -> bool:

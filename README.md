@@ -391,6 +391,83 @@ The extension can auto-configure or be manually configured:
 
 ---
 
+## Production Readiness Checklist
+
+This section covers what's been implemented for production stability:
+
+### ✅ Error Handling & Recovery
+
+- **Automatic Retries:** All API calls with exponential backoff (up to 3 attempts)
+- **Watchlist Write Verification:** Verifies film was actually added after POST (multi-endpoint fallback)
+- **Cross-Sync Retries:** Automatic retry on fetch failures with 2 attempts
+- **Graceful Degradation:** App continues working even if one component fails
+- **Detailed Logging:** All operations logged with request IDs for debugging
+
+### ✅ Security
+
+- **CORS Protection:** Configured for allowed origins only
+- **Trusted Host Validation:** Rejects requests from unauthorized hosts
+- **Security Headers:** Sets content type, frame, XSS protection headers
+- **Input Validation:** All API inputs validated via Pydantic models
+- **Session Encryption:** Fernet-based encryption for session tokens
+- **HTTPS Only:** Enforced in production
+
+### ✅ Monitoring & Diagnostics
+
+- **Request Logging:** All API requests logged with status codes and response times
+- **Error Context:** Error responses include path and error code for debugging
+- **Performance Metrics:** Tracks sync phase, progress, and completion status
+- **Extension Diagnostics:** Logs browser context, user agent, presence signals
+
+### ✅ API Reliability
+
+- **CORS Middleware:** Enables browser clients to communicate with API
+- **Connection Pooling:** Reuses HTTP connections for better performance
+- **Timeout Protection:** All Letterboxd fetches have 20s timeout
+- **Rate Limiting Ready:** Framework supports adding rate limits per endpoint
+- **Status Codes:** Proper HTTP status codes for all responses
+
+### How to Deploy
+
+1. **Set Environment Variables** in Vercel dashboard
+
+   ```bash
+   MASTER_ENCRYPTION_KEY=<generated-key>
+   SUPABASE_URL=<your-url>
+   SUPABASE_SERVICE_ROLE_KEY=<your-key>
+   VERCEL_CRON_SECRET=<random-secret>
+   APP_ENV=production
+   ```
+
+2. **Verify Production Settings**
+
+   - Check that security middleware is active (HTTPS redirect enabled)
+   - Check that CORS only allows production origins
+   - Verify Supabase connection string
+
+3. **Deploy**
+
+   ```bash
+   vercel deploy --prod
+   ```
+
+4. **Monitor**
+
+   - Check Vercel logs for errors
+   - Monitor API response times (target: <2s p95)
+   - Track sync completion rates (target: >95%)
+   - Watch for unhandled exceptions
+
+### Known Limitations & Fixes
+
+**Watchlist Write Verification:** The extension verifies that a film was actually added to Letterboxd after posting. This is necessary because Letterboxd sometimes accepts requests but doesn't recognize the form parameters. If verification fails after 3 endpoint attempts, the write is rejected and logged for debugging.
+
+**Cross-Sync Timeouts:** If the extension doesn't get a response within 3 minutes, the cross-sync times out. This is by design to prevent long-running background tasks from consuming resources. The extension can be re-triggered from the popup.
+
+**Missing Letterboxd Film IDs:** Some films may not have their Letterboxd Film ID available initially. The `backfill` cron job fills these in over time.
+
+---
+
 ## Project Structure
 
 ```
@@ -446,6 +523,7 @@ The extension can auto-configure or be manually configured:
 **Problem:** The encryption key is missing from your environment.
 
 **Solution:**
+
 ```bash
 # Generate a new key
 python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
@@ -459,6 +537,7 @@ echo "MASTER_ENCRYPTION_KEY=<generated-key>" >> .env
 **Problem:** Supabase credentials are missing or invalid.
 
 **Solution:**
+
 - Verify `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` are set in `.env`
 - Check that the URL format is correct: `https://xxx.supabase.co`
 - Ensure the service role key (not anon key) is used
@@ -468,6 +547,7 @@ echo "MASTER_ENCRYPTION_KEY=<generated-key>" >> .env
 **Problem:** Letterboxd session cookie has expired or is invalid.
 
 **Solution:**
+
 1. Log out of Letterboxd and log back in
 2. Get a fresh cookie from DevTools → Application → Cookies
 3. Re-authenticate in the app with the new cookie
@@ -477,6 +557,7 @@ echo "MASTER_ENCRYPTION_KEY=<generated-key>" >> .env
 **Problem:** Extension shows "Not signed in to Letterboxd" or sync fails.
 
 **Solution:**
+
 - Ensure you're signed in to letterboxd.com in the same browser profile
 - Check that the extension has permission to access letterboxd.com
 - Try manually configuring the extension with your credentials
@@ -486,6 +567,7 @@ echo "MASTER_ENCRYPTION_KEY=<generated-key>" >> .env
 **Problem:** User history is empty after sync on Vercel.
 
 **Solution:**
+
 - Letterboxd blocks Vercel's AWS IP ranges with 403 errors
 - **Use the Chrome extension** for reliable syncing (runs in your browser)
 - Server-side sync only works on non-Vercel deployments
@@ -495,6 +577,7 @@ echo "MASTER_ENCRYPTION_KEY=<generated-key>" >> .env
 **Problem:** Getting 429 errors when refreshing lists or swiping.
 
 **Solution:**
+
 - **Swipe actions:** Wait 500ms between swipes
 - **Manual refresh:** Wait 5 minutes between refresh requests
 - **Ingest:** Wait 1 second between ingest requests
@@ -504,6 +587,7 @@ echo "MASTER_ENCRYPTION_KEY=<generated-key>" >> .env
 **Problem:** `POST /db/migrate` returns 403 or fails.
 
 **Solution:**
+
 - Ensure `APP_ENV` is not set to `production` (migrations are blocked in prod)
 - Verify you have a valid session token in the `X-Session-Token` header
 - Check Supabase credentials are correct
@@ -533,16 +617,19 @@ uvicorn src.api.app:app --log-level debug
 ### Local Development
 
 1. **Start the server with auto-reload:**
+
    ```bash
    uvicorn src.api.app:app --host 0.0.0.0 --port 8000 --reload
    ```
 
 2. **Run tests on file changes:**
+
    ```bash
    pytest tests/ --watch
    ```
 
 3. **Use mock scraper for faster iteration:**
+
    ```bash
    SCRAPER_BACKEND=mock uvicorn src.api.app:app --reload
    ```
@@ -550,6 +637,7 @@ uvicorn src.api.app:app --log-level debug
 ### Code Quality
 
 **Linting:**
+
 ```bash
 # Python
 python -m compileall src
@@ -559,6 +647,7 @@ npm run lint
 ```
 
 **Type Checking:**
+
 ```bash
 # Install mypy
 pip install mypy
