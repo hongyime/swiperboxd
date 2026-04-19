@@ -2,100 +2,137 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta name="theme-color" content="#0a0a0a" />
-  <meta name="apple-mobile-web-app-capable" content="yes" />
-  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <link rel="icon" type="image/svg+xml" href="/web/logo.svg" />
-  <link rel="apple-touch-icon" href="/web/logo.svg" />
-  <title>Swiperboxd - Discover Movies</title>
+  <title>Swiperboxd</title>
   <link rel="stylesheet" href="/web/styles.css" />
-  <link rel="manifest" href="/web/manifest.json" />
 </head>
 <body>
   <div id="app">
-    <!-- Auth Screen -->
+
+    <!-- ==================== AUTH SCREEN ==================== -->
     <div id="auth-screen" class="screen active">
       <div class="logo">
-        <img src="/web/logo.svg" alt="Swiperboxd Logo" class="logo-img" />
+        <img src="/web/logo.svg" alt="Swiperboxd" class="logo-img" />
         <h1>Swiperboxd</h1>
-        <p>Swipe. Discover. Repeat.</p>
+        <p>Discover movies from your Letterboxd lists</p>
+      </div>
+
+      <div class="setup-steps">
+        <div class="setup-step">
+          <span class="step-num">1</span>
+          <div class="step-body">
+            <strong>Sign in to Letterboxd</strong>
+            <span>Open <a href="https://letterboxd.com" target="_blank" rel="noopener">letterboxd.com</a> in this browser and log in to your account.</span>
+          </div>
+        </div>
+        <div class="setup-step">
+          <span class="step-num">2</span>
+          <div class="step-body">
+            <strong>Load the Chrome extension</strong>
+            <span>In Chrome go to <code>chrome://extensions</code> → enable Developer mode → Load unpacked → select the <code>extension/</code> folder from this repo. Click the extension icon and press <em>Connect</em>, then <em>Start Sync</em> to import your watchlist, diary and lists.</span>
+          </div>
+        </div>
+        <div class="setup-step">
+          <span class="step-num">3</span>
+          <div class="step-body">
+            <strong>Find your session cookie</strong>
+            <span>Open DevTools (F12) → Application → Cookies → letterboxd.com → copy the value of <code>letterboxd.user.CURRENT</code>.</span>
+          </div>
+        </div>
+        <div class="setup-step">
+          <span class="step-num">4</span>
+          <div class="step-body">
+            <strong>Connect below</strong>
+            <span>Paste your Letterboxd username and that cookie value, then click Connect.</span>
+          </div>
+        </div>
       </div>
 
       <form id="letterboxd-login-form" class="auth-form">
-        <input type="text" id="letterboxd-username" placeholder="Your Letterboxd username" autocomplete="username" required />
-        <textarea id="letterboxd-session-cookie" placeholder="Paste letterboxd.session cookie value here" rows="6" required autocomplete="off"></textarea>
+        <input type="text" id="letterboxd-username" placeholder="Letterboxd username" autocomplete="username" required />
+        <textarea id="letterboxd-session-cookie" placeholder="letterboxd.user.CURRENT cookie value" rows="4" required autocomplete="off"></textarea>
         <button type="submit" class="btn-primary">Connect</button>
       </form>
       <div id="auth-error" class="error-msg hidden"></div>
       <div id="auth-success" class="success-msg hidden"></div>
     </div>
 
-    <!-- Main Discovery Screen -->
+    <!-- ==================== DISCOVERY SCREEN ==================== -->
     <div id="discovery-screen" class="screen">
       <header class="header">
-        <img src="/web/logo.svg" alt="Logo" class="header-logo" />
+        <img src="/web/logo.svg" alt="Swiperboxd" class="header-logo" />
         <button class="profile-btn" id="profile-btn">
           <span id="current-profile">Choose a List</span>
           <span class="chevron">▼</span>
         </button>
         <div class="header-actions">
-          <button id="refresh-lists-btn" class="btn-text header-refresh-btn" title="Refresh lists from Letterboxd">↻</button>
           <button id="logout-btn" class="btn-text">Disconnect</button>
         </div>
       </header>
 
-      <!-- List Dropdown (anchored below header) -->
+      <!-- List dropdown -->
       <div id="profile-dropdown" class="profile-dropdown hidden">
         <div class="list-search-shell">
-          <input id="list-search-input" class="list-search-input" type="text" placeholder="Search Letterboxd lists" />
+          <input id="list-search-input" class="list-search-input" type="text" placeholder="Search lists…" />
         </div>
         <div class="profile-options" id="profile-options"></div>
       </div>
 
+      <!-- Fullscreen poster area -->
       <div class="deck-container" id="deck-container">
-        <!-- Card Stack -->
         <div class="card-stack" id="card-stack"></div>
 
-        <!-- Action Bar -->
+        <!-- Floating action bar -->
         <div class="action-bar" id="action-bar">
-          <button class="action-btn dismiss" id="btn-dismiss" title="Skip (←)">
+          <button class="action-btn dismiss" id="btn-dismiss" title="Skip  [←]">
             <span class="action-icon">✕</span>
+            <span class="action-label">Skip</span>
           </button>
-          <button class="action-btn flip" id="btn-flip" title="Details (Space)">
+          <button class="action-btn info" id="btn-flip" title="Info  [Space]">
             <span class="action-icon">ℹ</span>
+            <span class="action-label">Info</span>
           </button>
-          <button class="action-btn watchlist" id="btn-watchlist" title="Watchlist (→)">
+          <button class="action-btn watchlist" id="btn-watchlist" title="Watchlist  [→]">
             <span class="action-icon">+</span>
+            <span class="action-label">Watchlist</span>
           </button>
-          <button class="action-btn log" id="btn-log" title="Log (↑)">
+          <button class="action-btn log" id="btn-log" title="Watched  [↑]">
             <span class="action-icon">★</span>
+            <span class="action-label">Watched</span>
           </button>
         </div>
 
-        <!-- Loading Skeleton -->
+        <div class="key-hint">← Skip &nbsp;·&nbsp; → Watchlist &nbsp;·&nbsp; ↑ Watched &nbsp;·&nbsp; Space Info</div>
+
+        <!-- Loading -->
         <div id="loading-skeleton" class="skeleton-stack hidden">
           <div class="skeleton-card"></div>
         </div>
 
-        <!-- Empty State -->
+        <!-- Empty state -->
         <div id="empty-state" class="empty-state hidden">
-          <span class="empty-icon">🎭</span>
-          <h2>No More Movies</h2>
-          <p>You've seen everything in this list. Try another!</p>
-          <button id="refresh-btn" class="btn-secondary">Refresh Deck</button>
+          <span class="empty-icon">🎬</span>
+          <h2>No movies to show</h2>
+          <p>Open the Chrome extension popup and click <strong>Start Sync</strong> to load your Letterboxd data into Swiperboxd.</p>
+          <button id="refresh-btn" class="btn-secondary">Retry</button>
         </div>
       </div>
 
-      <!-- Sync Overlay (shown during initial sync to block swiping) -->
-      <div id="sync-overlay" class="sync-overlay hidden">
-        <div class="sync-spinner"></div>
-        <span id="sync-overlay-text">Syncing your Letterboxd data...</span>
-        <span id="sync-overlay-detail" class="sync-detail"></span>
+      <!-- Info pill overlay — click outside pill to dismiss -->
+      <div id="info-pill-overlay" class="info-pill-overlay hidden">
+        <div class="info-pill" id="info-pill">
+          <div class="info-pill-title" id="pill-title"></div>
+          <div class="info-pill-meta" id="pill-meta"></div>
+          <div class="info-pill-genres" id="pill-genres"></div>
+          <p class="info-pill-synopsis" id="pill-synopsis"></p>
+          <div class="info-pill-cast" id="pill-cast"></div>
+        </div>
       </div>
     </div>
-  </div>
 
+  </div>
   <script type="module" src="/web/app.js"></script>
 </body>
 </html>

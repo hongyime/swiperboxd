@@ -356,25 +356,7 @@ def discovery_profiles():
 
 @app.get("/lists/catalog")
 def list_catalog(q: str | None = None, page: int = Query(default=1, ge=1)):
-    """Fetch lists from Letterboxd with fallback to cached data."""
-    
-    # Try to fetch fresh lists from Letterboxd
-    try:
-        discovered = scraper.discover_site_lists(query=q, page=page)
-        if discovered:
-            # Store fresh data
-            for entry in discovered:
-                store.upsert_list_summary(entry.__dict__)
-            print(f"[lists] Fetched {len(discovered)} fresh lists from Letterboxd", flush=True)
-        else:
-            print(f"[lists] No lists returned from Letterboxd", flush=True)
-    except RuntimeError as exc:
-        # Rate limited or other scraper errors - fall back to cached
-        print(f"[lists] Letterboxd fetch failed ({str(exc)}), using cached data", flush=True)
-    except Exception as exc:
-        print(f"[lists] Unexpected error fetching lists: {exc}", flush=True)
-    
-    # Always return cached data
+    """Return lists from Supabase. Data is populated by the Chrome extension sync."""
     items = store.get_lists()
     
     # Apply search filter if query provided

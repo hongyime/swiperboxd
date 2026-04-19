@@ -71,6 +71,46 @@ def test_discovery_details():
 
 
 def test_list_catalog_returns_mixed_lists():
+    # Seed the store via the extension batch endpoint (mirrors real extension sync)
+    seed = client.post(
+        "/api/extension/batch/list-summaries",
+        headers=_AUTH_HEADERS,
+        json={
+            "lists": [
+                {
+                    "list_id": "letterboxd-official-top250",
+                    "slug": "official-top250",
+                    "url": "https://letterboxd.com/letterboxd/list/official-top250/",
+                    "title": "Official Top 250",
+                    "owner_name": "Letterboxd",
+                    "owner_slug": "letterboxd",
+                    "description": "Top 250 narrative films",
+                    "film_count": 250,
+                    "like_count": 50000,
+                    "comment_count": 100,
+                    "is_official": True,
+                    "tags": ["official"],
+                },
+                {
+                    "list_id": "someuser-hidden-gems",
+                    "slug": "hidden-gems",
+                    "url": "https://letterboxd.com/someuser/list/hidden-gems/",
+                    "title": "Hidden Gems",
+                    "owner_name": "someuser",
+                    "owner_slug": "someuser",
+                    "description": "Underrated films",
+                    "film_count": 42,
+                    "like_count": 300,
+                    "comment_count": 5,
+                    "is_official": False,
+                    "tags": [],
+                },
+            ],
+            "source": "popular",
+        },
+    )
+    assert seed.status_code == 200
+
     response = client.get("/lists/catalog")
     assert response.status_code == 200
     payload = response.json()

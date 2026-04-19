@@ -1,13 +1,7 @@
-/**
- * Swiperboxd - Movie Discovery App
- * Uses Letterboxd authentication (username/password)
- */
-
 import { createSuppressionStore } from './state.js';
 
 const suppression = createSuppressionStore(() => Date.now());
 
-// HTML-escape helper — prevents XSS when interpolating server data into innerHTML
 function esc(str) {
   return String(str ?? '')
     .replace(/&/g, '&amp;')
@@ -17,128 +11,104 @@ function esc(str) {
     .replace(/'/g, '&#x27;');
 }
 
-// State
+// ==================== STATE ====================
+
 const state = {
   username: null,
   encryptedSession: null,
   deck: [],
   currentIndex: 0,
   isSyncing: false,
-  syncComplete: false,
-  flipped: false,
   lists: [],
   selectedListId: null,
   selectedListTitle: 'Choose a List',
-  listSearchQuery: ''
+  listSearchQuery: '',
 };
-
-// Cancel token for the background ingest poll loop
-let _ingestPollCancelled = false;
 
 // Listen for extension write-back results
 window.addEventListener('message', (event) => {
   if (event.source !== window) return;
-  const data = event.data;
+  const { data } = event;
   if (!data) return;
   if (data.type === 'SWIPERBOXD_SWIPE_RESULT') {
     if (data.lbSynced) {
       console.log(`[lb-write] ${data.action} synced to Letterboxd: ${data.movieSlug}`);
     } else {
-      console.warn(`[lb-write] ${data.action} NOT synced to Letterboxd: ${data.movieSlug} — ${data.error || 'extension not installed?'}`);
+      console.warn(`[lb-write] ${data.action} NOT synced: ${data.movieSlug} — ${data.error || 'extension not installed?'}`);
     }
   }
 });
 
-// DOM Elements
+// ==================== DOM REFS ====================
+
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => document.querySelectorAll(sel);
 
-// Screens
-const authScreen = $('#auth-screen');
+const authScreen      = $('#auth-screen');
 const discoveryScreen = $('#discovery-screen');
-
-// Auth Elements
-const loginForm = $('#letterboxd-login-form');
-const errorDiv = $('#auth-error');
-const successDiv = $('#auth-success');
-
-// Discovery Elements
-const cardStack = $('#card-stack');
+const loginForm       = $('#letterboxd-login-form');
+const errorDiv        = $('#auth-error');
+const successDiv      = $('#auth-success');
+const cardStack       = $('#card-stack');
 const loadingSkeleton = $('#loading-skeleton');
-const emptyState = $('#empty-state');
-const syncOverlay = $('#sync-overlay');
-const profileOptions = $('#profile-options');
+const emptyState      = $('#empty-state');
+const profileOptions  = $('#profile-options');
 const profileDropdown = $('#profile-dropdown');
 const currentProfileSpan = $('#current-profile');
 const listSearchInput = $('#list-search-input');
 
-// Initialize
+// ==================== INIT ====================
+
 document.addEventListener('DOMContentLoaded', () => {
-  initLetterboxdAuth();
+  initAuth();
   initDiscovery();
   checkSavedSession();
 });
 
-// ==================== LETTERBOXD AUTH ====================
+// ==================== AUTH ====================
 
-function initLetterboxdAuth() {
+function initAuth() {
   loginForm.addEventListener('submit', async (e) => {
     e.preventDefault();
     const username = $('#letterboxd-username').value.trim();
     const sessionCookie = $('#letterboxd-session-cookie').value.trim();
-
     if (!username || !sessionCookie) return;
 
-    console.log('[auth] attempting session validation for user:', username);
     try {
       const res = await api('/auth/session', {
         method: 'POST',
-        body: { username, session_cookie: sessionCookie }
+        body: { username, session_cookie: sessionCookie },
       });
-
       state.username = username;
       state.encryptedSession = res.encrypted_session_cookie;
-
       localStorage.setItem('swiperboxd_username', username);
       localStorage.setItem('swiperboxd_token', res.encrypted_session_cookie);
-
       broadcastAuthToExtension();
-
-      console.log('[auth] login success, transitioning to discovery');
-      showSuccess('Connected to Letterboxd!');
-      setTimeout(() => showDiscovery(), 1000);
+      showSuccess('Connected!');
+      setTimeout(() => showDiscovery(), 800);
     } catch (err) {
-      console.error('[auth] login failed:', err.message);
-      showError(err.message || 'Failed to connect to Letterboxd. Check your credentials.');
+      showError(err.message || 'Failed to connect. Check your credentials.');
     }
   });
 
   $('#logout-btn')?.addEventListener('click', () => {
-    console.log('[auth] logging out');
-    _ingestPollCancelled = true;
-    hideSyncBadge();
     localStorage.removeItem('swiperboxd_username');
     localStorage.removeItem('swiperboxd_token');
-    localStorage.removeItem('swiperboxd_initial_sync_done');
     state.username = null;
     state.encryptedSession = null;
-    state.syncComplete = false;
     showAuth();
   });
 }
 
 function checkSavedSession() {
   const username = localStorage.getItem('swiperboxd_username');
-  const session = localStorage.getItem('swiperboxd_token');
-
+  const session  = localStorage.getItem('swiperboxd_token');
   if (username && session) {
-    console.log('[session] restored from localStorage for user:', username);
     state.username = username;
     state.encryptedSession = session;
     broadcastAuthToExtension();
     showDiscovery();
   } else {
-    console.log('[session] no saved session, showing auth screen');
     showAuth();
   }
 }
@@ -165,7 +135,6 @@ function showAuth() {
 function showDiscovery() {
   authScreen.classList.remove('active');
   discoveryScreen.classList.add('active');
-  // Load list catalog first, then auto-load deck for the first list
   loadLists();
 }
 
@@ -188,87 +157,65 @@ function initDiscovery() {
     profileDropdown.classList.toggle('hidden');
   });
 
-  listSearchInput?.addEventListener('input', async (e) => {
-    state.listSearchQuery = e.target.value.trim();
-    await loadLists(state.listSearchQuery);
-  });
-
-  $('#refresh-btn')?.addEventListener('click', () => {
-    console.log('[deck] manual refresh triggered');
-    loadDeck();
-  });
-
-  // Refresh lists button (in header)
-  $('#refresh-lists-btn')?.addEventListener('click', async () => {
-    const btn = $('#refresh-lists-btn');
-    btn.disabled = true;
-    btn.classList.add('spinning');
-    try {
-      await api('/lists/refresh', { method: 'POST' });
-      await loadLists();
-    } catch (err) {
-      console.error('[lists] refresh failed:', err.message);
-    } finally {
-      btn.disabled = false;
-      btn.classList.remove('spinning');
-    }
-  });
-
   document.addEventListener('click', (e) => {
     if (!e.target.closest('#profile-btn') && !e.target.closest('#profile-dropdown')) {
       profileDropdown.classList.add('hidden');
     }
   });
 
-  // Action bar buttons
+  listSearchInput?.addEventListener('input', async (e) => {
+    state.listSearchQuery = e.target.value.trim();
+    await loadLists(state.listSearchQuery);
+  });
+
+  $('#refresh-btn')?.addEventListener('click', () => loadDeck());
+
+  // Action buttons
   $('#btn-dismiss')?.addEventListener('click', () => executeSwipe('dismiss'));
   $('#btn-watchlist')?.addEventListener('click', () => executeSwipe('watchlist'));
   $('#btn-log')?.addEventListener('click', () => executeSwipe('log'));
-  $('#btn-flip')?.addEventListener('click', () => flipCard());
+  $('#btn-flip')?.addEventListener('click', toggleInfoPill);
 
-  document.addEventListener('keydown', (e) => {
-    if (discoveryScreen.classList.contains('active') && state.deck.length > 0) {
-      switch (e.key) {
-        case 'ArrowLeft': case 'a': executeSwipe('dismiss'); break;
-        case 'ArrowRight': case 'd': executeSwipe('watchlist'); break;
-        case 'ArrowUp': case 'w': executeSwipe('log'); break;
-        case ' ': e.preventDefault(); flipCard(); break;
-      }
-    }
+  // Info pill: dismiss on click outside
+  $('#info-pill-overlay')?.addEventListener('click', (e) => {
+    if (!e.target.closest('#info-pill')) hideInfoPill();
   });
 
-  initTouchSwipe();
+  // Keyboard shortcuts
+  document.addEventListener('keydown', (e) => {
+    if (!discoveryScreen.classList.contains('active')) return;
+    if (e.key === 'Escape') { hideInfoPill(); return; }
+    if (state.deck.length === 0 || state.currentIndex >= state.deck.length) return;
+    switch (e.key) {
+      case 'ArrowLeft':  case 'a': executeSwipe('dismiss');   break;
+      case 'ArrowRight': case 'd': executeSwipe('watchlist'); break;
+      case 'ArrowUp':    case 'w': executeSwipe('log');       break;
+      case ' ': e.preventDefault(); toggleInfoPill(); break;
+    }
+  });
 }
 
+// ==================== LISTS ====================
+
 async function loadLists(query = '') {
-  console.log('[lists] fetching available lists');
   try {
     const res = await api(`/lists/catalog?q=${encodeURIComponent(query)}`);
     state.lists = res.results || [];
-    console.log('[lists] loaded:', state.lists);
     renderLists();
-    
+
     if (state.lists.length === 0) {
-      console.warn('[lists] no lists available - showing empty state');
       cardStack.classList.add('hidden');
-      emptyState.innerHTML = `
-        <span class="empty-icon">📋</span>
-        <h2>No Lists Available</h2>
-        <p>No movie lists are currently available. Please try again later.</p>
-        <p class="text-sm text-gray">Letterboxd lists may be temporarily rate-limited.</p>
-      `;
-      emptyState.classList.remove('hidden');
+      setEmptyState(
+        '📋',
+        'No lists available',
+        'Use the Chrome extension to sync Letterboxd lists into Swiperboxd.',
+      );
+      return;
     }
   } catch (err) {
-    console.error('[lists] failed to load:', err.message);
-    cardStack.classList.add('hidden');
-    emptyState.innerHTML = `
-      <span class="empty-icon">⚠️</span>
-      <h2>Error Loading Lists</h2>
-      <p>${err.message || 'Please check your connection and try again.'}</p>
-      <button onclick="loadLists()" class="btn-secondary">Retry</button>
-    `;
-    emptyState.classList.remove('hidden');
+    console.error('[lists] failed:', err.message);
+    setEmptyState('⚠️', 'Error loading lists', err.message || 'Check your connection.');
+    return;
   }
 
   if (!state.selectedListId && state.lists.length > 0) {
@@ -281,7 +228,8 @@ async function loadLists(query = '') {
 
 function renderLists() {
   profileOptions.innerHTML = state.lists.map(item => `
-    <div class="profile-option ${item.list_id === state.selectedListId ? 'active' : ''}" data-list-id="${esc(item.list_id)}">
+    <div class="profile-option ${item.list_id === state.selectedListId ? 'active' : ''}"
+         data-list-id="${esc(item.list_id)}">
       <div class="list-option-title">${esc(item.title)}</div>
       <div class="list-option-meta">${esc(item.owner_name)} · ${esc(item.film_count)} films</div>
     </div>
@@ -296,7 +244,6 @@ function renderLists() {
       profileDropdown.classList.add('hidden');
       $$('.profile-option').forEach(p => p.classList.remove('active'));
       opt.classList.add('active');
-      console.log('[lists] switched to:', state.selectedListId);
       loadDeck();
     });
   });
@@ -304,387 +251,167 @@ function renderLists() {
   currentProfileSpan.textContent = state.selectedListTitle;
 }
 
-async function loadDeck() {
-  if (!state.username) {
-    console.warn('[deck] loadDeck called with no username, aborting');
-    return;
-  }
-  if (state.isSyncing) {
-    console.log('[deck] already syncing, skipping duplicate loadDeck');
-    return;
-  }
-  if (!state.selectedListId) {
-    console.warn('[deck] loadDeck called with no selected list, aborting');
-    return;
-  }
+// ==================== DECK ====================
 
-  console.log('[deck] starting load for list:', state.selectedListId);
+async function loadDeck() {
+  if (!state.username || !state.selectedListId) return;
+  if (state.isSyncing) return;
+
+  hideInfoPill();
   cardStack.classList.add('hidden');
   emptyState.classList.add('hidden');
   loadingSkeleton.classList.remove('hidden');
 
-  // First sync: show blocking overlay until complete, then load deck
-  // Subsequent syncs: non-blocking badge
-  const isFirstSync = !localStorage.getItem('swiperboxd_initial_sync_done');
-  if (isFirstSync && !state.syncComplete) {
-    console.log('[deck] first sync — showing blocking overlay');
-    syncOverlay.classList.remove('hidden');
-    $('#sync-overlay-text').textContent = 'Syncing your Letterboxd data...';
-    $('#sync-overlay-detail').textContent = 'This may take a moment on first login';
-    await _startIngestBackground();
-    state.syncComplete = true;
-    localStorage.setItem('swiperboxd_initial_sync_done', '1');
-    syncOverlay.classList.add('hidden');
-    console.log('[deck] initial sync done — loading deck');
-  } else {
-    state.syncComplete = true;
-    _startIngestBackground(); // non-blocking
-  }
-
   try {
-    console.log('[deck] fetching list deck from DB...');
-    const res = await api(`/lists/${encodeURIComponent(state.selectedListId)}/deck?user_id=${encodeURIComponent(state.username)}`);
+    const res = await api(
+      `/lists/${encodeURIComponent(state.selectedListId)}/deck?user_id=${encodeURIComponent(state.username)}`
+    );
     const raw = res.results || [];
     state.deck = raw.filter(m => !suppression.isSuppressed(m.slug));
     state.currentIndex = 0;
-    console.log(`[deck] received ${raw.length} films, ${state.deck.length} after suppression filter`);
 
     loadingSkeleton.classList.add('hidden');
+
     if (state.deck.length > 0) {
       renderDeck();
     } else {
-      console.warn('[deck] deck is empty after filtering');
-      emptyState.classList.remove('hidden');
+      setEmptyState(
+        '🎬',
+        'No movies to show',
+        'Open the Chrome extension popup and click Start Sync to load your Letterboxd data into Swiperboxd.',
+      );
     }
   } catch (err) {
     console.error('[deck] load failed:', err.message);
     loadingSkeleton.classList.add('hidden');
-    emptyState.classList.remove('hidden');
+    setEmptyState('⚠️', 'Failed to load deck', err.message);
   }
 }
 
-async function _startIngestBackground() {
-  // Cancel any previous poll loop still running
-  _ingestPollCancelled = true;
-  await delay(0); // yield so any awaiting loop iteration can check the flag
-  _ingestPollCancelled = false;
-
-  let startRes;
-  try {
-    showSyncBadge(0);
-    startRes = await api('/ingest/start', {
-      method: 'POST',
-      body: { user_id: state.username, source: 'trending', depth_pages: 2 }
-    });
-    console.log(`[ingest] start → ${startRes.status}`);
-    if (startRes.sync_stats) {
-      const s = startRes.sync_stats;
-      console.log(`[ingest] sync_stats: watchlist=${s.watchlist_count} diary=${s.diary_count} errors=${(s.errors||[]).length}`);
-      if (s.errors && s.errors.length > 0) {
-        s.errors.forEach(e => console.warn(`[ingest] sync error: ${e}`));
-      }
-    }
-  } catch (err) {
-    console.warn('[ingest] start failed (non-blocking):', err.message);
-    hideSyncBadge();
-    return;
-  }
-
-  // Vercel: endpoint ran the sync inline and returned "completed" — no polling needed
-  if (startRes.status === 'completed') {
-    const s = startRes.sync_stats || {};
-    console.log(`[ingest] sync completed inline (Vercel) — watchlist=${s.watchlist_count||0} diary=${s.diary_count||0}`);
-    if (s.watchlist_count === 0 && s.diary_count === 0) {
-      console.warn('[ingest] WARNING: both watchlist and diary are empty — use the Chrome extension to sync, or check Vercel function logs');
-    }
-    const detail = $('#sync-overlay-detail');
-    if (detail) detail.textContent = `Watchlist: ${s.watchlist_count||0} films, Diary: ${s.diary_count||0} films`;
-    hideSyncBadge();
-    return;
-  }
-
-  // Long-running server: poll until done
-  await delay(300);
-
-  while (!_ingestPollCancelled) {
-    try {
-      const res = await api(`/ingest/progress?user_id=${encodeURIComponent(state.username)}`);
-      const { progress } = res;
-      console.log(`[ingest] progress=${progress}%`);
-
-      if (progress === 100) {
-        hideSyncBadge();
-        console.log('[ingest] sync complete');
-        return;
-      }
-      if (progress === -1) {
-        hideSyncBadge();
-        console.warn('[ingest] sync failed on server');
-        return;
-      }
-      showSyncBadge(progress);
-    } catch (err) {
-      console.warn('[ingest] poll error:', err.message);
-      hideSyncBadge();
-      return;
-    }
-    await delay(1000);
-  }
-}
-
-function showSyncBadge(progress) {
-  let badge = $('#sync-badge');
-  if (!badge) {
-    badge = document.createElement('div');
-    badge.id = 'sync-badge';
-    badge.className = 'sync-badge';
-    document.body.appendChild(badge);
-  }
-  const label = (progress > 0 && progress < 100) ? `Syncing… ${progress}%` : 'Syncing watchlist…';
-  badge.textContent = label;
-  badge.classList.remove('hidden');
-}
-
-function hideSyncBadge() {
-  const badge = $('#sync-badge');
-  if (!badge) return;
-  badge.classList.add('hidden');
-  setTimeout(() => badge.remove(), 450);
+function setEmptyState(icon, title, body) {
+  emptyState.innerHTML = `
+    <span class="empty-icon">${icon}</span>
+    <h2>${esc(title)}</h2>
+    <p>${esc(body)}</p>
+    <button onclick="loadDeck()" class="btn-secondary" style="margin-top:0.5rem">Retry</button>
+  `;
+  emptyState.classList.remove('hidden');
 }
 
 function renderDeck() {
   cardStack.classList.remove('hidden');
   cardStack.innerHTML = '';
-
-  // Show up to 3 cards starting from currentIndex (top card is last in DOM = highest z-index)
-  const remaining = state.deck.slice(state.currentIndex, state.currentIndex + 3);
-  remaining.reverse().forEach((movie, i) => {
-    const isTop = i === remaining.length - 1;
-    const card = createCard(movie, isTop);
-    const depth = remaining.length - 1 - i; // 0 = top, 1 = second, 2 = third
-    card.style.zIndex = remaining.length - depth;
-    card.style.transform = `scale(${1 - depth * 0.05}) translateY(${depth * 10}px)`;
-    cardStack.appendChild(card);
-  });
-
-  console.log(`[deck] rendered ${remaining.length} card(s), currentIndex=${state.currentIndex} total=${state.deck.length}`);
+  emptyState.classList.add('hidden');
+  if (state.currentIndex < state.deck.length) {
+    cardStack.appendChild(createCard(state.deck[state.currentIndex]));
+  }
 }
 
-function createCard(movie, isTop = false) {
+function createCard(movie) {
   const card = document.createElement('div');
   card.className = 'movie-card';
   card.dataset.slug = movie.slug;
-
   card.innerHTML = `
     <img class="card-poster" src="${esc(movie.poster_url)}" alt="${esc(movie.title)}" />
     <div class="card-overlay">
-      <h2 class="card-title">${esc(movie.title)}</h2>
-      <p class="card-meta">★ ${esc(movie.rating)} · ${esc(movie.popularity)} popularity</p>
+      <h2 class="card-title">${esc(movie.title)}${movie.year ? ` <span style="font-weight:400;opacity:.7">(${esc(String(movie.year))})</span>` : ''}</h2>
+      <p class="card-meta">★ ${esc(String(movie.rating ?? ''))}${movie.director ? ` · ${esc(movie.director)}` : ''}</p>
     </div>
-    <div class="card-back">
-      <h2 class="card-title">${esc(movie.title)}</h2>
-      <p class="card-meta">★ ${esc(movie.rating)} · ${esc(movie.popularity)} popularity</p>
-      <div class="card-genres">
-        ${(movie.genres || []).slice(0, 3).map(g => `<span class="genre-tag">${esc(g)}</span>`).join('')}
-      </div>
-      <p class="card-synopsis">${esc(movie.synopsis) || 'No synopsis available.'}</p>
-    </div>
-    <div class="swipe-indicator watchlist">WATCHLIST</div>
-    <div class="swipe-indicator dismiss">SKIP</div>
-    <div class="swipe-indicator log">LOGGED</div>
   `;
-
-  if (isTop) {
-    let _cardDragged = false;
-    card.addEventListener('click', (e) => {
-      if (_cardDragged || e.target.closest('.action-btn')) return;
-      flipCard();
-    });
-    initCardTouch(card, (wasDrag) => { _cardDragged = wasDrag; });
-  }
-
   return card;
 }
 
-function initCardTouch(card, onDragState) {
-  let startX = 0, startY = 0, currentX = 0, currentY = 0, dragging = false;
-  const threshold = 100;
-  const dragDeadzone = 5;
+// ==================== INFO PILL ====================
 
-  function onStart(x, y) {
-    startX = x;
-    startY = y;
-    currentX = 0;
-    currentY = 0;
-    dragging = true;
-    if (onDragState) onDragState(false);
-    card.style.transition = 'none';
-  }
-
-  function onMove(x, y) {
-    if (!dragging) return;
-    currentX = x - startX;
-    currentY = y - startY;
-    if (Math.abs(currentX) > dragDeadzone || Math.abs(currentY) > dragDeadzone) {
-      if (onDragState) onDragState(true);
-    }
-    card.style.transform = `translate(${currentX}px, ${currentY}px) rotate(${currentX * 0.1}deg)`;
-    // Show swipe indicators
-    const watchEl = card.querySelector('.swipe-indicator.watchlist');
-    const dismissEl = card.querySelector('.swipe-indicator.dismiss');
-    const logEl = card.querySelector('.swipe-indicator.log');
-    if (watchEl) watchEl.style.opacity = currentX > 30 ? Math.min((currentX - 30) / 70, 1) : 0;
-    if (dismissEl) dismissEl.style.opacity = currentX < -30 ? Math.min((-currentX - 30) / 70, 1) : 0;
-    if (logEl) logEl.style.opacity = currentY < -30 ? Math.min((-currentY - 30) / 70, 1) : 0;
-  }
-
-  function onEnd() {
-    if (!dragging) return;
-    dragging = false;
-    card.style.transition = '';
-    const watchEl = card.querySelector('.swipe-indicator.watchlist');
-    const dismissEl = card.querySelector('.swipe-indicator.dismiss');
-    const logEl = card.querySelector('.swipe-indicator.log');
-    if (watchEl) watchEl.style.opacity = 0;
-    if (dismissEl) dismissEl.style.opacity = 0;
-    if (logEl) logEl.style.opacity = 0;
-    if (currentX > threshold) executeSwipe('watchlist');
-    else if (currentX < -threshold) executeSwipe('dismiss');
-    else if (currentY < -threshold) executeSwipe('log');
-    else card.style.transform = '';
-    currentX = 0;
-    currentY = 0;
-  }
-
-  // Touch
-  card.addEventListener('touchstart', (e) => onStart(e.touches[0].clientX, e.touches[0].clientY), { passive: true });
-  card.addEventListener('touchmove', (e) => onMove(e.touches[0].clientX, e.touches[0].clientY), { passive: true });
-  card.addEventListener('touchend', onEnd);
-
-  // Mouse (desktop drag)
-  card.addEventListener('mousedown', (e) => {
-    e.preventDefault();
-    onStart(e.clientX, e.clientY);
-    function onMouseMove(ev) { onMove(ev.clientX, ev.clientY); }
-    function onMouseUp() {
-      onEnd();
-      document.removeEventListener('mousemove', onMouseMove);
-      document.removeEventListener('mouseup', onMouseUp);
-    }
-    document.addEventListener('mousemove', onMouseMove);
-    document.addEventListener('mouseup', onMouseUp);
-  });
+function toggleInfoPill() {
+  const overlay = $('#info-pill-overlay');
+  if (overlay.classList.contains('hidden')) showInfoPill();
+  else hideInfoPill();
 }
 
-function initTouchSwipe() {
-  // Global touch fallbacks handled per-card in initCardTouch
-}
-
-function flipCard() {
-  if (state.deck.length === 0) return;
-  const topCard = cardStack.querySelector('.movie-card:last-child');
-  if (topCard) {
-    topCard.classList.toggle('flipped');
-    state.flipped = !state.flipped;
-  }
-}
-
-async function executeSwipe(action) {
-  if (state.isSyncing || state.deck.length === 0) return;
-  if (!state.syncComplete) {
-    console.warn('[swipe] blocked — initial sync not complete yet');
-    return;
-  }
-
-  state.isSyncing = true;
-  const topCard = cardStack.querySelector('.movie-card:last-child');
+function showInfoPill() {
+  if (state.deck.length === 0 || state.currentIndex >= state.deck.length) return;
   const movie = state.deck[state.currentIndex];
 
-  console.log(`[swipe] action=${action} slug=${movie.slug} remaining=${state.deck.length - state.currentIndex - 1}`);
+  $('#pill-title').textContent = movie.title + (movie.year ? ` (${movie.year})` : '');
 
-  topCard.classList.add(`swiping-${action === 'watchlist' ? 'right' : action === 'dismiss' ? 'left' : 'up'}`);
+  const meta = [];
+  if (movie.rating) meta.push(`★ ${movie.rating}`);
+  if (movie.director) meta.push(movie.director);
+  $('#pill-meta').textContent = meta.join(' · ');
 
-  if (navigator.vibrate) {
-    navigator.vibrate(action === 'watchlist' ? 50 : action === 'dismiss' ? 10 : 30);
-  }
+  $('#pill-genres').innerHTML = (movie.genres || []).slice(0, 5)
+    .map(g => `<span class="genre-tag">${esc(g)}</span>`).join('');
+
+  $('#pill-synopsis').textContent = movie.synopsis || 'No synopsis available.';
+
+  $('#pill-cast').textContent = movie.cast?.length
+    ? 'Cast: ' + movie.cast.slice(0, 5).join(', ')
+    : '';
+
+  $('#info-pill-overlay').classList.remove('hidden');
+}
+
+function hideInfoPill() {
+  $('#info-pill-overlay').classList.add('hidden');
+}
+
+// ==================== SWIPE ====================
+
+async function executeSwipe(action) {
+  if (state.isSyncing || state.deck.length === 0 || state.currentIndex >= state.deck.length) return;
+
+  hideInfoPill();
+  state.isSyncing = true;
+
+  const topCard = cardStack.querySelector('.movie-card');
+  const movie   = state.deck[state.currentIndex];
+
+  topCard.classList.add(
+    action === 'watchlist' ? 'swiping-right' :
+    action === 'dismiss'   ? 'swiping-left'  : 'swiping-up'
+  );
 
   let advanceCard = true;
   try {
     await api('/actions/swipe', {
       method: 'POST',
-      body: { user_id: state.username, movie_slug: movie.slug, action }
+      body: { user_id: state.username, movie_slug: movie.slug, action },
     });
 
     if (action === 'dismiss') {
       suppression.dismiss(movie.slug);
-      console.log(`[suppression] ${movie.slug} suppressed for 24h`);
     } else {
-      // Write to Letterboxd directly from the browser (credentials: include uses the live session)
-      letterboxdWrite(action, movie.slug, movie.lb_film_id).then(ok => {
-        if (ok) console.log(`[lb-write] ${action} synced: ${movie.slug}`);
-        else console.warn(`[lb-write] ${action} failed (no lb_film_id or not logged in): ${movie.slug}`);
-      });
+      // Route write-back through extension (uses live Letterboxd session cookie)
+      window.postMessage(
+        { type: 'SWIPERBOXD_SWIPE', action, movieSlug: movie.slug },
+        window.location.origin,
+      );
     }
   } catch (err) {
-    // 409 = duplicate (already in watchlist / diary). Still advance, show toast.
     if (err.status === 409) {
       const code = err.code || err.data?.code;
-      if (code === 'already_in_watchlist') showToast('Already in your watchlist');
-      else if (code === 'already_in_diary') showToast('Already in your diary');
-      else showToast('Already saved');
-      console.log(`[swipe] 409 duplicate — advancing anyway code=${code}`);
+      showToast(
+        code === 'already_in_watchlist' ? 'Already in your watchlist' :
+        code === 'already_in_diary'     ? 'Already in your diary'     : 'Already saved'
+      );
     } else {
       console.error('[swipe] failed:', err.message);
       advanceCard = false;
       topCard.classList.remove('swiping-right', 'swiping-left', 'swiping-up');
-      topCard.style.transform = '';
     }
   }
 
   try {
     if (advanceCard) {
       state.currentIndex++;
-      state.flipped = false;
-
       await delay(400);
       topCard.remove();
 
-      // Promote remaining back cards (animate their transforms)
-      const backCards = [...cardStack.querySelectorAll('.movie-card')];
-      backCards.forEach((card, i) => {
-        const depth = backCards.length - 1 - i; // 0 = new top
-        card.style.transition = 'transform 0.2s ease-out';
-        card.style.transform = `scale(${1 - depth * 0.05}) translateY(${depth * 10}px)`;
-        card.style.zIndex = backCards.length - depth;
-      });
-
-      // Make the new top card interactive
-      const newTop = cardStack.querySelector('.movie-card:last-child');
-      if (newTop && !newTop._touchInited) {
-        newTop._touchInited = true;
-        let _cardDragged = false;
-        newTop.addEventListener('click', (e) => {
-          if (_cardDragged || e.target.closest('.action-btn')) return;
-          flipCard();
-        });
-        initCardTouch(newTop, (wasDrag) => { _cardDragged = wasDrag; });
-      }
-
-      // Append the next queued card at the back if available
-      const nextBackIndex = state.currentIndex + 2;
-      if (nextBackIndex < state.deck.length) {
-        const newBackCard = createCard(state.deck[nextBackIndex], false);
-        const totalCards = cardStack.querySelectorAll('.movie-card').length + 1;
-        const depth = totalCards - 1;
-        newBackCard.style.zIndex = 1;
-        newBackCard.style.transform = `scale(${1 - depth * 0.05}) translateY(${depth * 10}px)`;
-        cardStack.insertBefore(newBackCard, cardStack.firstChild);
-      }
-
       if (state.currentIndex >= state.deck.length) {
-        console.log('[deck] all cards exhausted');
-        cardStack.classList.add('hidden');
-        emptyState.classList.remove('hidden');
+        setEmptyState('🎬', "You've seen everything", 'Try another list, or sync more via the Chrome extension.');
+      } else {
+        renderDeck();
       }
     }
   } finally {
@@ -696,29 +423,29 @@ async function executeSwipe(action) {
 
 async function api(path, options = {}) {
   const headers = { 'Content-Type': 'application/json' };
-  if (state.encryptedSession) {
-    headers['X-Session-Token'] = state.encryptedSession;
-  }
+  if (state.encryptedSession) headers['X-Session-Token'] = state.encryptedSession;
+
   const res = await fetch(path, {
     method: options.method || 'GET',
     headers,
-    ...(options.body ? { body: JSON.stringify(options.body) } : {})
+    ...(options.body ? { body: JSON.stringify(options.body) } : {}),
   });
 
   if (!res.ok) {
-    const data = await res.json().catch(() => ({}));
+    const data   = await res.json().catch(() => ({}));
     const detail = data?.detail;
-    const msg = (typeof detail === 'string' ? detail : detail?.reason || detail?.code) || `HTTP ${res.status}`;
-    console.error(`[api] ${options.method || 'GET'} ${path} → ${res.status}:`, msg);
-    const err = new Error(msg);
-    err.status = res.status;
-    err.code = typeof detail === 'object' ? detail?.code : (data?.code || null);
-    err.data = data;
+    const msg    = (typeof detail === 'string' ? detail : detail?.reason || detail?.code) || `HTTP ${res.status}`;
+    const err    = new Error(msg);
+    err.status   = res.status;
+    err.code     = typeof detail === 'object' ? detail?.code : (data?.code || null);
+    err.data     = data;
     throw err;
   }
 
   return res.json();
 }
+
+// ==================== UTILS ====================
 
 function showToast(message, durationMs = 2200) {
   let el = document.getElementById('toast');
@@ -736,60 +463,4 @@ function showToast(message, durationMs = 2200) {
 
 function delay(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
-}
-
-// Write watchlist/diary directly to Letterboxd from the browser.
-// Uses credentials: "include" so the browser sends the user's Letterboxd session cookie.
-// Works on desktop and mobile PWA — no extension required.
-async function letterboxdWrite(action, slug, lbFilmId) {
-  if (!lbFilmId) {
-    // No LID stored yet — fetch the film page to get it from the response header
-    try {
-      const res = await fetch(`https://letterboxd.com/film/${slug}/`, {
-        credentials: 'include',
-        headers: { 'Accept': 'text/html' },
-      });
-      lbFilmId = res.headers.get('x-letterboxd-identifier') || '';
-      if (lbFilmId) {
-        // Persist it back so future swipes don't need to fetch
-        await api(`/actions/cache-lb-id`, {
-          method: 'POST',
-          body: { movie_slug: slug, lb_film_id: lbFilmId }
-        }).catch(() => {});
-      }
-    } catch (e) {
-      console.warn('[lb-write] could not fetch film page for LID:', e.message);
-      return false;
-    }
-  }
-  if (!lbFilmId) return false;
-
-  try {
-    if (action === 'watchlist') {
-      const res = await fetch(`https://letterboxd.com/api/v0/me/watchlist/${lbFilmId}`, {
-        method: 'PATCH',
-        credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ inWatchlist: true }),
-      });
-      return res.ok || res.status === 204;
-    }
-
-    if (action === 'log') {
-      const today = new Date().toISOString().slice(0, 10);
-      const res = await fetch(`https://letterboxd.com/api/v0/log-entries`, {
-        method: 'POST',
-        credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          filmId: lbFilmId,
-          diaryDetails: { diaryDate: today, rewatch: false },
-        }),
-      });
-      return res.ok || res.status === 201;
-    }
-  } catch (e) {
-    console.warn(`[lb-write] ${action} error:`, e.message);
-  }
-  return false;
 }
