@@ -39,6 +39,7 @@ const state = {
   username: null,
   encryptedSession: null,
   hasSynced: false,
+  browseOnlyMode: false,
   deck: [],
   currentIndex: 0,
   isSyncing: false,
@@ -437,7 +438,7 @@ async function maybeRunInitialCrossSync() {
 
   let lastError = null;
   for (let attempt = 1; attempt <= 2; attempt++) {
-    const result = await requestExtensionCrossSync(180000, 300);
+    const result = await requestExtensionCrossSync(480000, 200);
     if (result.ok) {
       markCrossSyncSuccess(username);
       const summary = result.summary || {};
@@ -475,14 +476,22 @@ function applyWriteAccess() {
   const hint = $('#browse-mode-hint');
   const watchlistBtn = $('#btn-watchlist');
   const logBtn = $('#btn-log');
-  const reason = 'Sync your Letterboxd data via the extension first to enable saving';
+  const syncReason = 'Sync your Letterboxd data via the extension first to enable saving';
+  const browseReason = 'Browse-only mode is active, so watchlist/log are disabled';
+  const writeEnabled = state.hasSynced && !state.browseOnlyMode;
 
-  watchlistBtn.disabled = !state.hasSynced;
-  logBtn.disabled = !state.hasSynced;
-  if (!state.hasSynced) {
+  watchlistBtn.disabled = !writeEnabled;
+  logBtn.disabled = !writeEnabled;
+  if (!writeEnabled) {
+    const reason = state.browseOnlyMode ? browseReason : syncReason;
     watchlistBtn.title = reason;
     logBtn.title = reason;
-    if (hint) { hint.textContent = 'Sync extension to enable saving'; hint.classList.remove('hidden'); }
+    if (hint) {
+      hint.textContent = state.browseOnlyMode
+        ? 'Browse-only fallback active (saving disabled)'
+        : 'Sync extension to enable saving';
+      hint.classList.remove('hidden');
+    }
   } else {
     watchlistBtn.title = 'Watchlist  [→]';
     logBtn.title = 'Watched  [↑]';
@@ -640,9 +649,45 @@ async function loadDeck() {
       `/lists/${encodeURIComponent(state.selectedListId)}/deck?user_id=${encodeURIComponent(state.username)}`
     );
     const raw = res.results || [];
-    const filtered = raw.filter(m => !suppression.isSuppressed(m.slug));
+    let filtered = raw.filter(m => !suppression.isSuppressed(m.slug));
+    state.browseOnlyMode = false;
+
+    // If personalized unseen deck is empty, gracefully degrade to browse-only.
+    if (filtered.length === 0 && state.hasSynced) {
+      extLog('personalized deck empty; trying include_seen fallback', {
+        username: state.username,
+        listId: state.selectedListId,
+      });
+      const includeSeenRes = await api(
+        `/lists/${encodeURIComponent(state.selectedListId)}/deck?user_id=${encodeURIComponent(state.username)}&include_seen=true`
+      );
+      const includeSeen = includeSeenRes.results || [];
+      filtered = includeSeen.filter(m => !suppression.isSuppressed(m.slug));
+      if (filtered.length > 0) {
+        state.browseOnlyMode = true;
+        showToast('Showing browse-only fallback from this list');
+      }
+    }
+
+    // Final fallback: any movies in catalog so app never appears blank.
+    if (filtered.length === 0 && state.hasSynced) {
+      extLog('include_seen fallback empty; trying discovery fallback', {
+        username: state.username,
+        listId: state.selectedListId,
+      });
+      const discoveryRes = await api(
+        `/discovery/deck?user_id=${encodeURIComponent(state.username)}&profile=gold-standard`
+      );
+      filtered = (discoveryRes.results || []).filter(m => !suppression.isSuppressed(m.slug));
+      if (filtered.length > 0) {
+        state.browseOnlyMode = true;
+        showToast('Showing browse-only fallback from your catalog');
+      }
+    }
+
     state.deck = filtered;
     state.currentIndex = 0;
+    applyWriteAccess();
 
     loadingSkeleton.classList.add('hidden');
 
@@ -775,8 +820,10 @@ function hideInfoPill() {
 
 async function executeSwipe(action) {
   if (state.isSyncing || state.deck.length === 0 || state.currentIndex >= state.deck.length) return;
-  if (action !== 'dismiss' && !state.hasSynced) {
-    showToast('Sync your Letterboxd data via the extension before saving');
+  if (action !== 'dismiss' && (!state.hasSynced || state.browseOnlyMode)) {
+    showToast(state.browseOnlyMode
+      ? 'Browse-only mode: saving is disabled for fallback movies'
+      : 'Sync your Letterboxd data via the extension before saving');
     return;
   }
 

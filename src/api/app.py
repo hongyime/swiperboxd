@@ -545,7 +545,11 @@ def list_detail(list_id: str):
 
 
 @app.get("/lists/{list_id}/deck")
-def list_deck(list_id: str, user_id: str = Query(min_length=1)):
+def list_deck(
+    list_id: str,
+    user_id: str = Query(min_length=1),
+    include_seen: bool = Query(default=False),
+):
     summary = store.get_list_summary(list_id)
     if not summary:
         raise HTTPException(status_code=404, detail={"code": "list_not_found"})
@@ -595,7 +599,7 @@ def list_deck(list_id: str, user_id: str = Query(min_length=1)):
     except Exception as exc:
         print(f"[deck] failed to load user filters: {exc}", flush=True)
         watchlist, diary, exclusions = set(), set(), set()
-    seen = watchlist | diary | exclusions
+    seen = set() if include_seen else (watchlist | diary | exclusions)
 
     try:
         cached_slugs = store.get_list_memberships(list_id)
@@ -617,6 +621,7 @@ def list_deck(list_id: str, user_id: str = Query(min_length=1)):
         f"[deck] list={list_id} total_in_list={len(movie_slugs)} "
         f"with_metadata={len([m for m in movies if m])} "
         f"after_filter={len(movies)} "
+        f"include_seen={include_seen} "
         f"seen={len(seen)} "
         f"watchlist={len(watchlist)} diary={len(diary)} exclusions={len(exclusions)} "
         f"returned={len(movies[:20])}",
