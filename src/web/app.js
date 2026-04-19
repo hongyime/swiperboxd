@@ -11,6 +11,28 @@ function esc(str) {
     .replace(/'/g, '&#x27;');
 }
 
+function buildPosterVariants(url) {
+  const base = String(url || '').trim();
+  if (!base) {
+    return { display: '', backdrop: '', srcset: '' };
+  }
+
+  const sizePattern = /\/image-(\d+)\//i;
+  if (!sizePattern.test(base)) {
+    return { display: base, backdrop: base, srcset: '' };
+  }
+
+  const withSize = (n) => base.replace(sizePattern, `/image-${n}/`);
+  const display = withSize(600);
+  const backdrop = withSize(1200);
+  const srcset = `${withSize(300)} 300w, ${display} 600w, ${withSize(1200)} 1200w`;
+  return { display, backdrop, srcset };
+}
+
+function toCssUrl(value) {
+  return `url("${String(value || '').replace(/"/g, '\\"')}")`;
+}
+
 // ==================== STATE ====================
 
 const state = {
@@ -515,8 +537,18 @@ function createCard(movie) {
   const card = document.createElement('div');
   card.className = 'movie-card';
   card.dataset.slug = movie.slug;
+
+  const poster = buildPosterVariants(movie.poster_url);
+  const posterDisplay = poster.display || movie.poster_url || '';
+  const posterBackdrop = poster.backdrop || posterDisplay;
+  const posterSrcsetAttr = poster.srcset ? `srcset="${esc(poster.srcset)}" sizes="100vw"` : '';
+  if (posterBackdrop) {
+    card.style.setProperty('--poster-backdrop', toCssUrl(posterBackdrop));
+  }
+
   card.innerHTML = `
-    <img class="card-poster" src="${esc(movie.poster_url)}" alt="${esc(movie.title)}" />
+    <div class="card-backdrop" aria-hidden="true"></div>
+    <img class="card-poster" src="${esc(posterDisplay)}" ${posterSrcsetAttr} alt="${esc(movie.title)}" />
     <div class="card-overlay">
       <h2 class="card-title">${esc(movie.title)}${movie.year ? ` <span style="font-weight:400;opacity:.7">(${esc(String(movie.year))})</span>` : ''}</h2>
       <p class="card-meta">★ ${esc(String(movie.rating ?? ''))}${movie.director ? ` · ${esc(movie.director)}` : ''}</p>

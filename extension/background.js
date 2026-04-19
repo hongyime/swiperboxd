@@ -888,6 +888,43 @@ function extractFilmIdFromHtml(movieSlug, html) {
   return generic && generic[1] ? generic[1] : "";
 }
 
+function extractRealCsrfFromHtml(html) {
+  // Modern Letterboxd pages expose runtime CSRF in inline script.
+  const scriptMatches = [...html.matchAll(/supermodelCSRF\s*=\s*'([^']*)'/g)];
+  for (let i = scriptMatches.length - 1; i >= 0; i--) {
+    const token = String(scriptMatches[i][1] || "").trim();
+    if (token && token.toLowerCase() !== "placeholder") return token;
+  }
+
+  const meta = html.match(/<meta[^>]+name="csrf-token"[^>]+content="([^"]+)"/i);
+  if (meta && meta[1] && meta[1].toLowerCase() !== "placeholder") return meta[1];
+
+  const hidden = html.match(/name="__csrf"\s+value="([^"]+)"/i);
+  if (hidden && hidden[1] && hidden[1].toLowerCase() !== "placeholder") return hidden[1];
+
+  return "";
+}
+
+function isSignedInFilmHtml(html) {
+  return /class="[^"]*signed-in[^"]*"/i.test(html)
+    || /class="[^"]*navitem[^"]*account[^"]*"/i.test(html)
+    || /href="\/sign-out\//i.test(html)
+    || /analytic_params\['user_type'\]\s*=\s*'Member'/i.test(html);
+}
+
+function extractWatchlistActionPathFromHtml(html) {
+  const m = html.match(/class="[^"]*js-add-all-films-on-page-to-watchlist[^"]*"[^>]*data-action="([^"]+)"/i)
+    || html.match(/data-action="([^"]*watchlist\/add-films[^"]*)"/i);
+  return m && m[1] ? m[1] : "/watchlist/add-films/";
+}
+
+function extractDiaryActionPathFromHtml(html) {
+  const m = html.match(/<form[^>]*class="[^"]*js-diary-entry-form[^"]*"[^>]*action="([^"]+)"/i)
+    || html.match(/<form[^>]*action="([^"]+)"[^>]*class="[^"]*js-diary-entry-form[^"]*"/i)
+    || html.match(/<form[^>]*action="([^"]*save-diary-entry[^"]*)"/i);
+  return m && m[1] ? m[1] : "/s/save-diary-entry";
+}
+
 async function postLetterboxdForm(path, params, filmUrl) {
   const res = await fetch(`${LB_BASE}${path}`, {
     method: "POST",
@@ -907,6 +944,73 @@ function shortResponse(text, max = 180) {
   return String(text || "").replace(/\s+/g, " ").trim().slice(0, max);
 }
 
+function summarizeAttempt(attempts) {
+  return attempts
+    .map((a) => `${a.name}:${a.status}:${a.verified ? "verified" : "unverified"}`)
+    .join(" | ");
+}
+
+async function verifyWatchlistContainsSlug(username, movieSlug, maxPages = 2) {
+  if (!username) return { verified: false, reason: "no_username" };
+
+  // Give Letterboxd a brief moment to persist UI-side writes before checking.
+  for (let probe = 1; probe <= 3; probe++) {
+    for (let page = 1; page <= maxPages; page++) {
+      const path = page === 1
+        ? `/${encodeURIComponent(username)}/watchlist/`
+        : `/${encodeURIComponent(username)}/watchlist/page/${page}/`;
+      let html;
+      try {
+        html = await fetchLetterboxdPage(path);
+      } catch (e) {
+        return { verified: false, reason: `verify_fetch_failed:${e.message}` };
+      }
+
+      const slugs = extractSlugsFromHtml(html);
+      if (slugs.includes(movieSlug)) {
+        return { verified: true, reason: `found_on_page_${page}` };
+      }
+
+      const total = detectTotalPages(html) || 1;
+      if (page >= total) break;
+    }
+
+    if (probe < 3) await sleep(250);
+  }
+
+  return { verified: false, reason: "slug_not_found_in_watchlist" };
+}
+
+async function verifyDiaryContainsSlug(username, movieSlug, maxPages = 2) {
+  if (!username) return { verified: false, reason: "no_username" };
+
+  for (let probe = 1; probe <= 3; probe++) {
+    for (let page = 1; page <= maxPages; page++) {
+      const path = page === 1
+        ? `/${encodeURIComponent(username)}/films/diary/`
+        : `/${encodeURIComponent(username)}/films/diary/page/${page}/`;
+      let html;
+      try {
+        html = await fetchLetterboxdPage(path);
+      } catch (e) {
+        return { verified: false, reason: `verify_fetch_failed:${e.message}` };
+      }
+
+      const slugs = extractSlugsFromHtml(html);
+      if (slugs.includes(movieSlug)) {
+        return { verified: true, reason: `found_on_page_${page}` };
+      }
+
+      const total = detectTotalPages(html) || 1;
+      if (page >= total) break;
+    }
+
+    if (probe < 3) await sleep(250);
+  }
+
+  return { verified: false, reason: "slug_not_found_in_diary" };
+}
+
 async function writeToLetterboxd(action, movieSlug) {
   // Step 1: fetch the film page to get the CSRF token (browser session included)
   const filmUrl = `${LB_BASE}/film/${movieSlug}/`;
@@ -918,95 +1022,174 @@ async function writeToLetterboxd(action, movieSlug) {
   const lbIdentifier = filmRes.headers.get("x-letterboxd-identifier") || "";
   const html = await filmRes.text();
 
-  // Extract __csrf token — present in a hidden input on every authenticated page
-  const csrfMatch = html.match(/name="__csrf"\s+value="([^"]+)"/)
-    || html.match(/<meta[^>]+name="csrf-token"[^>]+content="([^"]+)"/);
-  if (!csrfMatch) throw new Error("CSRF token not found — are you signed in to Letterboxd?");
-  const csrf = csrfMatch[1];
+  const csrf = extractRealCsrfFromHtml(html);
+  if (!csrf) throw new Error("CSRF token not found — sign in to Letterboxd again and retry.");
+
   const filmId = extractFilmIdFromHtml(movieSlug, html);
-  log(`[lb-write] action=${action} slug=${movieSlug} filmId=${filmId || "(none)"} lid=${lbIdentifier || "(none)"}`);
+  const signedIn = isSignedInFilmHtml(html);
+  const watchlistPath = extractWatchlistActionPathFromHtml(html);
+  const diaryPath = extractDiaryActionPathFromHtml(html);
+  log(
+    `[lb-write] action=${action} slug=${movieSlug} filmId=${filmId || "(none)"} `
+    + `lid=${lbIdentifier || "(none)"} signedIn=${signedIn} watchlistPath=${watchlistPath} diaryPath=${diaryPath}`
+  );
+
+  const cfg = await getConfig();
+  const username = cfg.username || "";
 
   if (action === "watchlist") {
-    // Legacy endpoint used by older Letterboxd markup.
-    const legacy = await postLetterboxdForm(
-      "/s/save-film-watch",
-      {
-        __csrf: csrf,
-        filmSlug: movieSlug,
-        inWatchlist: "true",
-      },
-      filmUrl,
-    );
-    if (legacy.ok) {
-      log(`[lb-write] watchlist added via legacy endpoint: ${movieSlug}`);
-      return true;
+    const attempts = [];
+
+    async function tryWatchlistEndpoint(name, path, params) {
+      const res = await postLetterboxdForm(path, params, filmUrl);
+      let verification = { verified: false, reason: "request_not_ok" };
+      if (res.ok) {
+        verification = await verifyWatchlistContainsSlug(username, movieSlug);
+      }
+      const attempt = {
+        name,
+        status: res.status,
+        verified: verification.verified,
+        reason: verification.reason,
+        body: shortResponse(res.text),
+      };
+      attempts.push(attempt);
+      log(`[lb-write] watchlist attempt=${name} status=${res.status} verified=${attempt.verified} reason=${attempt.reason}`);
+      return attempt.verified;
     }
 
-    // Modern Letterboxd flow uses add-film-to-list with filmId.
+    // Prefer watchlist-specific endpoint first.
     if (filmId) {
-      const modern = await postLetterboxdForm(
-        "/s/add-film-to-list",
-        { __csrf: csrf, filmId: String(filmId) },
-        filmUrl,
-      );
-      if (modern.ok) {
-        log(`[lb-write] watchlist added via /s/add-film-to-list: ${movieSlug}`);
-        return true;
-      }
-
-      // Additional fallback used by bulk-watchlist actions.
-      const bulk = await postLetterboxdForm(
-        "/watchlist/add-films/",
+      const ok = await tryWatchlistEndpoint(
+        "watchlist_action_markup",
+        watchlistPath,
         {
           __csrf: csrf,
           filmId: String(filmId),
           filmIds: String(filmId),
           "filmIds[]": String(filmId),
+          films: String(filmId),
+          filmSlug: movieSlug,
+          filmSlugs: movieSlug,
+          "filmSlugs[]": movieSlug,
         },
-        filmUrl,
       );
-      if (bulk.ok) {
+      if (ok) {
         log(`[lb-write] watchlist added via /watchlist/add-films/: ${movieSlug}`);
         return true;
       }
-
-      throw new Error(
-        `watchlist write failed legacy=${legacy.status} modern=${modern.status} bulk=${bulk.status} `
-        + `legacyBody="${shortResponse(legacy.text)}" modernBody="${shortResponse(modern.text)}" bulkBody="${shortResponse(bulk.text)}"`
-      );
     }
 
-    throw new Error(
-      `watchlist write failed legacy=${legacy.status}; could not resolve filmId; `
-      + `legacyBody="${shortResponse(legacy.text)}"`
-    );
+    // Legacy endpoint on older Letterboxd builds.
+    {
+      const ok = await tryWatchlistEndpoint(
+        "legacy_save_film_watch",
+        "/s/save-film-watch",
+        {
+          __csrf: csrf,
+          filmSlug: movieSlug,
+          inWatchlist: "true",
+        },
+      );
+      if (ok) {
+        log(`[lb-write] watchlist added via /s/save-film-watch: ${movieSlug}`);
+        return true;
+      }
+    }
+
+    // Keep as last fallback, but no longer trust HTTP 200 without verification.
+    if (filmId) {
+      const ok = await tryWatchlistEndpoint(
+        "add_film_to_list",
+        "/s/add-film-to-list",
+        { __csrf: csrf, filmId: String(filmId) },
+      );
+      if (ok) {
+        log(`[lb-write] watchlist added via /s/add-film-to-list: ${movieSlug}`);
+        return true;
+      }
+    }
+
+    const details = attempts
+      .map((a) => `${a.name} status=${a.status} verified=${a.verified} reason=${a.reason} body="${a.body}"`)
+      .join(" || ");
+    throw new Error(`watchlist write unverified (${summarizeAttempt(attempts)}); ${details}`);
   }
 
   if (action === "log") {
+    const attempts = [];
+
+    async function tryDiaryEndpoint(name, path, params) {
+      const res = await postLetterboxdForm(path, params, filmUrl);
+      let verification = { verified: false, reason: "request_not_ok" };
+      if (res.ok) {
+        verification = await verifyDiaryContainsSlug(username, movieSlug);
+      }
+      const attempt = {
+        name,
+        status: res.status,
+        verified: verification.verified,
+        reason: verification.reason,
+        body: shortResponse(res.text),
+      };
+      attempts.push(attempt);
+      log(`[lb-write] diary attempt=${name} status=${res.status} verified=${attempt.verified} reason=${attempt.reason}`);
+      return attempt.verified;
+    }
+
     // Diary save endpoint — logs the film as watched today
     const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
-    const legacy = await postLetterboxdForm(
-      "/s/save-film-watch",
-      {
-        __csrf: csrf,
-        filmSlug: movieSlug,
-        viewingDateStr: today,
-        specifiedDate: "true",
-        rewatch: "false",
-        rating: "",
-        review: "",
-        containsSpoilers: "false",
-      },
-      filmUrl,
-    );
-    if (legacy.ok) {
-      log(`[lb-write] diary logged via legacy endpoint: ${movieSlug}`);
-      return true;
+    {
+      const ok = await tryDiaryEndpoint(
+        "diary_action_markup",
+        diaryPath,
+        {
+          __csrf: csrf,
+          viewingId: "",
+          viewingableUid: filmId ? `film:${filmId}` : "",
+          viewingDateStr: today,
+          specifiedDate: "true",
+          rewatch: "false",
+          rating: "",
+          review: "",
+          containsSpoilers: "false",
+          tags: "",
+          liked: "false",
+          filmSlug: movieSlug,
+          filmId: filmId ? String(filmId) : "",
+        },
+      );
+      if (ok) {
+        log(`[lb-write] diary logged via ${diaryPath}: ${movieSlug}`);
+        return true;
+      }
+    }
+
+    {
+      const ok = await tryDiaryEndpoint(
+        "legacy_save_film_watch",
+        "/s/save-film-watch",
+        {
+          __csrf: csrf,
+          filmSlug: movieSlug,
+          viewingDateStr: today,
+          specifiedDate: "true",
+          rewatch: "false",
+          rating: "",
+          review: "",
+          containsSpoilers: "false",
+        },
+      );
+      if (ok) {
+        log(`[lb-write] diary logged via /s/save-film-watch: ${movieSlug}`);
+        return true;
+      }
     }
 
     // Modern diary form endpoint.
     if (filmId) {
-      const modern = await postLetterboxdForm(
+      const ok = await tryDiaryEndpoint(
+        "save_diary_entry",
         "/s/save-diary-entry",
         {
           __csrf: csrf,
@@ -1021,22 +1204,17 @@ async function writeToLetterboxd(action, movieSlug) {
           tags: "",
           liked: "false",
         },
-        filmUrl,
       );
-      if (modern.ok) {
+      if (ok) {
         log(`[lb-write] diary logged via /s/save-diary-entry: ${movieSlug}`);
         return true;
       }
-      throw new Error(
-        `diary write failed legacy=${legacy.status} modern=${modern.status} `
-        + `legacyBody="${shortResponse(legacy.text)}" modernBody="${shortResponse(modern.text)}"`
-      );
     }
 
-    throw new Error(
-      `diary write failed legacy=${legacy.status}; could not resolve filmId; `
-      + `legacyBody="${shortResponse(legacy.text)}"`
-    );
+    const details = attempts
+      .map((a) => `${a.name} status=${a.status} verified=${a.verified} reason=${a.reason} body="${a.body}"`)
+      .join(" || ");
+    throw new Error(`diary write unverified (${summarizeAttempt(attempts)}); ${details}`);
   }
 
   return false; // dismiss — no Letterboxd write needed
