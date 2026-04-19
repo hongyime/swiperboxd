@@ -1136,10 +1136,13 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         sendResponse({ ok: true, state: syncState });
         return;
       case "GET_WEBAPP_AUTH": {
+        log("[auth-bridge] GET_WEBAPP_AUTH received");
         const cfg = await getConfig();
         if (cfg.username && cfg.sessionToken) {
+          log(`[auth-bridge] returning auth for ${cfg.username}`);
           sendResponse({ ok: true, username: cfg.username, sessionToken: cfg.sessionToken, apiBase: cfg.apiBase || DEFAULT_API_BASE });
         } else {
+          log("[auth-bridge] no stored credentials (popup Connect required)");
           sendResponse({ ok: false, error: "not connected — open extension popup and click Connect" });
         }
         return;

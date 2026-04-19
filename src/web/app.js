@@ -26,23 +26,127 @@ const state = {
   listSearchQuery: '',
 };
 
+const EXT_LOG_PREFIX = '[swiperboxd-web/ext]';
+const EXT_MAX_PRESENT_SIGNALS = 20;
+
+const extensionBridge = {
+  presentSignals: [],
+  authAttempts: 0,
+  swipeAttempts: 0,
+  lastAuthRequestId: null,
+  lastAuthError: null,
+  lastAuthStartedAt: null,
+  lastAuthCompletedAt: null,
+};
+
+function extLog(message, meta) {
+  const ts = new Date().toISOString();
+  if (meta !== undefined) console.info(`${EXT_LOG_PREFIX} ${ts} ${message}`, meta);
+  else console.info(`${EXT_LOG_PREFIX} ${ts} ${message}`);
+}
+
+function noteExtensionPresence(payload = {}) {
+  extensionBridge.presentSignals.push({
+    seenAt: Date.now(),
+    payload,
+  });
+  if (extensionBridge.presentSignals.length > EXT_MAX_PRESENT_SIGNALS) {
+    extensionBridge.presentSignals.splice(0, extensionBridge.presentSignals.length - EXT_MAX_PRESENT_SIGNALS);
+  }
+}
+
+function extensionDiagnostics() {
+  return {
+    origin: window.location.origin,
+    href: window.location.href,
+    userAgent: navigator.userAgent,
+    presentSignalCount: extensionBridge.presentSignals.length,
+    lastPresenceAt: extensionBridge.presentSignals.length
+      ? new Date(extensionBridge.presentSignals[extensionBridge.presentSignals.length - 1].seenAt).toISOString()
+      : null,
+    lastAuthRequestId: extensionBridge.lastAuthRequestId,
+    lastAuthError: extensionBridge.lastAuthError,
+    lastAuthStartedAt: extensionBridge.lastAuthStartedAt ? new Date(extensionBridge.lastAuthStartedAt).toISOString() : null,
+    lastAuthCompletedAt: extensionBridge.lastAuthCompletedAt ? new Date(extensionBridge.lastAuthCompletedAt).toISOString() : null,
+  };
+}
+
+window.addEventListener('message', (event) => {
+  if (event.source !== window) return;
+  const d = event.data;
+  if (d?.type === 'SWIPERBOXD_EXT_PRESENT') {
+    noteExtensionPresence(d);
+    extLog('received extension presence signal', {
+      source: d.source || 'unknown',
+      emittedAt: d.emittedAt || null,
+      href: d.href || null,
+    });
+  }
+});
+
 function requestExtensionSwipe(action, movieSlug, timeoutMs = 8000) {
   return new Promise((resolve) => {
+    const requestId = `swipe-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    extensionBridge.swipeAttempts += 1;
+    extLog('starting swipe bridge request', {
+      requestId,
+      action,
+      movieSlug,
+      timeoutMs,
+      attempt: extensionBridge.swipeAttempts,
+      diagnostics: extensionDiagnostics(),
+    });
+
     const timer = setTimeout(() => {
       window.removeEventListener('message', handler);
-      resolve({ lbSynced: false, error: 'extension timed out — is it installed and signed in to Letterboxd?' });
+      extLog('swipe bridge timed out', {
+        requestId,
+        action,
+        movieSlug,
+        diagnostics: extensionDiagnostics(),
+      });
+      resolve({
+        lbSynced: false,
+        error: 'extension timed out — is it installed and signed in to Letterboxd?',
+        requestId,
+      });
     }, timeoutMs);
+
     function handler(event) {
       if (event.source !== window) return;
       const d = event.data;
+      if (d?.type === 'SWIPERBOXD_EXT_PRESENT') noteExtensionPresence(d);
       if (d?.type === 'SWIPERBOXD_SWIPE_RESULT' && d.movieSlug === movieSlug && d.action === action) {
+        if (d.requestId && d.requestId !== requestId) {
+          extLog('ignoring swipe result for different request id', {
+            expected: requestId,
+            actual: d.requestId,
+            action,
+            movieSlug,
+          });
+          return;
+        }
         clearTimeout(timer);
         window.removeEventListener('message', handler);
-        resolve({ lbSynced: d.lbSynced, error: d.error });
+        extLog('received swipe bridge response', {
+          requestId,
+          action,
+          movieSlug,
+          lbSynced: d.lbSynced,
+          error: d.error || null,
+        });
+        resolve({ lbSynced: d.lbSynced, error: d.error, requestId: d.requestId || requestId });
       }
     }
+
     window.addEventListener('message', handler);
-    window.postMessage({ type: 'SWIPERBOXD_SWIPE', action, movieSlug }, window.location.origin);
+    window.postMessage({
+      type: 'SWIPERBOXD_SWIPE',
+      action,
+      movieSlug,
+      requestId,
+      sentAt: Date.now(),
+    }, window.location.origin);
   });
 }
 
@@ -84,21 +188,65 @@ function initAuth() {
 
 function requestExtensionAuth(timeoutMs = 4000) {
   return new Promise((resolve) => {
+    const requestId = `auth-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    extensionBridge.authAttempts += 1;
+    extensionBridge.lastAuthRequestId = requestId;
+    extensionBridge.lastAuthStartedAt = Date.now();
+    extensionBridge.lastAuthCompletedAt = null;
+    extensionBridge.lastAuthError = null;
+
+    extLog('starting auth bridge request', {
+      requestId,
+      timeoutMs,
+      attempt: extensionBridge.authAttempts,
+      diagnostics: extensionDiagnostics(),
+    });
+
     const timer = setTimeout(() => {
       window.removeEventListener('message', handler);
-      resolve({ ok: false, error: 'Extension not detected — install it and click Connect in the popup first.' });
+      extensionBridge.lastAuthCompletedAt = Date.now();
+      const diag = extensionDiagnostics();
+      const noPresenceSignal = diag.presentSignalCount === 0;
+      const error = noPresenceSignal
+        ? `Extension bridge timed out on ${window.location.origin}. The extension content script did not respond on this page. Check extension Site access for this URL, reload the page, then click Connect again.`
+        : 'Extension responded earlier but auth did not return in time — open extension popup, click Connect, then retry.';
+      extensionBridge.lastAuthError = error;
+      extLog('auth bridge timed out', { requestId, diagnostics: diag });
+      resolve({ ok: false, error, requestId, diagnostics: diag });
     }, timeoutMs);
+
     function handler(event) {
       if (event.source !== window) return;
       const d = event.data;
+      if (d?.type === 'SWIPERBOXD_EXT_PRESENT') noteExtensionPresence(d);
       if (d?.type === 'SWIPERBOXD_AUTH_RESULT') {
+        if (d.requestId && d.requestId !== requestId) {
+          extLog('ignoring auth result for different request id', {
+            expected: requestId,
+            actual: d.requestId,
+          });
+          return;
+        }
         clearTimeout(timer);
         window.removeEventListener('message', handler);
-        resolve(d);
+        extensionBridge.lastAuthCompletedAt = Date.now();
+        extensionBridge.lastAuthError = d.ok ? null : (d.error || 'unknown auth bridge error');
+        extLog('received auth bridge response', {
+          requestId,
+          ok: d.ok,
+          username: d.username || null,
+          error: d.error || null,
+        });
+        resolve(d.requestId ? d : { ...d, requestId });
       }
     }
+
     window.addEventListener('message', handler);
-    window.postMessage({ type: 'SWIPERBOXD_GET_AUTH' }, window.location.origin);
+    window.postMessage({
+      type: 'SWIPERBOXD_GET_AUTH',
+      requestId,
+      sentAt: Date.now(),
+    }, window.location.origin);
   });
 }
 
@@ -114,10 +262,20 @@ async function connectViaExtension() {
   btn.textContent = 'Connect via extension →';
 
   if (!result.ok) {
-    errDiv.textContent = result.error;
+    extLog('connectViaExtension failed', {
+      requestId: result.requestId || null,
+      error: result.error,
+      diagnostics: result.diagnostics || extensionDiagnostics(),
+    });
+    errDiv.textContent = `${result.error} (see DevTools console logs tagged ${EXT_LOG_PREFIX})`;
     errDiv.classList.remove('hidden');
     return;
   }
+
+  extLog('connectViaExtension succeeded', {
+    requestId: result.requestId || null,
+    username: result.username,
+  });
 
   state.username = result.username;
   state.encryptedSession = result.sessionToken;
@@ -127,6 +285,11 @@ async function connectViaExtension() {
 function checkSavedSession() {
   // Try silent auto-connect on load — succeeds if extension is installed and connected
   requestExtensionAuth(3000).then((result) => {
+    extLog('silent auth attempt completed', {
+      ok: result.ok,
+      requestId: result.requestId || null,
+      error: result.error || null,
+    });
     if (result.ok) {
       state.username = result.username;
       state.encryptedSession = result.sessionToken;
