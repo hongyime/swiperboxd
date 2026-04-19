@@ -537,7 +537,7 @@ async function scrapeOneListForFill(cfg, listRow, maxPages) {
 
 // ── Sync routines ────────────────────────────────────────────────────────────
 
-async function scrapeListType({ cfg, pathFn, batchEndpoint, phaseName, onFound }) {
+async function scrapeListType({ cfg, pathFn, batchEndpoint, phaseName, onFound, onSlugsCollected }) {
   let page = 1;
   let totalPages = null;
   let totalFound = 0;
@@ -575,6 +575,11 @@ async function scrapeListType({ cfg, pathFn, batchEndpoint, phaseName, onFound }
     buffer.push(...slugs);
     totalFound += slugs.length;
     onFound(totalFound);
+
+    // NEW: Callback to collect slugs for metadata fetching
+    if (onSlugsCollected) {
+      onSlugsCollected(slugs);
+    }
 
     if (buffer.length >= BATCH_FLUSH_THRESHOLD || page === totalPages) {
       const toPush = buffer.splice(0, buffer.length);
@@ -633,6 +638,7 @@ async function scrapeUserHistory(cfg, settings = {}) {
   const doWatchlist = settings.syncWatchlist !== false;
   const doDiary = settings.syncDiary !== false;
   let wl = 0, diary = 0;
+  const allSlugs = new Set();
 
   if (doWatchlist) {
     syncState.phase = "watchlist";
@@ -648,8 +654,11 @@ async function scrapeUserHistory(cfg, settings = {}) {
       phaseName: "watchlist",
       onFound: (n) => {
         syncState.watchlistFound = n;
-        syncState.percent = Math.min(49, Math.floor((syncState.currentPage / Math.max(1, syncState.totalPages)) * 45));
+        syncState.percent = Math.min(33, Math.floor((syncState.currentPage / Math.max(1, syncState.totalPages)) * 30));
         broadcast();
+      },
+      onSlugsCollected: (slugs) => {
+        slugs.forEach(s => allSlugs.add(s));
       },
     });
     if (syncState.stopRequested) return { watchlist: wl, diary: 0, stopped: true };
@@ -669,13 +678,38 @@ async function scrapeUserHistory(cfg, settings = {}) {
       phaseName: "diary",
       onFound: (n) => {
         syncState.diaryFound = n;
-        syncState.percent = 50 + Math.min(49, Math.floor((syncState.currentPage / Math.max(1, syncState.totalPages)) * 45));
+        syncState.percent = 33 + Math.min(33, Math.floor((syncState.currentPage / Math.max(1, syncState.totalPages)) * 30));
         broadcast();
       },
+      onSlugsCollected: (slugs) => {
+        slugs.forEach(s => allSlugs.add(s));
+      },
     });
+    if (syncState.stopRequested) return { watchlist: wl, diary, stopped: true };
   }
 
-  return { watchlist: wl, diary, stopped: false };
+  // NEW: Fetch metadata for all collected slugs
+  const slugsArray = Array.from(allSlugs);
+  let metadataFetched = 0;
+  if (slugsArray.length > 0) {
+    syncState.phase = "metadata";
+    syncState.percent = 66;
+    broadcast();
+    log(`Fetching metadata for ${slugsArray.length} movies...`);
+    
+    try {
+      const result = await scrapeMoviesMetadata(cfg, slugsArray);
+      metadataFetched = result.processed;
+      log(`Metadata fetch complete: ${result.processed} movies processed`);
+    } catch (e) {
+      log(`ERROR: Metadata fetch failed: ${e.message}`);
+      // Non-fatal: slugs are already stored, metadata can be retried
+    }
+  }
+
+  syncState.percent = 100;
+  broadcast();
+  return { watchlist: wl, diary, stopped: false, metadata_fetched: metadataFetched };
 }
 
 function parseListUrl(rawUrl) {

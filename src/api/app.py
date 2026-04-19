@@ -851,7 +851,11 @@ async def extension_batch_watchlist(
     payload: ExtensionBatchRequest,
     verified_user: str = Depends(verify_session),
 ):
-    """Push a batch of watchlist slugs scraped by the Chrome extension."""
+    """Push a batch of watchlist slugs scraped by the Chrome extension.
+    
+    EXPECTS: Metadata for these slugs should already be in the database.
+    If metadata is missing, logs warning but doesn't fail the request.
+    """
     if verified_user and payload.user_id != verified_user:
         raise HTTPException(status_code=403, detail={"code": "user_id_mismatch"})
     if len(payload.slugs) > _EXTENSION_BATCH_LIMIT:
@@ -863,6 +867,15 @@ async def extension_batch_watchlist(
         flush=True,
     )
     result = store.batch_add_watchlist(payload.user_id, payload.slugs)
+    
+    # Warn if metadata is missing (shouldn't happen after Phase 1 fix)
+    if result.get("missing_metadata"):
+        print(
+            f"[extension] WARNING: {len(result['missing_metadata'])} movies missing metadata. "
+            f"Extension should fetch metadata before pushing watchlist.",
+            flush=True
+        )
+    
     return {
         "status": "ok",
         "user_id": payload.user_id,
@@ -877,7 +890,11 @@ async def extension_batch_diary(
     payload: ExtensionBatchRequest,
     verified_user: str = Depends(verify_session),
 ):
-    """Push a batch of diary slugs scraped by the Chrome extension."""
+    """Push a batch of diary slugs scraped by the Chrome extension.
+    
+    EXPECTS: Metadata for these slugs should already be in the database.
+    If metadata is missing, logs warning but doesn't fail the request.
+    """
     if verified_user and payload.user_id != verified_user:
         raise HTTPException(status_code=403, detail={"code": "user_id_mismatch"})
     if len(payload.slugs) > _EXTENSION_BATCH_LIMIT:
@@ -889,6 +906,15 @@ async def extension_batch_diary(
         flush=True,
     )
     result = store.batch_add_diary(payload.user_id, payload.slugs)
+    
+    # Warn if metadata is missing (shouldn't happen after Phase 1 fix)
+    if result.get("missing_metadata"):
+        print(
+            f"[extension] WARNING: {len(result['missing_metadata'])} movies missing metadata. "
+            f"Extension should fetch metadata before pushing diary.",
+            flush=True
+        )
+    
     return {
         "status": "ok",
         "user_id": payload.user_id,
@@ -1157,7 +1183,7 @@ def _run_user_history_sync(
 
     Returns a sync_stats dict with counts for the frontend.
     """
-    sync_stats: dict = {"watchlist_count": 0, "diary_count": 0, "errors": []}
+    sync_stats: dict = {"watchlist_count": 0, "diary_count": 0, "metadata_count": 0, "errors": []}
     print(f"[ingest/sync] starting user history sync for user_id={user_id} username={username}", flush=True)
     store.set_ingest_progress(user_id, 10)
 
@@ -1168,6 +1194,8 @@ def _run_user_history_sync(
         store.set_ingest_progress(user_id, 100)
         store.ingest_running.discard(user_id)
         return sync_stats
+
+    all_slugs = set()
 
     print(f"[ingest/sync] session cookie present (length={len(session_cookie)}), fetching watchlist (max_pages={max_watchlist_pages})...", flush=True)
 
@@ -1181,6 +1209,7 @@ def _run_user_history_sync(
         for slug in live_watchlist:
             try:
                 store.add_watchlist(user_id, slug)
+                all_slugs.add(slug)
                 stored += 1
             except Exception as slug_exc:
                 failed += 1
@@ -1194,7 +1223,7 @@ def _run_user_history_sync(
         print(f"[ingest/sync] ERROR: {msg}", flush=True)
         sync_stats["errors"].append(msg)
 
-    store.set_ingest_progress(user_id, 55)
+    store.set_ingest_progress(user_id, 40)
 
     print(f"[ingest/sync] fetching diary (max_pages={max_diary_pages})...", flush=True)
     try:
@@ -1207,6 +1236,7 @@ def _run_user_history_sync(
         for slug in live_diary:
             try:
                 store.add_diary(user_id, slug)
+                all_slugs.add(slug)
                 stored += 1
             except Exception as slug_exc:
                 failed += 1
@@ -1220,12 +1250,37 @@ def _run_user_history_sync(
         print(f"[ingest/sync] ERROR: {msg}", flush=True)
         sync_stats["errors"].append(msg)
 
+    store.set_ingest_progress(user_id, 70)
+
+    # NEW: Fetch metadata for all collected slugs
+    if all_slugs:
+        print(f"[ingest/sync] fetching metadata for {len(all_slugs)} movies...", flush=True)
+        missing = [slug for slug in all_slugs if not store.get_movie(slug)]
+        print(f"[ingest/sync] {len(missing)} movies need metadata", flush=True)
+        
+        if missing:
+            try:
+                movies = scraper.metadata_for_slugs(missing)
+                fetched = 0
+                for movie in movies:
+                    try:
+                        store.upsert_movie(movie.__dict__)
+                        fetched += 1
+                    except Exception as exc:
+                        sync_stats["errors"].append(f"metadata {movie.slug}: {exc}")
+                sync_stats["metadata_count"] = fetched
+                print(f"[ingest/sync] metadata fetched: {fetched} ok", flush=True)
+            except Exception as exc:
+                msg = f"metadata fetch failed: {type(exc).__name__}: {exc}"
+                print(f"[ingest/sync] ERROR: {msg}", flush=True)
+                sync_stats["errors"].append(msg)
+
     store.set_ingest_progress(user_id, 100)
     store.ingest_running.discard(user_id)
     print(
         f"[ingest/sync] DONE for {username}: "
         f"watchlist={sync_stats['watchlist_count']} diary={sync_stats['diary_count']} "
-        f"errors={len(sync_stats['errors'])}",
+        f"metadata={sync_stats['metadata_count']} errors={len(sync_stats['errors'])}",
         flush=True,
     )
     return sync_stats

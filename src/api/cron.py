@@ -240,25 +240,33 @@ async def backfill_scrapes_cron(
     max_movies: int = 60,
     max_lists: int = 10,
 ):
-    """Backfill placeholder movies and under-scraped lists. Best-effort — will
-    likely 403 from Vercel, but the same handler is called from the local
-    script (scripts/periodic_sync.py) where scraping works.
+    """Backfill ONLY:
+    1. Old placeholder movies (from before metadata-during-sync fix)
+    2. Under-scraped lists
+    
+    This is now a cleanup job, not the primary metadata source.
     """
     _require_cron_secret(x_cron_secret)
 
     scraper = HttpLetterboxdScraper()
     store = _get_store()
 
-    # ── Movies ────────────────────────────────────────────────────────────
+    # ── Movies: Only placeholders (legacy cleanup) ────────────────────────
     movie_stats = {"targeted": 0, "fetched": 0, "failed": 0}
     try:
         placeholder_slugs = store.get_placeholder_movie_slugs(limit=max_movies)
     except Exception as exc:
         print(f"[cron/backfill] placeholder query failed: {exc}", flush=True)
         placeholder_slugs = []
+    
     movie_stats["targeted"] = len(placeholder_slugs)
+    
     if placeholder_slugs:
-        print(f"[cron/backfill] fetching metadata for {len(placeholder_slugs)} placeholder movies", flush=True)
+        print(
+            f"[cron/backfill] WARNING: Found {len(placeholder_slugs)} placeholder movies. "
+            f"These should not exist after metadata-during-sync fix. Backfilling...",
+            flush=True
+        )
         try:
             movies = scraper.metadata_for_slugs(placeholder_slugs)
             for movie in movies:
@@ -272,7 +280,7 @@ async def backfill_scrapes_cron(
             movie_stats["failed"] += len(placeholder_slugs)
             print(f"[cron/backfill] movie scrape failed: {exc}", flush=True)
 
-    # ── Lists ─────────────────────────────────────────────────────────────
+    # ── Lists: Under-scraped only ──────────────────────────────────────────
     list_stats = {"targeted": 0, "scraped": 0, "failed": 0}
     try:
         lists = store.get_underscraped_lists(limit=max_lists)

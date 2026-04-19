@@ -336,26 +336,56 @@ class InMemoryStore:
         return list(memberships)
 
     def batch_add_watchlist(self, user_id: str, slugs: list[str]) -> dict:
+        """Add many watchlist slugs with per-slug error handling."""
         added = 0
         errors: list[str] = []
+        missing_metadata: list[str] = []
+        
         for slug in slugs:
+            if not slug or not slug.strip():
+                continue
             try:
                 self.add_watchlist(user_id, slug)
                 added += 1
+            except ValueError as exc:
+                # Movie metadata missing (in-memory doesn't enforce FK, but keep consistent API)
+                missing_metadata.append(slug)
+                errors.append(f"{slug}: metadata_missing")
             except Exception as exc:
                 errors.append(f"{slug}: {exc}")
-        return {"added": added, "errors": errors, "total": len(slugs)}
+        
+        return {
+            "added": added,
+            "errors": errors,
+            "missing_metadata": missing_metadata,
+            "total": len(slugs)
+        }
 
     def batch_add_diary(self, user_id: str, slugs: list[str]) -> dict:
+        """Add many diary slugs with per-slug error handling."""
         added = 0
         errors: list[str] = []
+        missing_metadata: list[str] = []
+        
         for slug in slugs:
+            if not slug or not slug.strip():
+                continue
             try:
                 self.add_diary(user_id, slug)
                 added += 1
+            except ValueError as exc:
+                # Movie metadata missing (in-memory doesn't enforce FK, but keep consistent API)
+                missing_metadata.append(slug)
+                errors.append(f"{slug}: metadata_missing")
             except Exception as exc:
                 errors.append(f"{slug}: {exc}")
-        return {"added": added, "errors": errors, "total": len(slugs)}
+        
+        return {
+            "added": added,
+            "errors": errors,
+            "missing_metadata": missing_metadata,
+            "total": len(slugs)
+        }
 
     def get_movies_by_slugs(self, slugs: list[str]) -> dict[str, dict]:
         """Return a slug→movie dict for all requested slugs (in-memory)."""
@@ -522,24 +552,28 @@ class SupabaseStore:
         return out
 
     def add_exclusion(self, user_id: str, slug: str) -> None:
-        """Add a movie to user's exclusion list in Supabase."""
+        """Add a movie to user's exclusion list in Supabase.
+        
+        REQUIRES: Movie must exist in movies table with complete metadata.
+        If movie doesn't exist, this will raise an exception.
+        Caller is responsible for fetching metadata first.
+        """
         actual_user_id = self._get_or_create_user_id(user_id)
         try:
             self.client.table("exclusions").insert({"user_id": actual_user_id, "movie_slug": slug}).execute()
         except Exception as e:
             err = str(e).lower()
             if "duplicate" in err or "unique" in err:
-                return
+                return  # Already in exclusions, OK
+            
             if "foreign key" in err or "23503" in err:
-                print(f"[store] exclusion FK miss for {slug} — creating placeholder movie", flush=True)
-                self._ensure_movie_placeholder(slug)
-                try:
-                    self.client.table("exclusions").insert({"user_id": actual_user_id, "movie_slug": slug}).execute()
-                except Exception as e2:
-                    if "duplicate" not in str(e2).lower() and "unique" not in str(e2).lower():
-                        print(f"[store] ERROR: exclusion retry failed for {slug}: {e2}", flush=True)
-                        raise
-                return
+                # Movie doesn't exist - this is now an ERROR, not auto-fixed
+                raise ValueError(
+                    f"Cannot add {slug} to exclusions: movie metadata not found. "
+                    f"Fetch metadata first using scraper.metadata_for_slugs(['{slug}'])"
+                ) from e
+            
+            # Other errors
             print(f"[store] ERROR: exclusion insert failed for {slug}: {e}", flush=True)
             raise
 
@@ -549,21 +583,13 @@ class SupabaseStore:
         response = self.client.table("exclusions").select("movie_slug").eq("user_id", actual_user_id).execute()
         return {row["movie_slug"] for row in response.data}
 
-    def _ensure_movie_placeholder(self, slug: str) -> None:
-        """Create a minimal movie record so FK constraints are satisfied.
-
-        Uses upsert so it's safe to call when the movie already exists.
-        The title is derived from the slug until real metadata is fetched.
-        """
-        title = slug.replace("-", " ").title()
-        self.client.table("movies").upsert(
-            {"slug": slug, "title": title},
-            on_conflict="slug",
-        ).execute()
-        print(f"[store] created placeholder movie for slug={slug}", flush=True)
-
     def add_watchlist(self, user_id: str, slug: str) -> None:
-        """Add a movie to user's watchlist in Supabase."""
+        """Add a movie to user's watchlist in Supabase.
+        
+        REQUIRES: Movie must exist in movies table with complete metadata.
+        If movie doesn't exist, this will raise an exception.
+        Caller is responsible for fetching metadata first.
+        """
         actual_user_id = self._get_or_create_user_id(user_id)
         try:
             self.client.table("watchlist").insert({
@@ -573,21 +599,16 @@ class SupabaseStore:
         except Exception as e:
             err = str(e).lower()
             if "duplicate" in err or "unique" in err:
-                return
-            # FK violation — movie slug not in movies table yet
+                return  # Already in watchlist, OK
+            
             if "foreign key" in err or "23503" in err:
-                print(f"[store] watchlist FK miss for {slug} — creating placeholder movie", flush=True)
-                self._ensure_movie_placeholder(slug)
-                try:
-                    self.client.table("watchlist").insert({
-                        "user_id": actual_user_id,
-                        "movie_slug": slug
-                    }).execute()
-                except Exception as e2:
-                    if "duplicate" not in str(e2).lower() and "unique" not in str(e2).lower():
-                        print(f"[store] ERROR: watchlist retry failed for {slug}: {e2}", flush=True)
-                        raise
-                return
+                # Movie doesn't exist - this is now an ERROR, not auto-fixed
+                raise ValueError(
+                    f"Cannot add {slug} to watchlist: movie metadata not found. "
+                    f"Fetch metadata first using scraper.metadata_for_slugs(['{slug}'])"
+                ) from e
+            
+            # Other errors
             print(f"[store] ERROR: watchlist insert failed for {slug}: {e}", flush=True)
             raise
 
@@ -599,7 +620,12 @@ class SupabaseStore:
         return {row["movie_slug"] for row in response.data}
 
     def add_diary(self, user_id: str, slug: str) -> None:
-        """Add a movie to user's diary in Supabase."""
+        """Add a movie to user's diary in Supabase.
+        
+        REQUIRES: Movie must exist in movies table with complete metadata.
+        If movie doesn't exist, this will raise an exception.
+        Caller is responsible for fetching metadata first.
+        """
         actual_user_id = self._get_or_create_user_id(user_id)
         try:
             self.client.table("diary").insert({
@@ -609,21 +635,16 @@ class SupabaseStore:
         except Exception as e:
             err = str(e).lower()
             if "duplicate" in err or "unique" in err:
-                return
-            # FK violation — movie slug not in movies table yet
+                return  # Already in diary, OK
+            
             if "foreign key" in err or "23503" in err:
-                print(f"[store] diary FK miss for {slug} — creating placeholder movie", flush=True)
-                self._ensure_movie_placeholder(slug)
-                try:
-                    self.client.table("diary").insert({
-                        "user_id": actual_user_id,
-                        "movie_slug": slug
-                    }).execute()
-                except Exception as e2:
-                    if "duplicate" not in str(e2).lower() and "unique" not in str(e2).lower():
-                        print(f"[store] ERROR: diary retry failed for {slug}: {e2}", flush=True)
-                        raise
-                return
+                # Movie doesn't exist - this is now an ERROR, not auto-fixed
+                raise ValueError(
+                    f"Cannot add {slug} to diary: movie metadata not found. "
+                    f"Fetch metadata first using scraper.metadata_for_slugs(['{slug}'])"
+                ) from e
+            
+            # Other errors
             print(f"[store] ERROR: diary insert failed for {slug}: {e}", flush=True)
             raise
 
@@ -862,33 +883,87 @@ class SupabaseStore:
         return [row["movie_slug"] for row in response.data]
 
     def batch_add_watchlist(self, user_id: str, slugs: list[str]) -> dict:
-        """Add many watchlist slugs with per-slug error handling. Used by extension batch push."""
+        """Add many watchlist slugs with per-slug error handling.
+        
+        REQUIRES: All movies must exist in movies table.
+        Missing movies will be logged as errors, not auto-created.
+        """
         added = 0
         errors: list[str] = []
+        missing_metadata: list[str] = []
+        
         for slug in slugs:
-            if not slug:
+            if not slug or not slug.strip():
                 continue
             try:
                 self.add_watchlist(user_id, slug)
                 added += 1
+            except ValueError as exc:
+                # Movie metadata missing
+                missing_metadata.append(slug)
+                errors.append(f"{slug}: metadata_missing")
             except Exception as exc:
                 errors.append(f"{slug}: {exc}")
                 print(f"[store] batch_add_watchlist error for {slug}: {exc}", flush=True)
-        print(f"[store] batch_add_watchlist: added={added} errors={len(errors)} total={len(slugs)}", flush=True)
-        return {"added": added, "errors": errors, "total": len(slugs)}
+        
+        if missing_metadata:
+            print(
+                f"[store] WARNING: {len(missing_metadata)} movies missing metadata. "
+                f"These should have been fetched during sync. Slugs: {missing_metadata[:10]}",
+                flush=True
+            )
+        
+        print(
+            f"[store] batch_add_watchlist: added={added} missing_metadata={len(missing_metadata)} "
+            f"errors={len(errors)} total={len(slugs)}",
+            flush=True
+        )
+        return {
+            "added": added,
+            "errors": errors,
+            "missing_metadata": missing_metadata,
+            "total": len(slugs)
+        }
 
     def batch_add_diary(self, user_id: str, slugs: list[str]) -> dict:
-        """Add many diary slugs with per-slug error handling. Used by extension batch push."""
+        """Add many diary slugs with per-slug error handling.
+        
+        REQUIRES: All movies must exist in movies table.
+        Missing movies will be logged as errors, not auto-created.
+        """
         added = 0
         errors: list[str] = []
+        missing_metadata: list[str] = []
+        
         for slug in slugs:
-            if not slug:
+            if not slug or not slug.strip():
                 continue
             try:
                 self.add_diary(user_id, slug)
                 added += 1
+            except ValueError as exc:
+                # Movie metadata missing
+                missing_metadata.append(slug)
+                errors.append(f"{slug}: metadata_missing")
             except Exception as exc:
                 errors.append(f"{slug}: {exc}")
                 print(f"[store] batch_add_diary error for {slug}: {exc}", flush=True)
-        print(f"[store] batch_add_diary: added={added} errors={len(errors)} total={len(slugs)}", flush=True)
-        return {"added": added, "errors": errors, "total": len(slugs)}
+        
+        if missing_metadata:
+            print(
+                f"[store] WARNING: {len(missing_metadata)} movies missing metadata. "
+                f"These should have been fetched during sync. Slugs: {missing_metadata[:10]}",
+                flush=True
+            )
+        
+        print(
+            f"[store] batch_add_diary: added={added} missing_metadata={len(missing_metadata)} "
+            f"errors={len(errors)} total={len(slugs)}",
+            flush=True
+        )
+        return {
+            "added": added,
+            "errors": errors,
+            "missing_metadata": missing_metadata,
+            "total": len(slugs)
+        }
