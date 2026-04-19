@@ -72,83 +72,68 @@ document.addEventListener('DOMContentLoaded', () => {
 // ==================== AUTH ====================
 
 function initAuth() {
-  $('#setup-continue-btn')?.addEventListener('click', () => {
-    setupScreen.classList.remove('active');
-    authScreen.classList.add('active');
-  });
-
-$('#back-to-setup-btn')?.addEventListener('click', () => {
-    authScreen.classList.remove('active');
-    setupScreen.classList.add('active');
-  });
-
-  loginForm.addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const sessionCookie = $('#letterboxd-session-cookie').value.trim();
-    if (!sessionCookie) return;
-
-    try {
-      const res = await api('/auth/session', {
-        method: 'POST',
-        body: { session_cookie: sessionCookie },
-      });
-      state.username = res.username;
-      state.encryptedSession = res.encrypted_session_cookie;
-      localStorage.setItem('swiperboxd_username', res.username);
-      localStorage.setItem('swiperboxd_token', res.encrypted_session_cookie);
-      broadcastAuthToExtension();
-      showSuccess('Connected!');
-      setTimeout(() => showDiscovery(), 800);
-    } catch (err) {
-      showError(err.message || 'Failed to connect. Check your credentials.');
-    }
-  });
-
+  $('#setup-connect-btn')?.addEventListener('click', connectViaExtension);
   $('#logout-btn')?.addEventListener('click', () => {
-    localStorage.removeItem('swiperboxd_username');
-    localStorage.removeItem('swiperboxd_token');
     state.username = null;
     state.encryptedSession = null;
     state.hasSynced = false;
-    setupScreen.classList.add('active');
-    authScreen.classList.remove('active');
     discoveryScreen.classList.remove('active');
+    setupScreen.classList.add('active');
   });
 }
 
+function requestExtensionAuth(timeoutMs = 4000) {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      window.removeEventListener('message', handler);
+      resolve({ ok: false, error: 'Extension not detected — install it and click Connect in the popup first.' });
+    }, timeoutMs);
+    function handler(event) {
+      if (event.source !== window) return;
+      const d = event.data;
+      if (d?.type === 'SWIPERBOXD_AUTH_RESULT') {
+        clearTimeout(timer);
+        window.removeEventListener('message', handler);
+        resolve(d);
+      }
+    }
+    window.addEventListener('message', handler);
+    window.postMessage({ type: 'SWIPERBOXD_GET_AUTH' }, window.location.origin);
+  });
+}
+
+async function connectViaExtension() {
+  const btn = $('#setup-connect-btn');
+  const errDiv = $('#setup-error');
+  btn.disabled = true;
+  btn.textContent = 'Connecting…';
+  errDiv.classList.add('hidden');
+
+  const result = await requestExtensionAuth();
+  btn.disabled = false;
+  btn.textContent = 'Connect via extension →';
+
+  if (!result.ok) {
+    errDiv.textContent = result.error;
+    errDiv.classList.remove('hidden');
+    return;
+  }
+
+  state.username = result.username;
+  state.encryptedSession = result.sessionToken;
+  showDiscovery();
+}
+
 function checkSavedSession() {
-  const username = localStorage.getItem('swiperboxd_username');
-  const session  = localStorage.getItem('swiperboxd_token');
-  if (username && session) {
-    state.username = username;
-    state.encryptedSession = session;
-    broadcastAuthToExtension();
-    showDiscovery();
-  } else {
-    // No saved session — show setup guide first
-    setupScreen.classList.add('active');
-    authScreen.classList.remove('active');
-  }
-}
-
-function broadcastAuthToExtension() {
-  if (!state.username || !state.encryptedSession) return;
-  try {
-    window.postMessage({
-      type: 'SWIPERBOXD_AUTH',
-      username: state.username,
-      sessionToken: state.encryptedSession,
-      apiBase: window.location.origin,
-    }, window.location.origin);
-  } catch (e) {
-    console.warn('[auth] extension postMessage failed:', e);
-  }
-}
-
-function showAuth() {
-  setupScreen.classList.remove('active');
-  discoveryScreen.classList.remove('active');
-  authScreen.classList.add('active');
+  // Try silent auto-connect on load — succeeds if extension is installed and connected
+  requestExtensionAuth(3000).then((result) => {
+    if (result.ok) {
+      state.username = result.username;
+      state.encryptedSession = result.sessionToken;
+      showDiscovery();
+    }
+    // On failure just stay on setup screen — user clicks Connect manually
+  });
 }
 
 function applyWriteAccess() {
@@ -172,21 +157,8 @@ function applyWriteAccess() {
 
 function showDiscovery() {
   setupScreen.classList.remove('active');
-  authScreen.classList.remove('active');
   discoveryScreen.classList.add('active');
   loadLists();
-}
-
-function showError(msg) {
-  errorDiv.textContent = msg;
-  errorDiv.classList.remove('hidden');
-  successDiv.classList.add('hidden');
-}
-
-function showSuccess(msg) {
-  successDiv.textContent = msg;
-  successDiv.classList.remove('hidden');
-  errorDiv.classList.add('hidden');
 }
 
 // ==================== DISCOVERY ====================
