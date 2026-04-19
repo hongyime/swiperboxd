@@ -313,8 +313,9 @@ function setEmptyState(icon, title, body) {
     <span class="empty-icon">${icon}</span>
     <h2>${esc(title)}</h2>
     <p>${esc(body)}</p>
-    <button onclick="loadDeck()" class="btn-secondary" style="margin-top:0.5rem">Retry</button>
+    <button id="empty-retry-btn" class="btn-secondary" style="margin-top:0.5rem">Retry</button>
   `;
+  emptyState.querySelector('#empty-retry-btn')?.addEventListener('click', () => loadDeck());
   emptyState.classList.remove('hidden');
 }
 
