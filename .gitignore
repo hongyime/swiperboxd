@@ -209,3 +209,15 @@ __marimo__/
 
 # Playwright persistent profile (Letterboxd cookie capture)
 .playwright-letterboxd/
+
+# Temporary project files
+.codeflicker/
+.deepsource.toml
+.sourcery.yml
+.agent/
+
+# IDE settings
+.vscode/
+
+# Database migrations (managed separately)
+db/migrations/
