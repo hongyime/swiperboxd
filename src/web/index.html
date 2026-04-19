@@ -55,7 +55,6 @@
       </div>
 
       <form id="letterboxd-login-form" class="auth-form">
-        <input type="text" id="letterboxd-username" placeholder="Letterboxd username" autocomplete="username" required />
         <textarea id="letterboxd-session-cookie" placeholder="letterboxd.user.CURRENT cookie value" rows="5" required autocomplete="off"></textarea>
         <button type="submit" class="btn-primary">Connect</button>
       </form>
@@ -107,6 +106,7 @@
             <span class="action-icon">★</span>
             <span class="action-label">Watched</span>
           </button>
+          <div id="browse-mode-hint" class="hidden" style="position:absolute;bottom:calc(100% + 0.5rem);left:50%;transform:translateX(-50%);white-space:nowrap;font-size:11px;color:var(--text-secondary);pointer-events:none;"></div>
         </div>
 
         <div class="key-hint">← Skip &nbsp;·&nbsp; → Watchlist &nbsp;·&nbsp; ↑ Watched &nbsp;·&nbsp; Space Info</div>

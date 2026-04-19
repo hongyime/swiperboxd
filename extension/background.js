@@ -1135,6 +1135,15 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       case "GET_STATE":
         sendResponse({ ok: true, state: syncState });
         return;
+      case "GET_WEBAPP_AUTH": {
+        const cfg = await getConfig();
+        if (cfg.username && cfg.sessionToken) {
+          sendResponse({ ok: true, username: cfg.username, sessionToken: cfg.sessionToken, apiBase: cfg.apiBase || DEFAULT_API_BASE });
+        } else {
+          sendResponse({ ok: false, error: "not connected — open extension popup and click Connect" });
+        }
+        return;
+      }
       case "START_SYNC":
         sendResponse(await runSync({
           syncWatchlist: msg.syncWatchlist,
@@ -1199,10 +1208,19 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
           sendResponse({ ok: false, error: e.message });
         }
         return;
-      case "BACKFILL_LB_IDS":
+      case "BACKFILL":
         try {
-          const result = await backfillLbFilmIds();
-          sendResponse({ ok: true, ...result });
+          const cfgB = await ensureConfig();
+          const urlB = `${cfgB.apiBase || DEFAULT_API_BASE}/api/extension/movies-needing-backfill?limit=500`;
+          const resB = await fetchWithRetry(urlB, {
+            headers: cfgB.sessionToken ? { "X-Session-Token": cfgB.sessionToken } : {},
+          });
+          if (!resB.ok) throw new Error(`movies-needing-backfill ${resB.status}`);
+          const { slugs: backfillSlugs, count: backfillCount } = await resB.json();
+          log(`backfill: ${backfillCount} movies need metadata`);
+          if (!backfillSlugs.length) { sendResponse({ ok: true, processed: 0 }); return; }
+          const resultB = await runMetadataScrape(backfillSlugs);
+          sendResponse({ ok: true, ...resultB });
         } catch (e) {
           sendResponse({ ok: false, error: e.message });
         }

@@ -16,6 +16,7 @@ function esc(str) {
 const state = {
   username: null,
   encryptedSession: null,
+  hasSynced: false,
   deck: [],
   currentIndex: 0,
   isSyncing: false,
@@ -80,25 +81,24 @@ function initAuth() {
     authScreen.classList.add('active');
   });
 
-  $('#back-to-setup-btn')?.addEventListener('click', () => {
+$('#back-to-setup-btn')?.addEventListener('click', () => {
     authScreen.classList.remove('active');
     setupScreen.classList.add('active');
   });
 
   loginForm.addEventListener('submit', async (e) => {
     e.preventDefault();
-    const username = $('#letterboxd-username').value.trim();
     const sessionCookie = $('#letterboxd-session-cookie').value.trim();
-    if (!username || !sessionCookie) return;
+    if (!sessionCookie) return;
 
     try {
       const res = await api('/auth/session', {
         method: 'POST',
-        body: { username, session_cookie: sessionCookie },
+        body: { session_cookie: sessionCookie },
       });
-      state.username = username;
+      state.username = res.username;
       state.encryptedSession = res.encrypted_session_cookie;
-      localStorage.setItem('swiperboxd_username', username);
+      localStorage.setItem('swiperboxd_username', res.username);
       localStorage.setItem('swiperboxd_token', res.encrypted_session_cookie);
       broadcastAuthToExtension();
       showSuccess('Connected!');
@@ -113,7 +113,10 @@ function initAuth() {
     localStorage.removeItem('swiperboxd_token');
     state.username = null;
     state.encryptedSession = null;
-    showAuth();
+    state.hasSynced = false;
+    setupScreen.classList.add('active');
+    authScreen.classList.remove('active');
+    discoveryScreen.classList.remove('active');
   });
 }
 
@@ -150,6 +153,25 @@ function showAuth() {
   setupScreen.classList.remove('active');
   discoveryScreen.classList.remove('active');
   authScreen.classList.add('active');
+}
+
+function applyWriteAccess() {
+  const hint = $('#browse-mode-hint');
+  const watchlistBtn = $('#btn-watchlist');
+  const logBtn = $('#btn-log');
+  const reason = 'Sync your Letterboxd data via the extension first to enable saving';
+
+  watchlistBtn.disabled = !state.hasSynced;
+  logBtn.disabled = !state.hasSynced;
+  if (!state.hasSynced) {
+    watchlistBtn.title = reason;
+    logBtn.title = reason;
+    if (hint) { hint.textContent = 'Sync extension to enable saving'; hint.classList.remove('hidden'); }
+  } else {
+    watchlistBtn.title = 'Watchlist  [→]';
+    logBtn.title = 'Watched  [↑]';
+    if (hint) hint.classList.add('hidden');
+  }
 }
 
 function showDiscovery() {
@@ -240,11 +262,26 @@ async function loadLists(query = '') {
   }
 
   if (!state.selectedListId && state.lists.length > 0) {
-    state.selectedListId = state.lists[0].list_id;
-    state.selectedListTitle = state.lists[0].title;
+    const pick = state.lists[Math.floor(Math.random() * state.lists.length)];
+    state.selectedListId = pick.list_id;
+    state.selectedListTitle = pick.title;
     currentProfileSpan.textContent = state.selectedListTitle;
-    loadDeck();
   }
+
+  // Check if this user has synced Letterboxd data into Supabase
+  if (state.username && state.username !== '_guest_') {
+    try {
+      const status = await api(`/users/${encodeURIComponent(state.username)}/sync-status`);
+      state.hasSynced = status.has_synced;
+    } catch (_) {
+      state.hasSynced = false;
+    }
+  } else {
+    state.hasSynced = false;
+  }
+
+  applyWriteAccess();
+  if (state.selectedListId) loadDeck();
 }
 
 function renderLists() {
@@ -382,6 +419,10 @@ function hideInfoPill() {
 
 async function executeSwipe(action) {
   if (state.isSyncing || state.deck.length === 0 || state.currentIndex >= state.deck.length) return;
+  if (action !== 'dismiss' && !state.hasSynced) {
+    showToast('Sync your Letterboxd data via the extension before saving');
+    return;
+  }
 
   hideInfoPill();
   state.isSyncing = true;

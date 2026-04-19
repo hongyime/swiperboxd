@@ -91,7 +91,7 @@ function renderProgress(state) {
   }
   el("start-btn").disabled = !!state.running;
   el("stop-btn").disabled = !state.running;
-  el("backfill-lb-ids-btn").disabled = !!state.running;
+  el("backfill-btn").disabled = !!state.running;
   el("scrape-list-btn").disabled = !!state.running;
   if (state.lastLog) {
     const target = (state.phase === "list" || state.phase === "movies") ? "list-log" : "log";
@@ -181,10 +181,12 @@ el("start-btn").addEventListener("click", async () => {
   if (!resp?.ok) logLine("log", `ERROR: ${resp?.error || "could not start"}`);
 });
 
-el("backfill-lb-ids-btn").addEventListener("click", async () => {
-  logLine("log", "Backfilling Letterboxd IDs…");
-  const resp = await chrome.runtime.sendMessage({ type: "BACKFILL_LB_IDS" });
-  if (resp?.ok) logLine("log", `Backfill done — updated=${resp.updated} failed=${resp.failed}`);
+el("backfill-btn").addEventListener("click", async () => {
+  logLine("log", "Backfilling missing metadata…");
+  el("backfill-btn").disabled = true;
+  const resp = await chrome.runtime.sendMessage({ type: "BACKFILL" });
+  el("backfill-btn").disabled = false;
+  if (resp?.ok) logLine("log", `Backfill done — processed=${resp.processed ?? 0}`);
   else logLine("log", `ERROR: ${resp?.error || "backfill failed"}`);
 });
 

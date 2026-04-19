@@ -441,6 +441,7 @@ body {
 
 .action-btn:hover { transform: scale(1.08); }
 .action-btn:active { transform: scale(0.94); }
+.action-btn:disabled { opacity: 0.3; cursor: not-allowed; transform: none; }
 
 .action-label {
   font-size: 0.62rem;

@@ -204,12 +204,12 @@ def verify_extension(x_session_token: str = Header(None, alias="X-Session-Token"
 
 
 class AuthSessionRequest(BaseModel):
-    username: str = Field(min_length=1)
     session_cookie: str = Field(min_length=1)
 
 
 class AuthSessionResponse(BaseModel):
     status: Literal["ok"]
+    username: str
     encrypted_session_cookie: str
 
 
@@ -352,6 +352,18 @@ def web_assets(path: str):
 @app.get("/discovery/profiles")
 def discovery_profiles():
     return {"profiles": list(PROFILES.keys())}
+
+
+@app.get("/users/{username}/sync-status")
+def user_sync_status(username: str):
+    """Return whether the user has synced watchlist or diary data into Supabase."""
+    try:
+        wl = store.get_watchlist(username)
+        diary = store.get_diary(username)
+        return {"has_synced": bool(wl or diary), "watchlist_count": len(wl), "diary_count": len(diary)}
+    except Exception as exc:
+        print(f"[sync-status] failed for {username}: {exc}", flush=True)
+        return {"has_synced": False, "watchlist_count": 0, "diary_count": 0}
 
 
 @app.get("/lists/catalog")
@@ -574,25 +586,26 @@ def create_auth_session(payload: AuthSessionRequest):
     if not master_key:
         raise HTTPException(status_code=500, detail={"code": "missing_master_key"})
 
-    print(f"[auth] validating session cookie for user={payload.username}", flush=True)
     try:
-        _validate_letterboxd_session(payload.username, payload.session_cookie)
-        print("[auth] session cookie valid", flush=True)
+        username = _extract_username_from_cookie(payload.session_cookie)
     except Exception as exc:
         print(f"[auth] session validation failed: {exc}", flush=True)
         raise HTTPException(status_code=401, detail={"code": "invalid_session_cookie", "reason": str(exc)}) from exc
 
-    token_payload = json.dumps({"u": payload.username, "c": payload.session_cookie})
+    if not username:
+        raise HTTPException(status_code=401, detail={"code": "invalid_session_cookie", "reason": "could not resolve username from cookie — is it expired?"})
+
+    print(f"[auth] session cookie valid for user={username}", flush=True)
+    token_payload = json.dumps({"u": username, "c": payload.session_cookie})
     encrypted_cookie = encrypt_session_cookie(token_payload, master_key)
 
-    # Persist encrypted session in Supabase for future server-side operations
     try:
-        store.save_user_session(payload.username, encrypted_cookie)
-        print(f"[auth] encrypted session stored in DB for user={payload.username}", flush=True)
+        store.save_user_session(username, encrypted_cookie)
+        print(f"[auth] session stored for user={username}", flush=True)
     except Exception as exc:
-        print(f"[auth] WARNING: failed to store session in DB: {exc}", flush=True)
+        print(f"[auth] WARNING: failed to store session: {exc}", flush=True)
 
-    return AuthSessionResponse(status="ok", encrypted_session_cookie=encrypted_cookie)
+    return AuthSessionResponse(status="ok", username=username, encrypted_session_cookie=encrypted_cookie)
 
 
 @app.post("/ingest/start")
@@ -1008,23 +1021,23 @@ async def extension_batch_list_summaries(
     return {"status": "ok", "stored": stored, "failed": failed}
 
 
-@app.get("/api/extension/movies-missing-lb-id")
-def extension_movies_missing_lb_id(
+@app.get("/api/extension/movies-needing-backfill")
+def extension_movies_needing_backfill(
     limit: int = Query(default=500, ge=1, le=2000),
     verified_user: str = Depends(verify_session),
 ):
-    """Return slugs of movies that have no lb_film_id yet — used by the extension backfill."""
+    """Return slugs of movies missing any core metadata (title, poster, or lb_film_id)."""
     try:
         response = (
             store.client.table("movies")
             .select("slug")
-            .is_("lb_film_id", "null")
+            .or_("title.is.null,title.eq.,poster_url.is.null,poster_url.eq.,lb_film_id.is.null")
             .limit(limit)
             .execute()
         )
         slugs = [r["slug"] for r in (response.data or []) if r.get("slug")]
     except Exception as exc:
-        print(f"[extension] movies-missing-lb-id failed: {exc}", flush=True)
+        print(f"[extension] movies-needing-backfill failed: {exc}", flush=True)
         return {"status": "error", "slugs": [], "reason": str(exc)}
     return {"status": "ok", "count": len(slugs), "slugs": slugs}
 
