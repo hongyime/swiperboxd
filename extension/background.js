@@ -1055,6 +1055,28 @@ async function postLetterboxdForm(path, params, filmUrl) {
   return { ok: res.ok, status: res.status, text };
 }
 
+async function patchLetterboxdWatchlistV0(lid, csrf, filmUrl) {
+  const payload = JSON.stringify({ inWatchlist: true });
+  const path = `/api/v0/me/watchlist/${encodeURIComponent(String(lid || "").trim())}`;
+  log(`[lb-patch] ${path} body_len=${payload.length} keys=[inWatchlist]`);
+  const res = await fetch(`${LB_BASE}${path}`, {
+    method: "PATCH",
+    credentials: "include",
+    headers: {
+      "Accept": "*/*",
+      "Content-Type": "application/json; charset=UTF-8",
+      "X-CSRF-Token": csrf,
+      "X-Requested-With": "XMLHttpRequest",
+      "Referer": filmUrl,
+      "Origin": LB_BASE,
+    },
+    body: payload,
+  });
+  const text = await res.text().catch(() => "");
+  log(`[lb-patch] ${path} response status=${res.status} body_sample="${shortResponse(text, 120)}"`);
+  return { ok: res.ok, status: res.status, text };
+}
+
 function shortResponse(text, max = 180) {
   return String(text || "").replace(/\s+/g, " ").trim().slice(0, max);
 }
@@ -1190,6 +1212,29 @@ async function writeToLetterboxd(action, movieSlug) {
   if (action === "watchlist") {
     const attempts = [];
 
+    async function tryWatchlistApiV0(lid) {
+      const res = await patchLetterboxdWatchlistV0(lid, csrf, filmUrl);
+      let verification = { verified: false, reason: "request_not_ok" };
+      if (res.ok) {
+        verification = await verifyWatchlistContainsSlug(username, movieSlug, {
+          maxPages: 8,
+          maxProbes: 3,
+          delayMs: 250,
+          includeGenericPath: true,
+        });
+      }
+      const attempt = {
+        name: `api_v0_watchlist#${lid}`,
+        status: res.status,
+        verified: verification.verified,
+        reason: verification.reason,
+        body: shortResponse(res.text),
+      };
+      attempts.push(attempt);
+      log(`[lb-write] watchlist attempt=${attempt.name} status=${res.status} verified=${attempt.verified} reason=${attempt.reason} body_snippet="${attempt.body}"`);
+      return attempt.verified;
+    }
+
     async function tryWatchlistEndpoint(name, path, params) {
       const usedFilmId = params.filmId || params["filmIds[]"] || "(none)";
       log(`[lb-write] trying ${name} filmId=${usedFilmId} candidates=${filmIdCandidates.join(",")}`);
@@ -1224,7 +1269,18 @@ async function writeToLetterboxd(action, movieSlug) {
       return attempt.verified;
     }
 
-    // Prefer watchlist-specific endpoint first.
+    // Prefer official Letterboxd API v0 endpoint first.
+    if (posterIdentifiers.lids.length) {
+      for (const lid of posterIdentifiers.lids) {
+        const ok = await tryWatchlistApiV0(lid);
+        if (ok) {
+          log(`[lb-write] watchlist added via /api/v0/me/watchlist/{lid}: ${movieSlug}`);
+          return true;
+        }
+      }
+    }
+
+    // Fallback: watchlist-specific form endpoint.
     if (filmIdCandidates.length) {
       for (const candidateId of filmIdCandidates) {
         const ok = await tryWatchlistEndpoint(
