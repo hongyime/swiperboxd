@@ -205,6 +205,8 @@ function markCrossSyncSuccess(username) {
 function setCrossSyncBadge(variant = 'idle', text = 'Sync pending') {
   const badge = $('#cross-sync-badge');
   if (!badge) return;
+  // Hidden by product decision — keep state updates internal without showing UI pill.
+  badge.style.display = 'none';
   badge.classList.remove('sync-badge-idle', 'sync-badge-running', 'sync-badge-success', 'sync-badge-error');
   badge.classList.add(`sync-badge-${variant}`);
   badge.textContent = text;
@@ -440,8 +442,8 @@ async function maybeRunInitialCrossSync() {
 
   let lastError = null;
   for (let attempt = 1; attempt <= 2; attempt++) {
-    // Auto sync should be lightweight on page load: pull recent pages only + no push-backs.
-    const result = await requestExtensionCrossSync(180000, 0, 2);
+    // Auto sync should be lightweight on page load: pull latest page only + no push-backs.
+    const result = await requestExtensionCrossSync(120000, 0, 1);
     if (result.ok) {
       markCrossSyncSuccess(username);
       const summary = result.summary || {};
