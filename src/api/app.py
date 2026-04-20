@@ -1129,27 +1129,60 @@ async def extension_batch_list_summaries(
 @app.get("/api/extension/movies-needing-backfill")
 def extension_movies_needing_backfill(
     limit: int = Query(default=500, ge=1, le=2000),
+    mode: str = Query(default="core", pattern="^(core|full)$"),
     verified_user: str = Depends(verify_session),
 ):
-    """Return slugs of movies missing any core metadata (title, poster, or lb_film_id)."""
+    """Return slugs of movies with incomplete metadata.
+
+    mode=core => title/poster/lb_film_id required
+    mode=full => core + year/director/synopsis/genres/cast/rating expected
+    """
     try:
         response = (
             store.client.table("movies")
-            .select("slug")
-            .or_("title.is.null,title.eq.,poster_url.is.null,poster_url.eq.,lb_film_id.is.null,lb_film_id.eq.")
-            .limit(limit)
+            .select("slug,title,poster_url,lb_film_id,year,director,synopsis,genres,cast,rating")
+            .limit(min(5000, max(limit * 3, limit)))
             .execute()
         )
-        slugs = [r["slug"] for r in (response.data or []) if r.get("slug")]
+        rows = response.data or []
+
+        def _missing_core(row: dict) -> bool:
+            return (
+                not (row.get("title") or "").strip()
+                or not (row.get("poster_url") or "").strip()
+                or not (row.get("lb_film_id") or "").strip()
+            )
+
+        def _missing_full(row: dict) -> bool:
+            if _missing_core(row):
+                return True
+            synopsis = (row.get("synopsis") or "").strip()
+            director = (row.get("director") or "").strip()
+            year = row.get("year")
+            genres = row.get("genres") if isinstance(row.get("genres"), list) else []
+            cast = row.get("cast") if isinstance(row.get("cast"), list) else []
+            rating = row.get("rating")
+            return (
+                not synopsis
+                or not director
+                or year in (None, "")
+                or not genres
+                or not cast
+                or rating in (None, "")
+            )
+
+        predicate = _missing_full if mode == "full" else _missing_core
+        slugs = [r["slug"] for r in rows if r.get("slug") and predicate(r)][:limit]
     except Exception as exc:
         print(f"[extension] movies-needing-backfill failed: {exc}", flush=True)
         return {"status": "error", "slugs": [], "reason": str(exc)}
-    return {"status": "ok", "count": len(slugs), "slugs": slugs}
+    return {"status": "ok", "mode": mode, "count": len(slugs), "slugs": slugs}
 
 
 @app.get("/api/extension/lists-needing-scrape")
 def extension_lists_needing_scrape(
     limit: int = Query(default=25, ge=1, le=200),
+    min_coverage: float = Query(default=0.5, ge=0.0, le=1.0),
     verified_user: str = Depends(verify_session),
 ):
     """Return list_summaries rows that are under 50% scraped (or brand-new).
@@ -1158,7 +1191,7 @@ def extension_lists_needing_scrape(
     Returns minimal fields — list_id, url, title, film_count, scraped_film_count.
     """
     try:
-        rows = store.get_underscraped_lists(limit=limit)
+        rows = store.get_underscraped_lists(limit=limit, min_coverage=min_coverage)
     except Exception as exc:
         print(f"[extension] lists-needing-scrape failed: {exc}", flush=True)
         return {"status": "error", "lists": [], "reason": str(exc)}

@@ -91,7 +91,7 @@ class Store(Protocol):
 
     def get_placeholder_movie_slugs(self, limit: int = 200) -> list[str]: ...
 
-    def get_underscraped_lists(self, limit: int = 50) -> list[dict]: ...
+    def get_underscraped_lists(self, limit: int = 50, min_coverage: float = 0.5) -> list[dict]: ...
 
     def upsert_list_summary(self, list_summary: dict) -> None: ...
 
@@ -158,16 +158,17 @@ class InMemoryStore:
                     placeholders.append(slug)
         return placeholders
 
-    def get_underscraped_lists(self, limit: int = 50) -> list[dict]:
-        """Return list summaries where scraped_film_count < 50% of film_count."""
+    def get_underscraped_lists(self, limit: int = 50, min_coverage: float = 0.5) -> list[dict]:
+        """Return list summaries where scraped_film_count < min_coverage * film_count."""
         out: list[dict] = []
+        threshold = max(0.0, min(1.0, float(min_coverage)))
         with self.lock:
             for summary in self.list_summaries.values():
                 if len(out) >= limit:
                     break
                 film_count = int(summary.get("film_count", 0) or 0)
                 scraped = int(summary.get("scraped_film_count", 0) or 0)
-                if film_count > 0 and scraped < film_count * 0.5:
+                if film_count > 0 and scraped < film_count * threshold:
                     out.append(dict(summary))
         return out
 
@@ -529,8 +530,9 @@ class SupabaseStore:
         print(f"[store] get_placeholder_movie_slugs: {len(placeholders)} placeholders", flush=True)
         return placeholders
 
-    def get_underscraped_lists(self, limit: int = 50) -> list[dict]:
-        """Return list summaries where scraped_film_count < 50% of film_count."""
+    def get_underscraped_lists(self, limit: int = 50, min_coverage: float = 0.5) -> list[dict]:
+        """Return list summaries where scraped_film_count < min_coverage * film_count."""
+        threshold = max(0.0, min(1.0, float(min_coverage)))
         response = (
             self.client.table("list_summaries")
             .select("*")
@@ -544,11 +546,14 @@ class SupabaseStore:
         for row in rows:
             film_count = int(row.get("film_count", 0) or 0)
             scraped = int(row.get("scraped_film_count", 0) or 0)
-            if film_count > 0 and scraped < film_count * 0.5:
+            if film_count > 0 and scraped < film_count * threshold:
                 out.append(row)
             if len(out) >= limit:
                 break
-        print(f"[store] get_underscraped_lists: {len(out)} lists under 50% scraped", flush=True)
+        print(
+            f"[store] get_underscraped_lists: {len(out)} lists under {int(threshold * 100)}% scraped",
+            flush=True,
+        )
         return out
 
     def add_exclusion(self, user_id: str, slug: str) -> None:
