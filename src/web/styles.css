@@ -298,7 +298,7 @@ body {
 }
 
 .sync-badge {
-  display: inline-flex;
+  display: none !important;
   align-items: center;
   border-radius: 999px;
   padding: 0.22rem 0.56rem;
