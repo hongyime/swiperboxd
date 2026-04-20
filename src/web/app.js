@@ -72,6 +72,44 @@ function extLog(message, meta) {
   else console.info(`${EXT_LOG_PREFIX} ${ts} ${message}`);
 }
 
+function normalizeExtensionBridgeError(rawError, fallback = 'Extension bridge failed') {
+  const original = String(rawError || '').trim();
+  const lower = original.toLowerCase();
+
+  if (lower.includes('unknown error occurred when fetching the script')) {
+    return {
+      code: 'script_fetch_failed',
+      message:
+        'Chrome could not load one of the extension scripts. Reload the extension on chrome://extensions, then refresh this page and try Connect again.',
+      original,
+    };
+  }
+
+  if (lower.includes('receiving end does not exist')) {
+    return {
+      code: 'receiving_end_missing',
+      message:
+        'The extension background worker is not reachable. Open the extension popup once (or reload the extension), then retry.',
+      original,
+    };
+  }
+
+  if (lower.includes('message port closed before a response was received')) {
+    return {
+      code: 'message_port_closed',
+      message:
+        'The extension worker stopped before replying. Reopen the extension popup and try again.',
+      original,
+    };
+  }
+
+  return {
+    code: 'bridge_error',
+    message: original || fallback,
+    original,
+  };
+}
+
 function noteExtensionPresence(payload = {}) {
   extensionBridge.presentSignals.push({
     seenAt: Date.now(),
@@ -155,14 +193,24 @@ function requestExtensionSwipe(action, movieSlug, timeoutMs = 20000) {
         }
         clearTimeout(timer);
         window.removeEventListener('message', handler);
+        const mapped = d?.lbSynced
+          ? null
+          : normalizeExtensionBridgeError(d?.error, 'Letterboxd write failed');
         extLog('received swipe bridge response', {
           requestId,
           action,
           movieSlug,
           lbSynced: d.lbSynced,
           error: d.error || null,
+          mappedError: mapped,
         });
-        resolve({ lbSynced: d.lbSynced, error: d.error, requestId: d.requestId || requestId });
+        resolve({
+          lbSynced: d.lbSynced,
+          error: mapped?.message || d.error,
+          errorCode: mapped?.code || null,
+          originalError: mapped?.original || d.error || null,
+          requestId: d.requestId || requestId,
+        });
       }
     }
 
@@ -253,14 +301,20 @@ function requestExtensionCrossSync(timeoutMs = 180000, maxPushPerKind = 300, his
         }
         clearTimeout(timer);
         window.removeEventListener('message', handler);
+        const mapped = d.ok
+          ? null
+          : normalizeExtensionBridgeError(d.error, 'cross-sync failed');
         extLog('received cross-sync bridge response', {
           requestId,
           ok: d.ok === true,
           error: d.error || null,
+          mappedError: mapped,
         });
         resolve({
           ok: d.ok === true,
-          error: d.error || null,
+          error: mapped?.message || d.error || null,
+          errorCode: mapped?.code || null,
+          originalError: mapped?.original || d.error || null,
           summary: d.summary || null,
           requestId: d.requestId || requestId,
         });
@@ -358,14 +412,28 @@ function requestExtensionAuth(timeoutMs = 4000) {
         clearTimeout(timer);
         window.removeEventListener('message', handler);
         extensionBridge.lastAuthCompletedAt = Date.now();
-        extensionBridge.lastAuthError = d.ok ? null : (d.error || 'unknown auth bridge error');
+        const mapped = d.ok
+          ? null
+          : normalizeExtensionBridgeError(d.error, 'unknown auth bridge error');
+        extensionBridge.lastAuthError = d.ok ? null : mapped?.message;
         extLog('received auth bridge response', {
           requestId,
           ok: d.ok,
           username: d.username || null,
           error: d.error || null,
+          mappedError: mapped,
         });
-        resolve(d.requestId ? d : { ...d, requestId });
+        if (d.ok) {
+          resolve(d.requestId ? d : { ...d, requestId });
+        } else {
+          resolve({
+            ...d,
+            requestId: d.requestId || requestId,
+            error: mapped?.message || 'unknown auth bridge error',
+            errorCode: mapped?.code || 'bridge_error',
+            originalError: mapped?.original || d.error || null,
+          });
+        }
       }
     }
 
