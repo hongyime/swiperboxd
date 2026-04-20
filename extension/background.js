@@ -1077,6 +1077,37 @@ async function patchLetterboxdWatchlistV0(lid, csrf, filmUrl) {
   return { ok: res.ok, status: res.status, text };
 }
 
+async function postLetterboxdDiaryV0(productionId, csrf, filmUrl, diaryDate, rewatch = false) {
+  const path = "/api/v0/production-log-entries";
+  const payload = JSON.stringify({
+    productionId: String(productionId || "").trim(),
+    diaryDetails: {
+      diaryDate: String(diaryDate || "").trim(),
+      rewatch: Boolean(rewatch),
+    },
+    tags: [],
+    like: false,
+  });
+
+  log(`[lb-post-json] ${path} body_len=${payload.length} keys=[productionId,diaryDetails,tags,like]`);
+  const res = await fetch(`${LB_BASE}${path}`, {
+    method: "POST",
+    credentials: "include",
+    headers: {
+      "Accept": "*/*",
+      "Content-Type": "application/json; charset=UTF-8",
+      "X-CSRF-Token": csrf,
+      "X-Requested-With": "XMLHttpRequest",
+      "Referer": filmUrl,
+      "Origin": LB_BASE,
+    },
+    body: payload,
+  });
+  const text = await res.text().catch(() => "");
+  log(`[lb-post-json] ${path} response status=${res.status} body_sample="${shortResponse(text, 120)}"`);
+  return { ok: res.ok, status: res.status, text };
+}
+
 function shortResponse(text, max = 180) {
   return String(text || "").replace(/\s+/g, " ").trim().slice(0, max);
 }
@@ -1356,6 +1387,24 @@ async function writeToLetterboxd(action, movieSlug) {
   if (action === "log") {
     const attempts = [];
 
+    async function tryDiaryApiV0(productionId, today) {
+      const res = await postLetterboxdDiaryV0(productionId, csrf, filmUrl, today, false);
+      let verification = { verified: false, reason: "request_not_ok" };
+      if (res.ok) {
+        verification = await verifyDiaryContainsSlug(username, movieSlug, 4);
+      }
+      const attempt = {
+        name: `api_v0_production_log_entries#${productionId}`,
+        status: res.status,
+        verified: verification.verified,
+        reason: verification.reason,
+        body: shortResponse(res.text),
+      };
+      attempts.push(attempt);
+      log(`[lb-write] diary attempt=${attempt.name} status=${res.status} verified=${attempt.verified} reason=${attempt.reason}`);
+      return attempt.verified;
+    }
+
     async function tryDiaryEndpoint(name, path, params) {
       const res = await postLetterboxdForm(path, params, filmUrl);
       let verification = { verified: false, reason: "request_not_ok" };
@@ -1376,6 +1425,18 @@ async function writeToLetterboxd(action, movieSlug) {
 
     // Diary save endpoint — logs the film as watched today
     const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+
+    // Prefer official Letterboxd API v0 endpoint first.
+    if (posterIdentifiers.lids.length) {
+      for (const productionId of posterIdentifiers.lids) {
+        const ok = await tryDiaryApiV0(productionId, today);
+        if (ok) {
+          log(`[lb-write] diary logged via /api/v0/production-log-entries: ${movieSlug}`);
+          return true;
+        }
+      }
+    }
+
     {
       const ok = await tryDiaryEndpoint(
         "diary_action_markup",
@@ -1398,27 +1459,6 @@ async function writeToLetterboxd(action, movieSlug) {
       );
       if (ok) {
         log(`[lb-write] diary logged via ${diaryPath}: ${movieSlug}`);
-        return true;
-      }
-    }
-
-    {
-      const ok = await tryDiaryEndpoint(
-        "legacy_save_film_watch",
-        "/s/save-film-watch",
-        {
-          __csrf: csrf,
-          filmSlug: movieSlug,
-          viewingDateStr: today,
-          specifiedDate: "true",
-          rewatch: "false",
-          rating: "",
-          review: "",
-          containsSpoilers: "false",
-        },
-      );
-      if (ok) {
-        log(`[lb-write] diary logged via /s/save-film-watch: ${movieSlug}`);
         return true;
       }
     }
