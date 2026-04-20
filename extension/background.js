@@ -554,13 +554,13 @@ async function scrapeOneListForFill(cfg, listRow, maxPages) {
 
 // ── Sync routines ────────────────────────────────────────────────────────────
 
-async function scrapeListType({ cfg, pathFn, batchEndpoint, phaseName, onFound, onSlugsCollected }) {
+async function scrapeListType({ cfg, pathFn, batchEndpoint, phaseName, onFound, onSlugsCollected, maxPages = MAX_PAGES_HARD_CAP }) {
   let page = 1;
   let totalPages = null;
   let totalFound = 0;
   let buffer = [];
 
-  while (page <= MAX_PAGES_HARD_CAP) {
+  while (page <= Math.min(maxPages, MAX_PAGES_HARD_CAP)) {
     if (syncState.stopRequested) {
       log(`Stop requested at ${phaseName} page ${page}`);
       break;
@@ -576,7 +576,7 @@ async function scrapeListType({ cfg, pathFn, batchEndpoint, phaseName, onFound, 
       throw e;
     }
     if (totalPages === null) {
-      totalPages = detectTotalPages(html) || 1;
+      totalPages = Math.min(maxPages, detectTotalPages(html) || 1);
       syncState.totalPages = totalPages;
       log(`${phaseName}: ${totalPages} page(s) total`);
     }
@@ -654,6 +654,9 @@ async function scrapeListType({ cfg, pathFn, batchEndpoint, phaseName, onFound, 
 async function scrapeUserHistory(cfg, settings = {}) {
   const doWatchlist = settings.syncWatchlist !== false;
   const doDiary = settings.syncDiary !== false;
+  const watchlistMaxPages = Math.max(1, Math.min(MAX_PAGES_HARD_CAP, Number(settings.watchlistMaxPages || MAX_PAGES_HARD_CAP)));
+  const diaryMaxPages = Math.max(1, Math.min(MAX_PAGES_HARD_CAP, Number(settings.diaryMaxPages || MAX_PAGES_HARD_CAP)));
+  const fetchMetadata = settings.fetchMetadata !== false;
   let wl = 0, diary = 0;
   const allSlugs = new Set();
   const watchlistSlugs = new Set();
@@ -682,6 +685,7 @@ async function scrapeUserHistory(cfg, settings = {}) {
           watchlistSlugs.add(s);
         });
       },
+      maxPages: watchlistMaxPages,
     });
     if (syncState.stopRequested) {
       return {
@@ -717,6 +721,7 @@ async function scrapeUserHistory(cfg, settings = {}) {
           diarySlugs.add(s);
         });
       },
+      maxPages: diaryMaxPages,
     });
     if (syncState.stopRequested) {
       return {
@@ -732,7 +737,7 @@ async function scrapeUserHistory(cfg, settings = {}) {
   // NEW: Fetch metadata for all collected slugs
   const slugsArray = Array.from(allSlugs);
   let metadataFetched = 0;
-  if (slugsArray.length > 0) {
+  if (fetchMetadata && slugsArray.length > 0) {
     syncState.phase = "metadata";
     syncState.percent = 66;
     broadcast();
@@ -1665,6 +1670,10 @@ async function runCrossSync(opts = {}) {
     ? Number(opts.maxPushPerKind)
     : 300;
   const maxPushPerKind = Math.max(0, Math.min(2000, Math.floor(rawMaxPush)));
+  const rawHistoryMaxPages = Number(opts.historyMaxPages);
+  const historyMaxPages = Number.isFinite(rawHistoryMaxPages)
+    ? Math.max(1, Math.min(20, Math.floor(rawHistoryMaxPages)))
+    : MAX_PAGES_HARD_CAP;
 
   resetState("cross_sync", "cross-sync starting");
   broadcast();
@@ -1686,7 +1695,14 @@ async function runCrossSync(opts = {}) {
   try {
     const cfg = await ensureConfig();
 
-    const history = await scrapeUserHistory(cfg, { syncWatchlist: true, syncDiary: true });
+    log(`[cross-sync] history pull mode: watchlistMaxPages=${historyMaxPages} diaryMaxPages=${historyMaxPages} pushLimit=${maxPushPerKind}`);
+    const history = await scrapeUserHistory(cfg, {
+      syncWatchlist: true,
+      syncDiary: true,
+      watchlistMaxPages: historyMaxPages,
+      diaryMaxPages: historyMaxPages,
+      fetchMetadata: false,
+    });
     summary.watchlistPulled = history.watchlist || 0;
     summary.diaryPulled = history.diary || 0;
 

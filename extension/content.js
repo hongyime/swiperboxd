@@ -133,6 +133,7 @@ window.addEventListener("message", (event) => {
     contentLog("forwarding cross-sync request to service worker", {
       requestId: data.requestId || null,
       maxPushPerKind: data.maxPushPerKind || null,
+      historyMaxPages: data.historyMaxPages || null,
     });
 
     const reply = (payload) => window.postMessage({
@@ -145,6 +146,7 @@ window.addEventListener("message", (event) => {
       chrome.runtime.sendMessage({
         type: "LB_CROSS_SYNC",
         maxPushPerKind: data.maxPushPerKind,
+        historyMaxPages: data.historyMaxPages,
       }, (resp) => {
         if (chrome.runtime.lastError) {
           const error = chrome.runtime.lastError.message;
