@@ -951,6 +951,55 @@ function collectFilmIdCandidates(movieSlug, html, lbIdentifier = "") {
   return candidates;
 }
 
+function collectPosterIdentifierCandidates(movieSlug, html, lbIdentifier = "") {
+  const lids = [];
+  const uids = [];
+  const seenLids = new Set();
+  const seenUids = new Set();
+
+  const addLid = (raw) => {
+    const value = String(raw || "").trim();
+    if (!value || seenLids.has(value)) return;
+    seenLids.add(value);
+    lids.push(value);
+  };
+  const addUid = (raw) => {
+    const value = String(raw || "").trim();
+    if (!value || seenUids.has(value)) return;
+    seenUids.add(value);
+    uids.push(value);
+  };
+
+  const slugScoped = new RegExp(
+    `data-item-slug="${escapeRegExp(movieSlug)}"[^>]*data-postered-identifier='([^']+)'`,
+    "i",
+  );
+  const m = html.match(slugScoped);
+  if (m && m[1]) {
+    try {
+      const decoded = m[1]
+        .replace(/&quot;/g, '"')
+        .replace(/&#39;/g, "'")
+        .replace(/&amp;/g, "&");
+      const obj = JSON.parse(decoded);
+      addLid(obj.lid);
+      addUid(obj.uid);
+    } catch (_) {
+      // Ignore parse issues and rely on regex fallbacks below.
+    }
+  }
+
+  const byUid = new RegExp(
+    `data-item-slug="${escapeRegExp(movieSlug)}"[^>]*uid&quot;:&quot;(film:\\d+)`,
+    "i",
+  );
+  const uidM = html.match(byUid);
+  if (uidM && uidM[1]) addUid(uidM[1]);
+
+  if (lbIdentifier) addLid(lbIdentifier);
+  return { lids, uids };
+}
+
 function extractRealCsrfFromHtml(html) {
   // Modern Letterboxd pages expose runtime CSRF in inline script.
   const scriptMatches = [...html.matchAll(/supermodelCSRF\s*=\s*'([^']*)'/g)];
@@ -1123,6 +1172,7 @@ async function writeToLetterboxd(action, movieSlug) {
   if (!csrf) throw new Error("CSRF token not found — sign in to Letterboxd again and retry.");
 
   const filmIdCandidates = collectFilmIdCandidates(movieSlug, html, lbIdentifier);
+  const posterIdentifiers = collectPosterIdentifierCandidates(movieSlug, html, lbIdentifier);
   const filmId = filmIdCandidates[0] || "";
   const signedIn = isSignedInFilmHtml(html);
   const watchlistPath = extractWatchlistActionPathFromHtml(html);
@@ -1130,6 +1180,7 @@ async function writeToLetterboxd(action, movieSlug) {
   log(
     `[lb-write] action=${action} slug=${movieSlug} filmId=${filmId || "(none)"} `
     + `lid=${lbIdentifier || "(none)"} candidates=${filmIdCandidates.join(",") || "(none)"} `
+    + `lids=${posterIdentifiers.lids.join(",") || "(none)"} uids=${posterIdentifiers.uids.join(",") || "(none)"} `
     + `signedIn=${signedIn} watchlistPath=${watchlistPath} diaryPath=${diaryPath}`
   );
 
@@ -1155,7 +1206,7 @@ async function writeToLetterboxd(action, movieSlug) {
           } catch (_) {}
         }
         verification = await verifyWatchlistContainsSlug(username, movieSlug, {
-          maxPages: 2,
+          maxPages: 8,
           maxProbes: 3,
           delayMs: 250,
           includeGenericPath: true,
@@ -1181,13 +1232,7 @@ async function writeToLetterboxd(action, movieSlug) {
           watchlistPath,
           {
             __csrf: csrf,
-            filmId: String(candidateId),
-            filmIds: String(candidateId),
             "filmIds[]": String(candidateId),
-            films: String(candidateId),
-            filmSlug: movieSlug,
-            filmSlugs: movieSlug,
-            "filmSlugs[]": movieSlug,
           },
         );
         if (ok) {
@@ -1197,20 +1242,37 @@ async function writeToLetterboxd(action, movieSlug) {
       }
     }
 
-    // Legacy endpoint on older Letterboxd builds.
-    {
-      const ok = await tryWatchlistEndpoint(
-        "legacy_save_film_watch",
-        "/s/save-film-watch",
-        {
-          __csrf: csrf,
-          filmSlug: movieSlug,
-          inWatchlist: "true",
-        },
-      );
-      if (ok) {
-        log(`[lb-write] watchlist added via /s/save-film-watch: ${movieSlug}`);
-        return true;
+    // Token-based variants on modern Letterboxd builds.
+    if (posterIdentifiers.lids.length || posterIdentifiers.uids.length) {
+      for (const lid of posterIdentifiers.lids) {
+        const ok = await tryWatchlistEndpoint(
+          `watchlist_action_lid#${lid}`,
+          watchlistPath,
+          {
+            __csrf: csrf,
+            films: String(lid),
+            "films[]": String(lid),
+          },
+        );
+        if (ok) {
+          log(`[lb-write] watchlist added via lid token: ${movieSlug}`);
+          return true;
+        }
+      }
+      for (const uid of posterIdentifiers.uids) {
+        const ok = await tryWatchlistEndpoint(
+          `watchlist_action_uid#${uid}`,
+          watchlistPath,
+          {
+            __csrf: csrf,
+            films: String(uid),
+            "films[]": String(uid),
+          },
+        );
+        if (ok) {
+          log(`[lb-write] watchlist added via uid token: ${movieSlug}`);
+          return true;
+        }
       }
     }
 
