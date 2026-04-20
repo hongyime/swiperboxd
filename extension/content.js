@@ -8,6 +8,42 @@ function contentLog(message, meta) {
   else console.log(`${CONTENT_LOG_PREFIX} ${message}`);
 }
 
+function normalizeRuntimeError(rawMessage, fallback = 'Extension runtime error') {
+  const original = String(rawMessage || '').trim();
+  const lower = original.toLowerCase();
+
+  if (lower.includes('unknown error occurred when fetching the script')) {
+    return {
+      code: 'script_fetch_failed',
+      message:
+        'Chrome failed to load an extension script. Reload the extension on chrome://extensions and refresh this page.',
+      original,
+    };
+  }
+
+  if (lower.includes('receiving end does not exist')) {
+    return {
+      code: 'receiving_end_missing',
+      message: 'Extension background is not ready. Open the extension popup once, then retry.',
+      original,
+    };
+  }
+
+  if (lower.includes('message port closed before a response was received')) {
+    return {
+      code: 'message_port_closed',
+      message: 'Extension worker stopped before replying. Reopen the extension popup and retry.',
+      original,
+    };
+  }
+
+  return {
+    code: 'runtime_error',
+    message: original || fallback,
+    original,
+  };
+}
+
 contentLog("content script injected", { href: window.location.href, origin: window.location.origin });
 
 window.addEventListener("message", (event) => {
@@ -25,12 +61,14 @@ window.addEventListener("message", (event) => {
     try {
       chrome.runtime.sendMessage({ type: "GET_WEBAPP_AUTH" }, (resp) => {
         if (chrome.runtime.lastError) {
-          const error = chrome.runtime.lastError.message;
-          contentLog("auth bridge runtime error", { requestId: data.requestId || null, error });
+          const mapped = normalizeRuntimeError(chrome.runtime.lastError.message, 'auth bridge runtime error');
+          contentLog("auth bridge runtime error", { requestId: data.requestId || null, error: mapped });
           window.postMessage({
             type: "SWIPERBOXD_AUTH_RESULT",
             ok: false,
-            error,
+            error: mapped.message,
+            errorCode: mapped.code,
+            originalError: mapped.original,
             requestId: data.requestId || null,
           }, window.location.origin);
           return;
@@ -102,8 +140,9 @@ window.addEventListener("message", (event) => {
         movieSlug: data.movieSlug,
       }, (resp) => {
         if (chrome.runtime.lastError) {
-          console.warn(`${CONTENT_LOG_PREFIX} SW message error:`, chrome.runtime.lastError.message);
-          replyFail(chrome.runtime.lastError.message);
+          const mapped = normalizeRuntimeError(chrome.runtime.lastError.message, 'service worker message error');
+          console.warn(`${CONTENT_LOG_PREFIX} SW message error:`, mapped);
+          replyFail(mapped.message);
           return;
         }
         contentLog("LB_WRITE response", {
@@ -149,12 +188,18 @@ window.addEventListener("message", (event) => {
         historyMaxPages: data.historyMaxPages,
       }, (resp) => {
         if (chrome.runtime.lastError) {
-          const error = chrome.runtime.lastError.message;
+          const mapped = normalizeRuntimeError(chrome.runtime.lastError.message, 'cross-sync runtime error');
           contentLog("LB_CROSS_SYNC runtime error", {
             requestId: data.requestId || null,
-            error,
+            error: mapped,
           });
-          reply({ ok: false, error, summary: null });
+          reply({
+            ok: false,
+            error: mapped.message,
+            errorCode: mapped.code,
+            originalError: mapped.original,
+            summary: null,
+          });
           return;
         }
 
