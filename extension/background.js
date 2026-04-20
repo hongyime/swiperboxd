@@ -456,7 +456,7 @@ async function discoverPublicLists(cfg, { maxPages = DEFAULT_DISCOVER_PAGES } = 
 
 async function fillUnderscrapedLists(
   cfg,
-  { maxLists = DEFAULT_FILL_MAX_LISTS, maxListPages = DEFAULT_FILL_LIST_PAGES } = {},
+  { maxLists = DEFAULT_FILL_MAX_LISTS, maxListPages = DEFAULT_FILL_LIST_PAGES, minCoverage = 0.5 } = {},
 ) {
   syncState.phase = "fill_lists";
   syncState.listsFilled = 0;
@@ -464,7 +464,8 @@ async function fillUnderscrapedLists(
 
   let lists = [];
   try {
-    const url = `${cfg.apiBase || DEFAULT_API_BASE}/api/extension/lists-needing-scrape?limit=${maxLists}`;
+    const coverage = Math.max(0, Math.min(1, Number(minCoverage) || 0.5));
+    const url = `${cfg.apiBase || DEFAULT_API_BASE}/api/extension/lists-needing-scrape?limit=${maxLists}&min_coverage=${coverage}`;
     const res = await fetchWithRetry(url, {
       method: "GET",
       headers: cfg.sessionToken ? { "X-Session-Token": cfg.sessionToken } : {},
@@ -1982,16 +1983,34 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       case "BACKFILL":
         try {
           const cfgB = await ensureConfig();
+          const listFillMaxRounds = 10;
           const limit = 500;
           const maxRounds = 8;
           const seenSlugs = new Set();
+          let listFillRounds = 0;
+          let listsFilled = 0;
           let rounds = 0;
           let totalProcessed = 0;
           let totalCandidates = 0;
 
+          // Phase 1: ensure list memberships are complete (100% of known film_count).
+          while (listFillRounds < listFillMaxRounds && !syncState.stopRequested) {
+            listFillRounds += 1;
+            const fill = await fillUnderscrapedLists(cfgB, {
+              maxLists: 200,
+              maxListPages: MAX_PAGES_HARD_CAP,
+              minCoverage: 1.0,
+            });
+            const filledNow = Number(fill.filled || 0);
+            listsFilled += filledNow;
+            log(`backfill lists round=${listFillRounds}: filled=${filledNow}`);
+            if (filledNow <= 0) break;
+          }
+
+          // Phase 2: ensure every movie has a full metadata record.
           while (rounds < maxRounds) {
             rounds += 1;
-            const urlB = `${cfgB.apiBase || DEFAULT_API_BASE}/api/extension/movies-needing-backfill?limit=${limit}`;
+            const urlB = `${cfgB.apiBase || DEFAULT_API_BASE}/api/extension/movies-needing-backfill?limit=${limit}&mode=full`;
             const resB = await fetchWithRetry(urlB, {
               headers: cfgB.sessionToken ? { "X-Session-Token": cfgB.sessionToken } : {},
             });
@@ -2023,6 +2042,8 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
 
           sendResponse({
             ok: true,
+            listsFilled,
+            listFillRounds,
             processed: totalProcessed,
             rounds,
             candidates: totalCandidates,
