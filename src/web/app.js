@@ -210,7 +210,7 @@ function setCrossSyncBadge(variant = 'idle', text = 'Sync pending') {
   badge.textContent = text;
 }
 
-function requestExtensionCrossSync(timeoutMs = 180000, maxPushPerKind = 300) {
+function requestExtensionCrossSync(timeoutMs = 180000, maxPushPerKind = 300, historyMaxPages = null) {
   return new Promise((resolve) => {
     const requestId = `cross-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     extensionBridge.crossSyncAttempts += 1;
@@ -218,6 +218,7 @@ function requestExtensionCrossSync(timeoutMs = 180000, maxPushPerKind = 300) {
       requestId,
       timeoutMs,
       maxPushPerKind,
+      historyMaxPages,
       attempt: extensionBridge.crossSyncAttempts,
       diagnostics: extensionDiagnostics(),
     });
@@ -269,6 +270,7 @@ function requestExtensionCrossSync(timeoutMs = 180000, maxPushPerKind = 300) {
       type: 'SWIPERBOXD_CROSS_SYNC',
       requestId,
       maxPushPerKind,
+      historyMaxPages,
       sentAt: Date.now(),
     }, window.location.origin);
   });
@@ -438,7 +440,8 @@ async function maybeRunInitialCrossSync() {
 
   let lastError = null;
   for (let attempt = 1; attempt <= 2; attempt++) {
-    const result = await requestExtensionCrossSync(480000, 200);
+    // Auto sync should be lightweight on page load: pull recent pages only + no push-backs.
+    const result = await requestExtensionCrossSync(180000, 0, 2);
     if (result.ok) {
       markCrossSyncSuccess(username);
       const summary = result.summary || {};
