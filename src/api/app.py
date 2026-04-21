@@ -57,11 +57,12 @@ app.add_middleware(
     max_age=3600,
 )
 
-# Security: Reject requests from untrusted hosts
-app.add_middleware(
-    TrustedHostMiddleware,
-    allowed_hosts=["swiperboxd.vercel.app", "swiperboxd.hong-yi.me", "localhost", "127.0.0.1"],
-)
+# Security: Reject requests from untrusted hosts.
+# Keep production strict while allowing test clients (`testserver`) in non-prod.
+_trusted_hosts = ["swiperboxd.vercel.app", "swiperboxd.hong-yi.me", "localhost", "127.0.0.1"]
+if os.getenv("APP_ENV", "development") != "production":
+    _trusted_hosts.extend(["testserver", "*.localhost"])
+app.add_middleware(TrustedHostMiddleware, allowed_hosts=_trusted_hosts)
 
 # Conditional store selection
 if is_supabase_configured():
@@ -225,36 +226,15 @@ def verify_session(x_session_token: str = Header(..., alias="X-Session-Token")) 
         return ""
 
 
-def verify_extension(x_session_token: str = Header(None, alias="X-Session-Token")) -> str:
-    """Auth for extension endpoints — accepts either:
-      1. A valid user session token (X-Session-Token), OR
-      2. The EXTENSION_API_KEY env var (sent as X-Session-Token by the extension)
+def verify_extension_user(verified_user: str = Depends(verify_session)) -> str:
+    """Require a session token that resolves to a concrete username.
 
-    Returns the username if a session token was provided, or "" for API key auth.
-    No registration required when using the API key.
+    Extension endpoints should never accept API-key style shared auth or
+    legacy anonymous session payloads.
     """
-    if not x_session_token:
-        raise HTTPException(status_code=401, detail={"code": "missing_auth"})
-
-    # Check API key first (fast path — no crypto needed)
-    ext_key = os.getenv("EXTENSION_API_KEY", "").strip()
-    if ext_key and x_session_token == ext_key:
-        return ""  # authenticated as extension, no specific user
-
-    # Fall back to session token
-    master_key = os.getenv("MASTER_ENCRYPTION_KEY")
-    if master_key:
-        try:
-            raw = decrypt_session_cookie(x_session_token, master_key)
-            try:
-                data = json.loads(raw)
-                return data.get("u", "")
-            except (json.JSONDecodeError, ValueError):
-                return ""
-        except Exception:
-            pass
-
-    raise HTTPException(status_code=401, detail={"code": "invalid_auth"})
+    if not verified_user:
+        raise HTTPException(status_code=401, detail={"code": "invalid_extension_session"})
+    return verified_user
 
 
 class AuthSessionRequest(BaseModel):
@@ -423,34 +403,26 @@ def user_sync_status(username: str):
 
 @app.get("/api/extension/user-history")
 def extension_user_history(
-    verified_user: str = Depends(verify_session),
+    verified_user: str = Depends(verify_extension_user),
     user_id: str | None = Query(default=None),
     include_watchlist: bool = Query(default=True),
     include_diary: bool = Query(default=True),
     limit: int = Query(default=10000, ge=1, le=50000),
 ):
     """Return user watchlist/diary slug sets for extension-side cross-sync.
-
-    Uses the authenticated user from the session token when available.
-    For backward-compatible old-format tokens (no bound username), user_id query
-    is required.
     """
-    if verified_user and user_id and user_id != verified_user:
+    if user_id and user_id != verified_user:
         raise HTTPException(status_code=403, detail={"code": "user_id_mismatch"})
 
-    resolved_user = verified_user or user_id
-    if not resolved_user:
-        raise HTTPException(status_code=400, detail={"code": "user_id_required"})
-
     try:
-        watchlist_slugs = sorted(store.get_watchlist(resolved_user)) if include_watchlist else []
-        diary_slugs = sorted(store.get_diary(resolved_user)) if include_diary else []
+        watchlist_slugs = sorted(store.get_watchlist(verified_user)) if include_watchlist else []
+        diary_slugs = sorted(store.get_diary(verified_user)) if include_diary else []
     except Exception as exc:
         raise HTTPException(status_code=500, detail={"code": "store_error", "reason": str(exc)}) from exc
 
     return {
         "status": "ok",
-        "user_id": resolved_user,
+        "user_id": verified_user,
         "watchlist_slugs": watchlist_slugs[:limit],
         "diary_slugs": diary_slugs[:limit],
         "watchlist_count": len(watchlist_slugs),
@@ -949,7 +921,7 @@ _EXTENSION_BATCH_LIMIT = 500
 @app.post("/api/extension/batch/watchlist")
 async def extension_batch_watchlist(
     payload: ExtensionBatchRequest,
-    verified_user: str = Depends(verify_session),
+    verified_user: str = Depends(verify_extension_user),
 ):
     """Push a batch of watchlist slugs scraped by the Chrome extension.
     
@@ -988,7 +960,7 @@ async def extension_batch_watchlist(
 @app.post("/api/extension/batch/diary")
 async def extension_batch_diary(
     payload: ExtensionBatchRequest,
-    verified_user: str = Depends(verify_session),
+    verified_user: str = Depends(verify_extension_user),
 ):
     """Push a batch of diary slugs scraped by the Chrome extension.
     
@@ -1068,7 +1040,7 @@ def extension_register(payload: ExtensionRegisterRequest, request: Request):
 @app.post("/api/extension/batch/movies")
 async def extension_batch_movies(
     payload: ExtensionBatchMoviesRequest,
-    verified_user: str = Depends(verify_session),
+    verified_user: str = Depends(verify_extension_user),
 ):
     """Push metadata for films scraped directly from /film/<slug>/ pages."""
     if len(payload.movies) > _EXTENSION_BATCH_LIMIT:
@@ -1096,7 +1068,7 @@ async def extension_batch_movies(
 @app.post("/api/extension/batch/list-summaries")
 async def extension_batch_list_summaries(
     payload: ExtensionBatchListSummariesRequest,
-    verified_user: str = Depends(verify_session),
+    verified_user: str = Depends(verify_extension_user),
 ):
     """Push an array of list summaries scraped from /lists/popular/."""
     if len(payload.lists) > _EXTENSION_BATCH_LIMIT:
@@ -1130,7 +1102,7 @@ async def extension_batch_list_summaries(
 def extension_movies_needing_backfill(
     limit: int = Query(default=500, ge=1, le=2000),
     mode: str = Query(default="core", pattern="^(core|full)$"),
-    verified_user: str = Depends(verify_session),
+    verified_user: str = Depends(verify_extension_user),
 ):
     """Return slugs of movies with incomplete metadata.
 
@@ -1183,7 +1155,7 @@ def extension_movies_needing_backfill(
 def extension_lists_needing_scrape(
     limit: int = Query(default=25, ge=1, le=200),
     min_coverage: float = Query(default=0.5, ge=0.0, le=1.0),
-    verified_user: str = Depends(verify_session),
+    verified_user: str = Depends(verify_extension_user),
 ):
     """Return list_summaries rows that are under 50% scraped (or brand-new).
 
@@ -1212,7 +1184,7 @@ def extension_lists_needing_scrape(
 @app.post("/api/extension/batch/list-movies")
 async def extension_batch_list_movies(
     payload: ExtensionBatchListMoviesRequest,
-    verified_user: str = Depends(verify_session),
+    verified_user: str = Depends(verify_extension_user),
 ):
     """Push film slugs scraped from a Letterboxd list page.
 
@@ -1278,7 +1250,7 @@ async def extension_batch_list_movies(
 @app.post("/api/extension/sync-status")
 async def extension_sync_status(
     payload: ExtensionSyncStatusRequest,
-    verified_user: str = Depends(verify_session),
+    verified_user: str = Depends(verify_extension_user),
 ):
     """Report extension sync progress. Mirrors the state into ingest_progress for the UI."""
     if verified_user and payload.user_id != verified_user:
