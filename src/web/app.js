@@ -837,18 +837,15 @@ function createCard(movie) {
 
   const poster = buildPosterVariants(movie.poster_url);
   const posterDisplay = poster.display || movie.poster_url || '';
-  const posterBackdrop = poster.backdrop || posterDisplay;
   const posterSrcsetAttr = poster.srcset ? `srcset="${esc(poster.srcset)}" sizes="100vw"` : '';
-  if (posterBackdrop) {
-    card.style.setProperty('--poster-backdrop', toCssUrl(posterBackdrop));
-  }
 
   card.innerHTML = `
-    <div class="card-backdrop" aria-hidden="true"></div>
-    <img class="card-poster" src="${esc(posterDisplay)}" ${posterSrcsetAttr} alt="${esc(movie.title)}" />
-    <div class="card-overlay">
-      <h2 class="card-title">${esc(movie.title)}${movie.year ? ` <span style="font-weight:400;opacity:.7">(${esc(String(movie.year))})</span>` : ''}</h2>
-      <p class="card-meta">★ ${esc(String(movie.rating ?? ''))}${movie.director ? ` · ${esc(movie.director)}` : ''}</p>
+    <div class="card-frame">
+      <img class="card-poster" src="${esc(posterDisplay)}" ${posterSrcsetAttr} alt="${esc(movie.title)}" />
+      <div class="card-overlay">
+        <h2 class="card-title">${esc(movie.title)}${movie.year ? ` <span style="font-weight:400;opacity:.7">(${esc(String(movie.year))})</span>` : ''}</h2>
+        <p class="card-meta">★ ${esc(String(movie.rating ?? ''))}${movie.director ? ` · ${esc(movie.director)}` : ''}</p>
+      </div>
     </div>
   `;
   return card;

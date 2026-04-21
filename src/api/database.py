@@ -16,19 +16,17 @@ def get_supabase_client() -> Client:
     """
     Get a cached Supabase client instance.
 
-    Uses SUPABASE_SERVICE_ROLE_KEY when available (bypasses RLS — correct for
-    server-side code). Falls back to SUPABASE_ANON_KEY for read-only / local dev.
-    Raises ValueError if neither key is set alongside SUPABASE_URL.
+    Uses SUPABASE_SERVICE_ROLE_KEY (required) so server-side operations are not
+    blocked by RLS policies.
+    Raises ValueError if SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY is missing.
     """
     supabase_url = os.getenv("SUPABASE_URL")
-    # Prefer service role key: server-side code must bypass RLS to read/write
-    # user rows on behalf of any authenticated user.
-    supabase_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY") or os.getenv("SUPABASE_ANON_KEY")
+    # Server-side code must use service role key.
+    supabase_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 
     if not supabase_url or not supabase_key:
         raise ValueError(
-            "SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY (or SUPABASE_ANON_KEY) "
-            "environment variables must be set"
+            "SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY environment variables must be set"
         )
 
     from supabase import create_client
@@ -41,9 +39,9 @@ def is_supabase_configured() -> bool:
     Check if Supabase is configured with required environment variables.
 
     Returns:
-        bool: True if SUPABASE_URL and SUPABASE_ANON_KEY are set
+        bool: True if SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are set
     """
-    return bool(os.getenv("SUPABASE_URL") and os.getenv("SUPABASE_ANON_KEY"))
+    return bool(os.getenv("SUPABASE_URL") and os.getenv("SUPABASE_SERVICE_ROLE_KEY"))
 
 
 def run_migrations() -> None:
