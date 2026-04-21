@@ -13,6 +13,7 @@
 //   5. Batch-push each scraped unit to the API with retries + exponential
 //      backoff. No intermediate files or queues — each batch is an immediate
 //      round-trip to Supabase via the backend.
+importScripts("common.js");
 
 const DEFAULT_API_BASE = "https://swiperboxd.vercel.app";
 const LB_BASE = "https://letterboxd.com";
@@ -39,20 +40,6 @@ const SYNC_STORAGE_KEYS = [
   "fillMaxLists",
   "fillListPages",
 ];
-
-function normalizeApiBase(raw) {
-  const base = String(raw || DEFAULT_API_BASE).trim().replace(/\/$/, "");
-  try {
-    const u = new URL(base);
-    const host = (u.hostname || "").toLowerCase();
-    if (!["http:", "https:"].includes(u.protocol)) return null;
-    // Prevent direct Supabase endpoints from being configured in the extension.
-    if (host.endsWith(".supabase.co") || host === "supabase.co") return null;
-    return `${u.protocol}//${u.host}`;
-  } catch {
-    return null;
-  }
-}
 
 // Public-list discovery defaults (overridable via chrome.storage)
 const DEFAULT_DISCOVER_PAGES = 3;    // /lists/popular/page/1..N

@@ -38,12 +38,12 @@ begin
     end loop;
 
     execute format(
-      'create policy %I on public.%I as permissive for anon using (false) with check (false)',
+      'create policy %I on public.%I for all to anon using (false) with check (false)',
       t || '_deny_anon',
       t
     );
     execute format(
-      'create policy %I on public.%I as permissive for authenticated using (false) with check (false)',
+      'create policy %I on public.%I for all to authenticated using (false) with check (false)',
       t || '_deny_authenticated',
       t
     );
