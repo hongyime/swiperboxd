@@ -103,15 +103,23 @@ APP_ENV=development
 - Do **not** ship write access through public/anon DB keys; keep browser clients on backend APIs with session auth
 - Generate `MASTER_ENCRYPTION_KEY` using the command above; never commit it to version control
 
-### Supabase RLS Hardening Migration
+### Supabase Database Setup
 
-Apply `db/migrations/001_harden_rls_backend_only.sql` in your Supabase SQL Editor.
-This migration:
-- revokes table access from `anon` and `authenticated` for app tables
-- enables + forces RLS on those tables
-- replaces existing policies with deny-all policies for browser roles
+Before running the app, initialize your Supabase database schema:
 
-This keeps direct browser DB access closed; the extension/webapp should use your backend APIs only.
+1. Go to your Supabase project dashboard
+2. Navigate to **SQL Editor**
+3. Open `db/migrations/000_init_schema.sql` from this repository
+4. Paste the contents and click **Run**
+
+This migration creates:
+- All 8 required tables with proper constraints
+- Indexes for common query patterns
+- Row Level Security (RLS) policies (backend-only access)
+- `exec_sql()` RPC function for future migrations
+
+**Note:** The RLS policies block direct browser access to tables. All data operations
+must go through the backend API endpoints using the `service_role` key.
 
 ---
 
@@ -164,20 +172,28 @@ cp .env.template .env
 # Edit .env with your configuration
 ```
 
-### 6. Run Database Migrations (Optional)
+### 6. Verify Database Setup (Optional)
 
-If using Supabase, run migrations to set up the database schema:
+If you've run the SQL migration in Supabase Dashboard (step above), verify the setup:
 
+```sql
+-- Check tables exist
+SELECT table_name FROM information_schema.tables WHERE table_schema = 'public';
+
+-- Check RLS is enabled
+SELECT tablename, rowsecurity FROM pg_tables WHERE schemaname = 'public';
+
+-- Check exec_sql function exists
+SELECT proname FROM pg_proc WHERE proname = 'exec_sql';
+```
+
+You should see 8 tables, RLS enabled on all of them, and the `exec_sql` function.
+
+**Alternative:** You can also trigger migrations via API (requires valid session token):
 ```bash
-# Start the development server first
-uvicorn src.api.app:app --host 0.0.0.0 --port 8000 --reload
-
-# In another terminal, run migrations
 curl -X POST http://localhost:8000/db/migrate \
   -H "X-Session-Token: <your-session-token>"
 ```
-
-**Note:** You'll need a valid session token. Get one by logging in through the web interface first.
 
 ### 7. Start the Development Server
 
