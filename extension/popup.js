@@ -7,19 +7,6 @@ const SYNC_LOG_KEY = "swiperboxd-sync-log";
 // Keep the service worker alive while this popup is open
 const _port = chrome.runtime.connect({ name: "popup" });
 
-function normalizeApiBase(raw) {
-  const base = String(raw || DEFAULT_API_BASE).trim().replace(/\/$/, "");
-  try {
-    const u = new URL(base);
-    const host = (u.hostname || "").toLowerCase();
-    if (!["http:", "https:"].includes(u.protocol)) return null;
-    if (host.endsWith(".supabase.co") || host === "supabase.co") return null;
-    return `${u.protocol}//${u.host}`;
-  } catch {
-    return null;
-  }
-}
-
 async function getStorage() {
   const keys = [
     "apiBase", "username", "sessionToken", "autoSync", "lastSync",
