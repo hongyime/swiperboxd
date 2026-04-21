@@ -837,20 +837,44 @@ function createCard(movie) {
 
   const poster = buildPosterVariants(movie.poster_url);
   const posterDisplay = poster.display || movie.poster_url || '';
-  const posterBackdrop = poster.backdrop || posterDisplay;
-  const posterSrcsetAttr = poster.srcset ? `srcset="${esc(poster.srcset)}" sizes="100vw"` : '';
-  if (posterBackdrop) {
-    card.style.setProperty('--poster-backdrop', toCssUrl(posterBackdrop));
+  const frame = document.createElement('div');
+  frame.className = 'card-frame';
+
+  const img = document.createElement('img');
+  img.className = 'card-poster';
+  img.src = posterDisplay;
+  img.alt = movie.title || '';
+  if (poster.srcset) {
+    img.srcset = poster.srcset;
+    img.sizes = '100vw';
   }
 
-  card.innerHTML = `
-    <div class="card-backdrop" aria-hidden="true"></div>
-    <img class="card-poster" src="${esc(posterDisplay)}" ${posterSrcsetAttr} alt="${esc(movie.title)}" />
-    <div class="card-overlay">
-      <h2 class="card-title">${esc(movie.title)}${movie.year ? ` <span style="font-weight:400;opacity:.7">(${esc(String(movie.year))})</span>` : ''}</h2>
-      <p class="card-meta">★ ${esc(String(movie.rating ?? ''))}${movie.director ? ` · ${esc(movie.director)}` : ''}</p>
-    </div>
-  `;
+  const overlay = document.createElement('div');
+  overlay.className = 'card-overlay';
+
+  const title = document.createElement('h2');
+  title.className = 'card-title';
+  title.textContent = movie.title || '';
+  if (movie.year) {
+    const year = document.createElement('span');
+    year.style.fontWeight = '400';
+    year.style.opacity = '0.7';
+    year.textContent = ` (${String(movie.year)})`;
+    title.appendChild(year);
+  }
+
+  const meta = document.createElement('p');
+  meta.className = 'card-meta';
+  const metaParts = [`★ ${String(movie.rating ?? '')}`];
+  if (movie.director) metaParts.push(movie.director);
+  meta.textContent = metaParts.join(' · ');
+
+  overlay.appendChild(title);
+  overlay.appendChild(meta);
+  frame.appendChild(img);
+  frame.appendChild(overlay);
+  card.appendChild(frame);
+
   return card;
 }
 

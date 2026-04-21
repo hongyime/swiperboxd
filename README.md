@@ -70,7 +70,6 @@ Copy `.env.template` to `.env` and configure the following variables:
 |----------|----------|-------------|
 | `SUPABASE_URL` | Yes | Your Supabase project URL (e.g., `https://xxx.supabase.co`) |
 | `SUPABASE_SERVICE_ROLE_KEY` | Yes | Supabase service role key (bypasses RLS for server-side writes) |
-| `SUPABASE_ANON_KEY` | No | Supabase anon key (fallback for local dev, not recommended for production) |
 | `VERCEL_CRON_SECRET` | Yes | Shared secret for protecting cron endpoints (generate a random string) |
 
 ### Optional Variables
@@ -81,7 +80,6 @@ Copy `.env.template` to `.env` and configure the following variables:
 | `APP_ENV` | `development` | Set to `production` to block migration endpoint |
 | `TARGET_PLATFORM_BASE_URL` | `https://letterboxd.com` | Override Letterboxd base URL (for testing) |
 | `TARGET_PLATFORM_TIMEOUT_SECONDS` | `20.0` | HTTP timeout for scraping requests |
-| `EXTENSION_API_KEY` | - | API key for extension auth (alternative to session tokens) |
 
 ### Example `.env` File
 
@@ -101,8 +99,19 @@ APP_ENV=development
 
 **Important Notes:**
 - Without `SUPABASE_URL`, the app uses an in-memory store (data is wiped on restart)
-- The backend **must** use `SUPABASE_SERVICE_ROLE_KEY` — the anon key is blocked by Row Level Security on writes
+- The backend **must** use `SUPABASE_SERVICE_ROLE_KEY` for all Supabase access
+- Do **not** ship write access through public/anon DB keys; keep browser clients on backend APIs with session auth
 - Generate `MASTER_ENCRYPTION_KEY` using the command above; never commit it to version control
+
+### Supabase RLS Hardening Migration
+
+Apply `db/migrations/001_harden_rls_backend_only.sql` in your Supabase SQL Editor.
+This migration:
+- revokes table access from `anon` and `authenticated` for app tables
+- enables + forces RLS on those tables
+- replaces existing policies with deny-all policies for browser roles
+
+This keeps direct browser DB access closed; the extension/webapp should use your backend APIs only.
 
 ---
 

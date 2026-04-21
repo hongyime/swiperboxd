@@ -8,7 +8,7 @@ import pytest
 
 # Ensure we use InMemoryStore for testing
 os.environ.pop("SUPABASE_URL", None)
-os.environ.pop("SUPABASE_ANON_KEY", None)
+os.environ.pop("SUPABASE_SERVICE_ROLE_KEY", None)
 
 from src.api.store import InMemoryStore
 
@@ -228,13 +228,13 @@ def test_in_memory_store_concurrent_add_exclusion(in_memory_store):
     """Test thread safety of exclusion list."""
     import threading
 
-    def add_exclusions(user_id, count):
+    def add_exclusions(user_id, worker_id, count):
         for i in range(count):
-            in_memory_store.add_exclusion(user_id, f"film-{i}-{threading.current_thread().ident}")
+            in_memory_store.add_exclusion(user_id, f"film-{worker_id}-{i}")
 
     threads = []
-    for _ in range(5):
-        t = threading.Thread(target=add_exclusions, args=("concurrent-user", 10))
+    for worker_id in range(5):
+        t = threading.Thread(target=add_exclusions, args=("concurrent-user", worker_id, 10))
         threads.append(t)
         t.start()
 
@@ -248,7 +248,7 @@ def test_in_memory_store_concurrent_add_exclusion(in_memory_store):
 
 # SupabaseStore integration tests (only run if Supabase is configured)
 @pytest.mark.skipif(
-    not os.getenv("SUPABASE_URL") or not os.getenv("SUPABASE_ANON_KEY"),
+    not os.getenv("SUPABASE_URL") or not os.getenv("SUPABASE_SERVICE_ROLE_KEY"),
     reason="Supabase not configured"
 )
 def test_supabase_store_basic_operations():
@@ -282,7 +282,7 @@ def test_supabase_store_basic_operations():
 
 
 @pytest.mark.skipif(
-    not os.getenv("SUPABASE_URL") or not os.getenv("SUPABASE_ANON_KEY"),
+    not os.getenv("SUPABASE_URL") or not os.getenv("SUPABASE_SERVICE_ROLE_KEY"),
     reason="Supabase not configured"
 )
 def test_supabase_store_concurrent_operations():

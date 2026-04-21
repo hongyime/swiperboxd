@@ -8,13 +8,21 @@ const SYNC_LOG_KEY = "swiperboxd-sync-log";
 const _port = chrome.runtime.connect({ name: "popup" });
 
 async function getStorage() {
-  return await chrome.storage.local.get([
+  const keys = [
     "apiBase", "username", "sessionToken", "autoSync", "lastSync",
     "syncHistory", "syncWatchlist", "syncDiary", "discoverLists", "fillLists",
     "discoverPages", "fillMaxLists", "fillListPages",
+  ];
+  const [local, synced] = await Promise.all([
+    chrome.storage.local.get(keys),
+    chrome.storage.sync.get(keys).catch(() => ({})),
   ]);
+  return { ...synced, ...local };
 }
-async function setStorage(obj) { await chrome.storage.local.set(obj); }
+async function setStorage(obj) {
+  await chrome.storage.local.set(obj);
+  await chrome.storage.sync.set(obj).catch(() => {});
+}
 
 function logLine(target, msg) {
   const log = el(target);
@@ -127,7 +135,11 @@ el("connect-btn").addEventListener("click", async () => {
   }
   logLine("log", "Registering with Swiperboxd…");
   el("connect-btn").disabled = true;
-  const apiBase = el("api-base").value.trim() || DEFAULT_API_BASE;
+  const apiBase = normalizeApiBase(el("api-base").value.trim() || DEFAULT_API_BASE);
+  if (!apiBase) {
+    logLine("log", "ERROR: invalid API base (Supabase URLs are not allowed)");
+    return;
+  }
   const resp = await chrome.runtime.sendMessage({ type: "REGISTER", apiBase });
   el("connect-btn").disabled = false;
   if (resp && resp.ok) {
@@ -139,7 +151,12 @@ el("connect-btn").addEventListener("click", async () => {
 });
 
 el("save-api-base").addEventListener("click", async () => {
-  await setStorage({ apiBase: el("api-base").value.trim() || DEFAULT_API_BASE });
+  const apiBase = normalizeApiBase(el("api-base").value.trim() || DEFAULT_API_BASE);
+  if (!apiBase) {
+    logLine("log", "ERROR: invalid API base (use your backend URL)");
+    return;
+  }
+  await setStorage({ apiBase });
   logLine("log", "API base saved");
 });
 

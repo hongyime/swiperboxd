@@ -11,7 +11,7 @@ from fastapi.testclient import TestClient
 os.environ["SCRAPER_BACKEND"] = "mock"
 os.environ.setdefault("MASTER_ENCRYPTION_KEY", "test-master-key-32-bytes-padding!")
 os.environ["SUPABASE_URL"] = ""
-os.environ["SUPABASE_ANON_KEY"] = ""
+os.environ["SUPABASE_SERVICE_ROLE_KEY"] = ""
 
 from src.api.app import app
 from src.api.resilience import exponential_backoff_seconds, should_trigger_proxy_fallback
@@ -74,7 +74,7 @@ def test_list_catalog_returns_mixed_lists():
     # Seed the store via the extension batch endpoint (mirrors real extension sync)
     seed = client.post(
         "/api/extension/batch/list-summaries",
-        headers=_AUTH_HEADERS,
+        headers=_NEW_FORMAT_HEADERS,
         json={
             "lists": [
                 {
@@ -266,7 +266,7 @@ def test_swipe_has_sync_lock():
 
     second = client.post("/actions/swipe", headers=_AUTH_HEADERS, json=payload)
     assert second.status_code == 429
-    assert second.json()["detail"]["code"] == "sync_lock"
+    assert second.json()["code"] == "sync_lock"
 
 
 def test_guarded_endpoints_reject_missing_token():
@@ -293,7 +293,7 @@ def test_identity_binding_rejects_mismatched_user_id():
         json={"user_id": "other-user", "source": "trending", "depth_pages": 1},
     )
     assert r.status_code == 403
-    assert r.json()["detail"]["code"] == "user_id_mismatch"
+    assert r.json()["code"] == "user_id_mismatch"
 
     r = client.post(
         "/actions/swipe",
@@ -301,7 +301,7 @@ def test_identity_binding_rejects_mismatched_user_id():
         json={"user_id": "other-user", "movie_slug": "film-a", "action": "dismiss"},
     )
     assert r.status_code == 403
-    assert r.json()["detail"]["code"] == "user_id_mismatch"
+    assert r.json()["code"] == "user_id_mismatch"
 
 
 def test_identity_binding_passes_matching_user_id():
