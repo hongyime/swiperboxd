@@ -24,7 +24,35 @@ const MOVIE_DELAY_MS = 600;
 const ALARM_NAME = "swiperboxd-periodic-sync";
 const SYNC_LOG_KEY = "swiperboxd-sync-log";
 const SYNC_RUNNING_KEY = "swiperboxd-sync-running";
+const SYNC_CHECKPOINT_KEY = "swiperboxd-sync-checkpoint";
 const MAX_LOG_ENTRIES = 300;
+const SYNC_STORAGE_KEYS = [
+  "apiBase",
+  "username",
+  "sessionToken",
+  "autoSync",
+  "syncWatchlist",
+  "syncDiary",
+  "discoverLists",
+  "fillLists",
+  "discoverPages",
+  "fillMaxLists",
+  "fillListPages",
+];
+
+function normalizeApiBase(raw) {
+  const base = String(raw || DEFAULT_API_BASE).trim().replace(/\/$/, "");
+  try {
+    const u = new URL(base);
+    const host = (u.hostname || "").toLowerCase();
+    if (!["http:", "https:"].includes(u.protocol)) return null;
+    // Prevent direct Supabase endpoints from being configured in the extension.
+    if (host.endsWith(".supabase.co") || host === "supabase.co") return null;
+    return `${u.protocol}//${u.host}`;
+  } catch {
+    return null;
+  }
+}
 
 // Public-list discovery defaults (overridable via chrome.storage)
 const DEFAULT_DISCOVER_PAGES = 3;    // /lists/popular/page/1..N
@@ -77,7 +105,36 @@ function log(msg) {
 }
 
 async function getConfig() {
-  return await chrome.storage.local.get(["apiBase", "username", "sessionToken", "autoSync"]);
+  const [local, synced] = await Promise.all([
+    chrome.storage.local.get(["apiBase", "username", "sessionToken", "autoSync"]),
+    chrome.storage.sync.get(["apiBase", "username", "sessionToken", "autoSync"]).catch(() => ({})),
+  ]);
+  const merged = { ...synced, ...local };
+  const safeBase = normalizeApiBase(merged.apiBase || DEFAULT_API_BASE);
+  return {
+    ...merged,
+    apiBase: safeBase || DEFAULT_API_BASE,
+  };
+}
+
+async function setSyncedConfig(values) {
+  const allowed = {};
+  for (const key of SYNC_STORAGE_KEYS) {
+    if (Object.prototype.hasOwnProperty.call(values, key)) {
+      allowed[key] = values[key];
+    }
+  }
+  if (!Object.keys(allowed).length) return;
+  await chrome.storage.local.set(allowed);
+  await chrome.storage.sync.set(allowed).catch(() => {});
+}
+
+async function writeSyncCheckpoint(checkpoint) {
+  await chrome.storage.local.set({ [SYNC_CHECKPOINT_KEY]: checkpoint });
+}
+
+async function clearSyncCheckpoint() {
+  await chrome.storage.local.remove(SYNC_CHECKPOINT_KEY);
 }
 
 async function getLetterboxdCookie() {
@@ -265,7 +322,9 @@ function parseMovieFromHtml(slug, html) {
 // ── API ──────────────────────────────────────────────────────────────────────
 
 async function apiPost(cfg, endpoint, body) {
-  const url = `${cfg.apiBase || DEFAULT_API_BASE}${endpoint}`;
+  const safeBase = normalizeApiBase(cfg.apiBase);
+  if (!safeBase) throw new Error("Invalid API base — use your backend URL, not a Supabase endpoint.");
+  const url = `${safeBase}${endpoint}`;
   const res = await fetchWithRetry(url, {
     method: "POST",
     headers: {
@@ -287,7 +346,8 @@ async function registerExtension({ apiBase } = {}) {
   const cookie = await getLetterboxdCookie();
   if (!cookie) throw new Error("Not signed in to Letterboxd — sign in at letterboxd.com first.");
 
-  const base = (apiBase || DEFAULT_API_BASE).replace(/\/$/, "");
+  const base = normalizeApiBase(apiBase || DEFAULT_API_BASE);
+  if (!base) throw new Error("Invalid API base — Supabase endpoints are not allowed.");
   const res = await fetchWithRetry(`${base}/api/extension/register`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -303,6 +363,11 @@ async function registerExtension({ apiBase } = {}) {
     username: data.username,
     sessionToken: data.session_token,
   });
+  await chrome.storage.sync.set({
+    apiBase: data.api_base || base,
+    username: data.username,
+    sessionToken: data.session_token,
+  }).catch(() => {});
   return { username: data.username, apiBase: data.api_base || base };
 }
 
@@ -555,8 +620,19 @@ async function scrapeOneListForFill(cfg, listRow, maxPages) {
 
 // ── Sync routines ────────────────────────────────────────────────────────────
 
-async function scrapeListType({ cfg, pathFn, batchEndpoint, phaseName, onFound, onSlugsCollected, maxPages = MAX_PAGES_HARD_CAP }) {
-  let page = 1;
+async function scrapeListType({
+  cfg,
+  pathFn,
+  batchEndpoint,
+  phaseName,
+  onFound,
+  onSlugsCollected,
+  maxPages = MAX_PAGES_HARD_CAP,
+  startPage = 1,
+  resumeTotalPages = null,
+  syncSettings = {},
+}) {
+  let page = Math.max(1, Number(startPage) || 1);
   let totalPages = null;
   let totalFound = 0;
   let buffer = [];
@@ -578,6 +654,9 @@ async function scrapeListType({ cfg, pathFn, batchEndpoint, phaseName, onFound, 
     }
     if (totalPages === null) {
       totalPages = Math.min(maxPages, detectTotalPages(html) || 1);
+      if (Number.isFinite(Number(resumeTotalPages)) && Number(resumeTotalPages) > totalPages) {
+        totalPages = Number(resumeTotalPages);
+      }
       syncState.totalPages = totalPages;
       log(`${phaseName}: ${totalPages} page(s) total`);
     }
@@ -622,6 +701,14 @@ async function scrapeListType({ cfg, pathFn, batchEndpoint, phaseName, onFound, 
       total_pages: totalPages,
       slugs_found: totalFound,
     });
+    await writeSyncCheckpoint({
+      mode: "full",
+      phase: phaseName,
+      nextPage: page + 1,
+      totalPages,
+      settings: syncSettings,
+      updatedAt: Date.now(),
+    });
     broadcast();
 
     if (page >= totalPages) {
@@ -658,6 +745,11 @@ async function scrapeUserHistory(cfg, settings = {}) {
   const watchlistMaxPages = Math.max(1, Math.min(MAX_PAGES_HARD_CAP, Number(settings.watchlistMaxPages || MAX_PAGES_HARD_CAP)));
   const diaryMaxPages = Math.max(1, Math.min(MAX_PAGES_HARD_CAP, Number(settings.diaryMaxPages || MAX_PAGES_HARD_CAP)));
   const fetchMetadata = settings.fetchMetadata !== false;
+  const resumePhase = settings.resumePhase || null;
+  const resumePage = Math.max(1, Number(settings.resumePage || 1));
+  const resumeTotalPages = Number.isFinite(Number(settings.resumeTotalPages))
+    ? Number(settings.resumeTotalPages)
+    : null;
   let wl = 0, diary = 0;
   const allSlugs = new Set();
   const watchlistSlugs = new Set();
@@ -668,6 +760,7 @@ async function scrapeUserHistory(cfg, settings = {}) {
     syncState.currentPage = 0;
     syncState.totalPages = 0;
     broadcast();
+    const watchlistStartPage = resumePhase === "watchlist" ? resumePage : 1;
     wl = await scrapeListType({
       cfg,
       pathFn: (p) => p === 1
@@ -687,6 +780,9 @@ async function scrapeUserHistory(cfg, settings = {}) {
         });
       },
       maxPages: watchlistMaxPages,
+      startPage: watchlistStartPage,
+      resumeTotalPages: resumePhase === "watchlist" ? resumeTotalPages : null,
+      syncSettings: settings,
     });
     if (syncState.stopRequested) {
       return {
@@ -704,6 +800,7 @@ async function scrapeUserHistory(cfg, settings = {}) {
     syncState.currentPage = 0;
     syncState.totalPages = 0;
     broadcast();
+    const diaryStartPage = resumePhase === "diary" ? resumePage : 1;
     diary = await scrapeListType({
       cfg,
       pathFn: (p) => p === 1
@@ -723,6 +820,9 @@ async function scrapeUserHistory(cfg, settings = {}) {
         });
       },
       maxPages: diaryMaxPages,
+      startPage: diaryStartPage,
+      resumeTotalPages: resumePhase === "diary" ? resumeTotalPages : null,
+      syncSettings: settings,
     });
     if (syncState.stopRequested) {
       return {
@@ -1587,8 +1687,21 @@ async function runSync(opts = {}) {
     fillMaxLists: opts.fillMaxLists ?? stored.fillMaxLists ?? DEFAULT_FILL_MAX_LISTS,
     fillListPages: opts.fillListPages ?? stored.fillListPages ?? DEFAULT_FILL_LIST_PAGES,
   };
+  const resumeFromCheckpoint = !!opts.resumeFromCheckpoint;
+  let checkpoint = null;
+  if (resumeFromCheckpoint) {
+    const checkpointData = await chrome.storage.local.get(SYNC_CHECKPOINT_KEY);
+    checkpoint = checkpointData[SYNC_CHECKPOINT_KEY] || null;
+    if (checkpoint?.mode === "full" && checkpoint?.settings) {
+      Object.assign(settings, checkpoint.settings);
+    }
+  }
 
   resetState("starting", "sync starting");
+  if (checkpoint?.phase && checkpoint?.nextPage) {
+    const p = Math.max(1, Number(checkpoint.nextPage) || 1);
+    log(`Resuming interrupted sync from ${checkpoint.phase} page ${p}`);
+  }
   broadcast();
 
   // Persist a "running" marker so we can detect if the SW is killed mid-sync
@@ -1600,7 +1713,12 @@ async function runSync(opts = {}) {
     const cfg = await ensureConfig();
 
     if ((settings.syncWatchlist || settings.syncDiary) && !syncState.stopRequested) {
-      const history = await scrapeUserHistory(cfg, settings);
+      const history = await scrapeUserHistory(cfg, {
+        ...settings,
+        resumePhase: checkpoint?.phase || null,
+        resumePage: checkpoint?.nextPage || 1,
+        resumeTotalPages: checkpoint?.totalPages || null,
+      });
       summary.watchlist = history.watchlist;
       summary.diary = history.diary;
       if (history.stopped) summary.stopped = true;
@@ -1628,6 +1746,7 @@ async function runSync(opts = {}) {
       syncState.percent = 100;
       await chrome.storage.local.set({ lastSync: Date.now() });
       await reportStatus(cfg, "complete", { slugs_found: summary.watchlist + summary.diary });
+      await clearSyncCheckpoint();
     }
     log(
       `Sync done — watchlist=${summary.watchlist} diary=${summary.diary} ` +
@@ -1959,10 +2078,11 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       case "SET_AUTO_SYNC":
         if (msg.value) chrome.alarms.create(ALARM_NAME, { periodInMinutes: 360 });
         else chrome.alarms.clear(ALARM_NAME);
+        await setSyncedConfig({ autoSync: !!msg.value });
         sendResponse({ ok: true });
         return;
       case "SWIPERBOXD_AUTH":
-        await chrome.storage.local.set({
+        await setSyncedConfig({
           apiBase: msg.apiBase,
           username: msg.username,
           sessionToken: msg.sessionToken,
@@ -2071,6 +2191,21 @@ chrome.runtime.onInstalled.addListener(async () => {
   if (cfg.autoSync) chrome.alarms.create(ALARM_NAME, { periodInMinutes: 360 });
 });
 
+chrome.runtime.onStartup.addListener(async () => {
+  try {
+    const [synced, local] = await Promise.all([
+      chrome.storage.sync.get(SYNC_STORAGE_KEYS).catch(() => ({})),
+      chrome.storage.local.get(SYNC_STORAGE_KEYS),
+    ]);
+    const merged = { ...synced, ...local };
+    if (Object.keys(merged).length) {
+      await chrome.storage.local.set(merged);
+    }
+  } catch (e) {
+    console.warn("[swiperboxd-ext] startup sync merge failed:", e);
+  }
+});
+
 // Keep SW alive while the popup is open (long-lived port connection)
 chrome.runtime.onConnect.addListener((port) => {
   if (port.name !== "popup") return;
@@ -2083,9 +2218,12 @@ chrome.runtime.onConnect.addListener((port) => {
 // Detect if the SW was killed mid-sync (running flag still set from previous run)
 chrome.storage.local.get(SYNC_RUNNING_KEY).then((data) => {
   if (data[SYNC_RUNNING_KEY]) {
-    const msg = "⚠️ Chrome killed the service worker while sync was running — sync was interrupted. Press Start Sync to retry.";
+    const msg = "⚠️ Chrome killed the service worker while sync was running — resuming from last checkpoint.";
     console.warn("[swiperboxd-ext]", msg);
     appendLogToStorage(msg);
-    chrome.storage.local.set({ [SYNC_RUNNING_KEY]: false });
+    runSync({ resumeFromCheckpoint: true }).catch((e) => {
+      appendLogToStorage(`ERROR auto-resume failed: ${e.message}`);
+      chrome.storage.local.set({ [SYNC_RUNNING_KEY]: false });
+    });
   }
 }).catch(() => {});
