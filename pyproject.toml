@@ -5,7 +5,7 @@ description = "Runnable discovery app baseline"
 requires-python = ">=3.11"
 dependencies = [
   "fastapi>=0.136.0",
-  "cryptography>=45.0.0",
+  "cryptography>=47.0.0",
   "uvicorn>=0.44.0",
   "httpx>=0.28.1",
   "beautifulsoup4>=4.14.3",
