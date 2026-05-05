@@ -1,15 +1,48 @@
 name: Supabase Keep-Alive
+
 on:
   schedule:
-    - cron: '0 0 * * 1,4'
+    - cron: '0 8 */3 * *'  # Every 3 days at 08:00 UTC — within 7-day pause window
   workflow_dispatch:
+
 jobs:
   ping-db:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
-      - name: Ping Supabase Database
+      - name: Ping Supabase via RPC
+        env:
+          SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
         run: |
-          curl -X POST "${{ secrets.SUPABASE_URL }}/rest/v1/rpc/keep_alive_ping" \
-          -H "apikey: ${{ secrets.SUPABASE_ANON_KEY }}" \
-          -H "Authorization: Bearer ${{ secrets.SUPABASE_ANON_KEY }}" \
-          -H "Content-Type: application/json"
+          echo "Pinging Supabase at: $SUPABASE_URL"
+
+          HTTP_STATUS=$(curl -s -o /tmp/supabase_response.json -w "%{http_code}" \
+            --max-time 30 \
+            --retry 3 \
+            --retry-delay 5 \
+            --retry-connrefused \
+            -X POST "$SUPABASE_URL/rest/v1/rpc/keep_alive_ping" \
+            -H "apikey: $SUPABASE_ANON_KEY" \
+            -H "Authorization: Bearer $SUPABASE_ANON_KEY" \
+            -H "Content-Type: application/json")
+
+          echo "HTTP Status: $HTTP_STATUS"
+          echo "Response:"
+          cat /tmp/supabase_response.json
+
+          # Check for acceptable status codes
+          if [[ "$HTTP_STATUS" == "200" || "$HTTP_STATUS" == "406" ]]; then
+            echo "✅ Supabase is alive (HTTP $HTTP_STATUS)"
+          elif [[ "$HTTP_STATUS" == "401" || "$HTTP_STATUS" == "403" ]]; then
+            echo "⚠️  Auth error (HTTP $HTTP_STATUS) — DB is alive but check your secrets"
+            exit 1
+          else
+            echo "❌ Supabase ping failed (HTTP $HTTP_STATUS)"
+            exit 1
+          fi
+
+      - name: Report failure
+        if: failure()
+        run: |
+          echo "::error::Supabase keepalive ping failed. Check that VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY secrets are set correctly."
