@@ -12,8 +12,8 @@ jobs:
     steps:
       - name: Ping Supabase via RPC
         env:
-          SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
-          SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
         run: |
           echo "Pinging Supabase at: $SUPABASE_URL"
 
@@ -45,4 +45,4 @@ jobs:
       - name: Report failure
         if: failure()
         run: |
-          echo "::error::Supabase keepalive ping failed. Check that VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY secrets are set correctly."
+          echo "::error::Supabase keepalive ping failed. Check that SUPABASE_URL and SUPABASE_ANON_KEY secrets are set correctly."
