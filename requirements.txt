@@ -3,7 +3,7 @@ uvicorn==0.47.0
 cryptography==47.0.0
 httpx==0.28.1
 beautifulsoup4==4.14.3
-supabase==2.30.0
+supabase==2.31.0
 redis==7.4.0
 requests==2.34.2
 pytest==9.0.3
