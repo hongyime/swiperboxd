@@ -1796,6 +1796,11 @@ async function fetchSupabaseUserHistory(cfg, userId) {
 }
 
 async function runCrossSync(opts = {}) {
+  // Force reset if requested (e.g. from web app initial load) to clear ghost states
+  if (syncState.running && opts.force) {
+    log("[cross-sync] force flag provided — overriding ghost running state");
+    syncState.running = false;
+  }
   if (syncState.running) return { ok: false, error: "already running" };
 
   const rawMaxPush = Number.isFinite(Number(opts.maxPushPerKind))
