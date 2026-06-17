@@ -1232,18 +1232,31 @@ async def extension_batch_list_movies(
     except Exception as exc:
         print(f"[extension] scrape_count update failed {payload.list_id}: {exc}", flush=True)
         count = len(payload.slugs)
-
     print(
         f"[extension] list-movies batch list_id={payload.list_id} "
         f"page={payload.page}/{payload.total_pages} pushed={len(payload.slugs)} total={count}",
         flush=True,
     )
+
+    # Detect slugs in this batch that are missing full metadata
+    missing_metadata = []
+    try:
+        movies_by_slug = store.get_movies_by_slugs(payload.slugs)
+        for slug in payload.slugs:
+            movie = movies_by_slug.get(slug)
+            if not movie or not movie.get("synopsis") or not movie.get("poster_url"):
+                missing_metadata.append(slug)
+    except Exception as exc:
+        print(f"[extension] missing_metadata detection failed: {exc}", flush=True)
+
     return {
         "status": "ok",
         "list_id": payload.list_id,
         "page": payload.page,
         "total_pages": payload.total_pages,
-        "scraped_film_count": count,
+        "added": len(payload.slugs),
+        "total_scraped": count,
+        "missing_metadata": missing_metadata,
     }
 
 

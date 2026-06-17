@@ -39,6 +39,26 @@
     return btn;
   }
 
+  function safeSendMessage(message) {
+    return new Promise((resolve) => {
+      if (typeof chrome === "undefined" || !chrome.runtime || !chrome.runtime.sendMessage) {
+        resolve({ ok: false, error: "Extension context invalidated. Please refresh this page." });
+        return;
+      }
+      try {
+        chrome.runtime.sendMessage(message, (response) => {
+          if (chrome.runtime.lastError) {
+            resolve({ ok: false, error: chrome.runtime.lastError.message });
+          } else {
+            resolve(response);
+          }
+        });
+      } catch (e) {
+        resolve({ ok: false, error: e.message });
+      }
+    });
+  }
+
   function injectList() {
     if (document.querySelector('[data-sbx="sync-btn"]')) return;
     const btn = buildButton("Sync list to Swiperboxd");
@@ -46,7 +66,7 @@
       btn.textContent = "Syncing…";
       btn.disabled = true;
       try {
-        const resp = await chrome.runtime.sendMessage({
+        const resp = await safeSendMessage({
           type: "SCRAPE_LIST",
           listUrl: location.origin + location.pathname,
           fetchMetadata: false,
@@ -78,7 +98,7 @@
       btn.textContent = "Saving…";
       btn.disabled = true;
       try {
-        const resp = await chrome.runtime.sendMessage({ type: "SCRAPE_MOVIES", slugs: [slug] });
+        const resp = await safeSendMessage({ type: "SCRAPE_MOVIES", slugs: [slug] });
         btn.textContent = resp?.ok ? "Saved" : `Failed: ${resp?.error || "?"}`;
       } catch (e) {
         btn.textContent = `Failed: ${e.message}`;

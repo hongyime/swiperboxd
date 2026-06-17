@@ -506,12 +506,12 @@ async function maybeRunInitialCrossSync() {
 
   crossSyncAttemptedUsers.add(username);
   setCrossSyncBadge('running', 'Syncing…');
-  showToast('Syncing Letterboxd ↔ Supabase…');
+  showToast('Syncing Letterboxd ↔ Supabase (this may take a minute)…');
 
   let lastError = null;
   for (let attempt = 1; attempt <= 2; attempt++) {
-    // Auto sync should be lightweight on page load: pull latest page only + no push-backs.
-    const result = await requestExtensionCrossSync(120000, 0, 1);
+    // Increase timeout to 5 minutes (300,000ms) for large histories
+    const result = await requestExtensionCrossSync(300000, 0, 1);
     if (result.ok) {
       markCrossSyncSuccess(username);
       const summary = result.summary || {};
@@ -522,7 +522,7 @@ async function maybeRunInitialCrossSync() {
       // Clear suppression store after successful sync — user may want to re-see movies
       extLog('clearing suppression store after sync', { suppressedCount: suppression.size() });
       // Re-load the deck to clear any suppressed movies
-      await loadLists(state.listSearchQuery || '');
+      await loadDeck();
       return;
     }
     lastError = result.error;
@@ -533,7 +533,7 @@ async function maybeRunInitialCrossSync() {
     });
     if (attempt < 2) {
       showToast('Sync failed, retrying…');
-      await new Promise(r => setTimeout(r, 1500 * attempt));
+      await new Promise(r => setTimeout(r, 2000 * attempt));
     }
   }
 
@@ -542,7 +542,7 @@ async function maybeRunInitialCrossSync() {
     username,
     error: lastError,
   });
-  showToast(lastError || 'Cross-sync failed — open extension popup and run Start Sync');
+  showToast(lastError || 'Cross-sync failed — check extension popup');
 }
 
 function applyWriteAccess() {

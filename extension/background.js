@@ -675,7 +675,23 @@ async function scrapeListType({
           page,
           total_pages: totalPages,
         });
-        log(`${phaseName}: pushed ${toPush.length} → added=${result?.result?.added ?? "?"}`);
+        
+        const added = result?.result?.added ?? 0;
+        const missing = result?.result?.missing_metadata || [];
+        log(`${phaseName}: pushed ${toPush.length} → added=${added}, missing_metadata=${missing.length}`);
+
+        // OPTIMIZATION: If this is a historical sync and we added 0 new items,
+        // it means we've caught up to our previous sync point. Stop here.
+        if (added === 0 && page > 1 && maxPages > 1) {
+          log(`${phaseName}: caught up to existing history (0 added) — stopping sync`);
+          break;
+        }
+
+        // ENRICHMENT: Fetch metadata immediately for anything the backend marked as missing
+        if (missing.length > 0) {
+          log(`${phaseName}: enriching ${missing.length} movies missing metadata…`);
+          await scrapeMoviesMetadata(cfg, missing);
+        }
       } catch (e) {
         log(`ERROR: ${phaseName} push failed: ${e.message}`);
         await reportStatus(cfg, "error", { message: e.message });
@@ -916,7 +932,7 @@ async function scrapePublicList(cfg, listUrl) {
     log(`list ${info.listId} page ${page}/${totalPages}: ${slugs.length} slugs`);
 
     try {
-      await apiPost(cfg, "/api/extension/batch/list-movies", {
+      const res = await apiPost(cfg, "/api/extension/batch/list-movies", {
         list_id: info.listId,
         list_url: info.url,
         title,
@@ -927,6 +943,15 @@ async function scrapePublicList(cfg, listUrl) {
         total_pages: totalPages,
         replace_memberships: false,
       });
+
+      const missing = res?.result?.missing_metadata || res?.missing_metadata || [];
+      if (missing.length > 0) {
+        log(`list ${info.listId}: enriching ${missing.length} movies missing metadata…`);
+        await scrapeMoviesMetadata(cfg, missing);
+        // Reset phase back to list after enrichment chunk
+        syncState.phase = "list";
+        broadcast();
+      }
     } catch (e) {
       log(`ERROR list batch push: ${e.message}`);
       throw e;
