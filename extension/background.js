@@ -743,12 +743,12 @@ async function scrapeListType({
 }
 
 async function scrapeUserHistory(cfg, settings = {}) {
-  const doWatchlist = settings.syncWatchlist !== false;
-  const doDiary = settings.syncDiary !== false;
+  const resumePhase = settings.resumePhase || null;
+  const doWatchlist = settings.syncWatchlist !== false && resumePhase !== "diary" && resumePhase !== "metadata";
+  const doDiary = settings.syncDiary !== false && resumePhase !== "metadata";
   const watchlistMaxPages = Math.max(1, Math.min(MAX_PAGES_HARD_CAP, Number(settings.watchlistMaxPages || MAX_PAGES_HARD_CAP)));
   const diaryMaxPages = Math.max(1, Math.min(MAX_PAGES_HARD_CAP, Number(settings.diaryMaxPages || MAX_PAGES_HARD_CAP)));
   const fetchMetadata = settings.fetchMetadata !== false;
-  const resumePhase = settings.resumePhase || null;
   const resumePage = Math.max(1, Number(settings.resumePage || 1));
   const resumeTotalPages = Number.isFinite(Number(settings.resumeTotalPages))
     ? Number(settings.resumeTotalPages)

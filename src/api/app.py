@@ -126,9 +126,9 @@ def _matches_profile(profile: str, movie: dict) -> bool:
 def _validate_letterboxd_session(username: str, session_cookie: str) -> None:
     """Validate a Letterboxd session cookie by hitting the settings page (auth-gated).
 
-    Uses letterboxd.user.CURRENT as the cookie name — this is the session token
-    visible in DevTools after login. A valid cookie gets a 200 on /settings/;
-    an invalid/expired one gets redirected to /sign-in/.
+    Uses letterboxd.user.CURRENT as the cookie name. A valid cookie gets a 200
+    on /settings/ and contains the 'signed-in' body class. An invalid one gets 
+    redirected to /sign-in/ OR receives a 200 OK that actually contains the sign-in page.
 
     Raises RuntimeError if the cookie is invalid or the request fails.
     """
@@ -139,17 +139,16 @@ def _validate_letterboxd_session(username: str, session_cookie: str) -> None:
         with _httpx.Client(
             cookies={_SESSION_COOKIE_NAME: session_cookie},
             timeout=15.0,
-            follow_redirects=False,
+            follow_redirects=True,
         ) as client:
             resp = client.get(url)
             print(f"[auth] settings check status={resp.status_code} url={url}", flush=True)
-            if resp.status_code in {301, 302}:
-                location = resp.headers.get("location", "")
-                print(f"[auth] redirect location={location}", flush=True)
-                if "sign-in" in location or "login" in location:
-                    raise RuntimeError("session_expired_or_invalid")
-                # Other redirects (canonical URL) — treat as OK
-            elif resp.status_code == 200:
+            
+            if "sign in" in resp.text.lower() and '<body class="signed-in"' not in resp.text:
+                print(f"[auth] soft redirect to sign-in detected", flush=True)
+                raise RuntimeError("session_expired_or_invalid")
+                
+            if resp.status_code == 200:
                 pass  # authenticated
             else:
                 raise RuntimeError(f"unexpected_status: {resp.status_code}")
@@ -189,18 +188,30 @@ def _extract_username_from_cookie(session_cookie: str) -> str | None:
             return None
     elif resp.status_code != 200:
         return None
-
+        
     html = resp.text
+    if "sign in" in html.lower() and '<body class="signed-in"' not in html:
+        print(f"[auth] username extraction: soft redirect to sign-in detected", flush=True)
+        return None
     for pattern in (
         r'data-owner="([a-zA-Z0-9_-]+)"',
         r'data-current-user="([a-zA-Z0-9_-]+)"',
         r'data-username="([a-zA-Z0-9_-]+)"',
         r'<a[^>]+class="[^"]*navitem[^"]*account[^"]*"[^>]+href="/([a-zA-Z0-9_-]+)/"',
         r'<meta\s+name="twitter:creator"\s+content="@([a-zA-Z0-9_-]+)"',
+        r'href="/([a-zA-Z0-9_-]+)/">\s*Profile\s*</a>',
+        r'href="/([a-zA-Z0-9_-]+)/settings/"',
     ):
         m = _re.search(pattern, html)
         if m:
             return m.group(1)
+    
+    # Final fallback: look for the avatar link in the header which is highly stable
+    avatar_match = _re.search(r'<div[^>]*class="[^"]*profile-avatar[^"]*"[^>]*>\s*<a[^>]+href="/([a-zA-Z0-9_-]+)/"', html)
+    if avatar_match:
+        return avatar_match.group(1)
+
+    print("[auth] could not parse username from HTML. Snippet: " + html[:500], flush=True)
     return None
 
 
