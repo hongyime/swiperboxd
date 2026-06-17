@@ -193,6 +193,7 @@ window.addEventListener("message", (event) => {
       maxPushPerKind: data.maxPushPerKind,
       historyMaxPages: data.historyMaxPages,
       requestId: data.requestId,
+      force: data.force,
     }, (resp) => {
       contentLog("LB_CROSS_SYNC response", {
         requestId: data.requestId || null,
