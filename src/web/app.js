@@ -327,6 +327,7 @@ function requestExtensionCrossSync(timeoutMs = 180000, maxPushPerKind = 300, his
       requestId,
       maxPushPerKind,
       historyMaxPages,
+      force: true,
       sentAt: Date.now(),
     }, window.location.origin);
   });
@@ -499,7 +500,10 @@ async function maybeRunInitialCrossSync() {
   const username = state.username;
   if (!username || username === '_guest_') return;
   if (crossSyncAttemptedUsers.has(username)) return;
-  if (!shouldRunCrossSync(username)) {
+  
+  // Only honor the cooldown if the backend actually confirms we have data.
+  // Otherwise, the user is stuck if a previous attempt failed mid-way and set the local storage flag.
+  if (shouldRunCrossSync(username) === false && state.hasSynced) {
     setCrossSyncBadge('success', 'Synced');
     return;
   }
