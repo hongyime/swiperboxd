@@ -4,8 +4,39 @@ const el = (id) => document.getElementById(id);
 const DEFAULT_API_BASE = "https://swiperboxd.vercel.app";
 const SYNC_LOG_KEY = "swiperboxd-sync-log";
 
+/**
+ * Robust wrapper for chrome.runtime.sendMessage that handles 
+ * context invalidation and disconnect errors gracefully.
+ */
+function safeSendMessage(message) {
+  return new Promise((resolve) => {
+    if (typeof chrome === "undefined" || !chrome.runtime || !chrome.runtime.sendMessage) {
+      resolve({ ok: false, error: "Extension context invalidated. Please reopen this popup." });
+      return;
+    }
+    try {
+      chrome.runtime.sendMessage(message, (response) => {
+        if (chrome.runtime.lastError) {
+          resolve({ ok: false, error: chrome.runtime.lastError.message });
+        } else {
+          resolve(response);
+        }
+      });
+    } catch (e) {
+      resolve({ ok: false, error: e.message });
+    }
+  });
+}
+
 // Keep the service worker alive while this popup is open
-const _port = chrome.runtime.connect({ name: "popup" });
+let _port = null;
+try {
+  if (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.connect) {
+    _port = chrome.runtime.connect({ name: "popup" });
+  }
+} catch (e) {
+  console.warn("[popup] runtime.connect failed:", e.message);
+}
 
 async function getStorage() {
   const keys = [
@@ -13,19 +44,29 @@ async function getStorage() {
     "syncHistory", "syncWatchlist", "syncDiary", "discoverLists", "fillLists",
     "discoverPages", "fillMaxLists", "fillListPages",
   ];
-  const [local, synced] = await Promise.all([
-    chrome.storage.local.get(keys),
-    chrome.storage.sync.get(keys).catch(() => ({})),
-  ]);
-  return { ...synced, ...local };
+  try {
+    const [local, synced] = await Promise.all([
+      chrome.storage.local.get(keys),
+      chrome.storage.sync.get(keys).catch(() => ({})),
+    ]);
+    return { ...synced, ...local };
+  } catch (e) {
+    console.warn("[popup] storage.get failed:", e.message);
+    return {};
+  }
 }
 async function setStorage(obj) {
-  await chrome.storage.local.set(obj);
-  await chrome.storage.sync.set(obj).catch(() => {});
+  try {
+    await chrome.storage.local.set(obj);
+    await chrome.storage.sync.set(obj).catch(() => {});
+  } catch (e) {
+    console.warn("[popup] storage.set failed:", e.message);
+  }
 }
 
 function logLine(target, msg) {
   const log = el(target);
+  if (!log) return;
   const time = new Date().toLocaleTimeString();
   const line = `[${time}] ${msg}`;
   log.textContent = line + "\n" + log.textContent;
@@ -46,7 +87,8 @@ async function loadLogHistory() {
     const entries = Array.isArray(data[SYNC_LOG_KEY]) ? data[SYNC_LOG_KEY] : [];
     if (entries.length) {
       // Show newest first (entries are oldest-first in storage)
-      el("log").textContent = [...entries].reverse().join("\n");
+      const logEl = el("log");
+      if (logEl) logEl.textContent = [...entries].reverse().join("\n");
     }
   } catch (e) {
     console.warn("[popup] loadLogHistory failed:", e);
@@ -123,7 +165,7 @@ async function refreshStatus() {
   // Load full log history from storage first (survives popup close/SW restart)
   await loadLogHistory();
   // Then overlay current live state
-  const resp = await chrome.runtime.sendMessage({ type: "GET_STATE" }).catch(() => null);
+  const resp = await safeSendMessage({ type: "GET_STATE" });
   if (resp && resp.state) renderProgress(resp.state);
 }
 
@@ -140,7 +182,7 @@ el("connect-btn").addEventListener("click", async () => {
     logLine("log", "ERROR: invalid API base (Supabase URLs are not allowed)");
     return;
   }
-  const resp = await chrome.runtime.sendMessage({ type: "REGISTER", apiBase });
+  const resp = await safeSendMessage({ type: "REGISTER", apiBase });
   el("connect-btn").disabled = false;
   if (resp && resp.ok) {
     logLine("log", `Connected as ${resp.username}`);
@@ -190,7 +232,7 @@ el("start-btn").addEventListener("click", async () => {
   await persistSyncOptions();
   const cfg = await getStorage();
   logLine("log", "Starting full sync…");
-  const resp = await chrome.runtime.sendMessage({
+  const resp = await safeSendMessage({
     type: "START_SYNC",
     syncWatchlist: cfg.syncWatchlist !== false,
     syncDiary: cfg.syncDiary !== false,
@@ -201,7 +243,7 @@ el("start-btn").addEventListener("click", async () => {
 el("backfill-btn").addEventListener("click", async () => {
   logLine("log", "Backfilling missing metadata…");
   el("backfill-btn").disabled = true;
-  const resp = await chrome.runtime.sendMessage({ type: "BACKFILL" });
+  const resp = await safeSendMessage({ type: "BACKFILL" });
   el("backfill-btn").disabled = false;
   if (resp?.ok) logLine("log", `Backfill done — processed=${resp.processed ?? 0}`);
   else logLine("log", `ERROR: ${resp?.error || "backfill failed"}`);
@@ -209,13 +251,13 @@ el("backfill-btn").addEventListener("click", async () => {
 
 el("stop-btn").addEventListener("click", async () => {
   logLine("log", "Stop requested");
-  await chrome.runtime.sendMessage({ type: "STOP_SYNC" });
+  await safeSendMessage({ type: "STOP_SYNC" });
 });
 
 el("auto-sync").addEventListener("change", async () => {
   const on = el("auto-sync").checked;
   await setStorage({ autoSync: on });
-  await chrome.runtime.sendMessage({ type: "SET_AUTO_SYNC", value: on });
+  await safeSendMessage({ type: "SET_AUTO_SYNC", value: on });
   logLine("log", `Auto-sync ${on ? "enabled (6h)" : "disabled"}`);
 });
 
@@ -226,7 +268,7 @@ el("scrape-list-btn").addEventListener("click", async () => {
   if (!listUrl) { logLine("list-log", "ERROR: paste a list URL first"); return; }
   const fetchMeta = el("fetch-metadata").checked;
   logLine("list-log", `Scraping ${listUrl}${fetchMeta ? " (+metadata)" : ""}…`);
-  const resp = await chrome.runtime.sendMessage({ type: "SCRAPE_LIST", listUrl, fetchMetadata: fetchMeta });
+  const resp = await safeSendMessage({ type: "SCRAPE_LIST", listUrl, fetchMetadata: fetchMeta });
   if (resp?.ok) logLine("list-log", `Done — ${resp.found} films`);
   else logLine("list-log", `ERROR: ${resp?.error || "scrape failed"}`);
 });
@@ -241,13 +283,15 @@ document.querySelectorAll(".tab").forEach((t) => {
   });
 });
 
-chrome.runtime.onMessage.addListener((msg) => {
-  if (msg && msg.type === "SYNC_STATE") renderProgress(msg.state);
-});
+if (typeof chrome !== "undefined" && chrome.runtime && chrome.runtime.onMessage) {
+  chrome.runtime.onMessage.addListener((msg) => {
+    if (msg && msg.type === "SYNC_STATE") renderProgress(msg.state);
+  });
+}
 
 el("clear-log-btn")?.addEventListener("click", async () => {
-  await chrome.storage.local.set({ [SYNC_LOG_KEY]: [] });
+  await setStorage({ [SYNC_LOG_KEY]: [] });
   el("log").textContent = "";
 });
 
-refreshStatus();
+refreshStatus().catch(e => console.error("[popup] refreshStatus failed:", e));

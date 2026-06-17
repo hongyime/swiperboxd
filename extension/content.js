@@ -12,6 +12,15 @@ function normalizeRuntimeError(rawMessage, fallback = 'Extension runtime error')
   const original = String(rawMessage || '').trim();
   const lower = original.toLowerCase();
 
+  // Special case for context invalidation (extension updated/reloaded)
+  if (lower.includes("extension context invalidated") || lower.includes("context invalidated")) {
+    return {
+      code: 'context_invalidated',
+      message: 'Extension context invalidated (probably updated or reloaded). Please refresh this page to reconnect.',
+      original,
+    };
+  }
+
   if (lower.includes('unknown error occurred when fetching the script')) {
     return {
       code: 'script_fetch_failed',
@@ -44,6 +53,39 @@ function normalizeRuntimeError(rawMessage, fallback = 'Extension runtime error')
   };
 }
 
+/**
+ * Robust wrapper for chrome.runtime.sendMessage that handles 
+ * context invalidation and disconnect errors gracefully.
+ */
+function safeSendMessage(message, callback) {
+  const requestId = message.requestId || 'unknown';
+
+  if (typeof chrome === "undefined" || !chrome.runtime || !chrome.runtime.sendMessage) {
+    const mapped = normalizeRuntimeError("Extension context invalidated");
+    contentLog("ERROR: " + mapped.message, { requestId });
+    if (callback) callback({ ok: false, ...mapped });
+    return false;
+  }
+
+  try {
+    chrome.runtime.sendMessage(message, (response) => {
+      if (chrome.runtime.lastError) {
+        const mapped = normalizeRuntimeError(chrome.runtime.lastError.message);
+        contentLog("Runtime error:", { requestId, error: mapped });
+        if (callback) callback({ ok: false, ...mapped });
+        return;
+      }
+      if (callback) callback(response);
+    });
+    return true;
+  } catch (e) {
+    const mapped = normalizeRuntimeError(e.message);
+    contentLog("Exception in sendMessage:", { requestId, error: mapped });
+    if (callback) callback({ ok: false, ...mapped });
+    return false;
+  }
+}
+
 contentLog("content script injected", { href: window.location.href, origin: window.location.origin });
 
 window.addEventListener("message", (event) => {
@@ -58,62 +100,40 @@ window.addEventListener("message", (event) => {
       sentAt: data.sentAt || null,
       href: window.location.href,
     });
-    try {
-      chrome.runtime.sendMessage({ type: "GET_WEBAPP_AUTH" }, (resp) => {
-        if (chrome.runtime.lastError) {
-          const mapped = normalizeRuntimeError(chrome.runtime.lastError.message, 'auth bridge runtime error');
-          contentLog("auth bridge runtime error", { requestId: data.requestId || null, error: mapped });
-          window.postMessage({
-            type: "SWIPERBOXD_AUTH_RESULT",
-            ok: false,
-            error: mapped.message,
-            errorCode: mapped.code,
-            originalError: mapped.original,
-            requestId: data.requestId || null,
-          }, window.location.origin);
-          return;
-        }
-        contentLog("auth bridge response", {
-          requestId: data.requestId || null,
-          ok: resp?.ok,
-          username: resp?.username || null,
-          error: resp?.error || null,
-        });
-        window.postMessage({
-          type: "SWIPERBOXD_AUTH_RESULT",
-          ...resp,
-          requestId: data.requestId || null,
-        }, window.location.origin);
+    
+    safeSendMessage({ type: "GET_WEBAPP_AUTH", requestId: data.requestId }, (resp) => {
+      contentLog("auth bridge response", {
+        requestId: data.requestId || null,
+        ok: resp?.ok,
+        username: resp?.username || null,
+        error: resp?.error || null,
       });
-    } catch (e) {
-      contentLog("auth bridge threw", { requestId: data.requestId || null, error: e.message });
       window.postMessage({
         type: "SWIPERBOXD_AUTH_RESULT",
-        ok: false,
-        error: e.message,
+        ...resp,
         requestId: data.requestId || null,
       }, window.location.origin);
-    }
+    });
     return;
   }
 
   // Forward auth credentials to service worker
   if (data.type === "SWIPERBOXD_AUTH") {
     if (!data.username || !data.sessionToken) return;
-    try {
-      chrome.runtime.sendMessage({
-        type: "SWIPERBOXD_AUTH",
-        username: data.username,
-        sessionToken: data.sessionToken,
-        apiBase: data.apiBase || window.location.origin,
-      });
-      contentLog("credentials forwarded to service worker", {
-        username: data.username,
-        apiBase: data.apiBase || window.location.origin,
-      });
-    } catch (e) {
-      console.warn(`${CONTENT_LOG_PREFIX} auth forward failed:`, e);
-    }
+    safeSendMessage({
+      type: "SWIPERBOXD_AUTH",
+      username: data.username,
+      sessionToken: data.sessionToken,
+      apiBase: data.apiBase || window.location.origin,
+      requestId: data.requestId,
+    }, (resp) => {
+      if (resp?.ok) {
+        contentLog("credentials forwarded to service worker", {
+          username: data.username,
+          apiBase: data.apiBase || window.location.origin,
+        });
+      }
+    });
   }
 
   // Forward swipe actions to service worker so it can write to Letterboxd
@@ -124,47 +144,34 @@ window.addEventListener("message", (event) => {
       action: data.action,
       movieSlug: data.movieSlug,
     });
-    const replyFail = (error) => window.postMessage({
+
+    const reply = (payload) => window.postMessage({
       type: "SWIPERBOXD_SWIPE_RESULT",
       action: data.action,
       movieSlug: data.movieSlug,
-      lbSynced: false,
-      error,
       requestId: data.requestId || null,
+      ...payload,
     }, window.location.origin);
 
-    try {
-      chrome.runtime.sendMessage({
-        type: "LB_WRITE",
+    safeSendMessage({
+      type: "LB_WRITE",
+      action: data.action,
+      movieSlug: data.movieSlug,
+      requestId: data.requestId,
+    }, (resp) => {
+      contentLog("LB_WRITE response", {
+        requestId: data.requestId || null,
         action: data.action,
         movieSlug: data.movieSlug,
-      }, (resp) => {
-        if (chrome.runtime.lastError) {
-          const mapped = normalizeRuntimeError(chrome.runtime.lastError.message, 'service worker message error');
-          console.warn(`${CONTENT_LOG_PREFIX} SW message error:`, mapped);
-          replyFail(mapped.message);
-          return;
-        }
-        contentLog("LB_WRITE response", {
-          requestId: data.requestId || null,
-          action: data.action,
-          movieSlug: data.movieSlug,
-          ok: resp?.ok === true,
-          error: resp?.error || null,
-        });
-        window.postMessage({
-          type: "SWIPERBOXD_SWIPE_RESULT",
-          action: data.action,
-          movieSlug: data.movieSlug,
-          lbSynced: resp?.ok === true,
-          error: resp?.error || null,
-          requestId: data.requestId || null,
-        }, window.location.origin);
+        ok: resp?.ok === true,
+        error: resp?.error || null,
       });
-    } catch (e) {
-      console.warn(`${CONTENT_LOG_PREFIX} swipe forward failed:`, e);
-      replyFail(e.message);
-    }
+      reply({
+        lbSynced: resp?.ok === true,
+        error: resp?.error || null,
+        errorCode: resp?.code || null,
+      });
+    });
   }
 
   // Trigger initial bidirectional cross-sync from the web app.
@@ -181,46 +188,25 @@ window.addEventListener("message", (event) => {
       ...payload,
     }, window.location.origin);
 
-    try {
-      chrome.runtime.sendMessage({
-        type: "LB_CROSS_SYNC",
-        maxPushPerKind: data.maxPushPerKind,
-        historyMaxPages: data.historyMaxPages,
-      }, (resp) => {
-        if (chrome.runtime.lastError) {
-          const mapped = normalizeRuntimeError(chrome.runtime.lastError.message, 'cross-sync runtime error');
-          contentLog("LB_CROSS_SYNC runtime error", {
-            requestId: data.requestId || null,
-            error: mapped,
-          });
-          reply({
-            ok: false,
-            error: mapped.message,
-            errorCode: mapped.code,
-            originalError: mapped.original,
-            summary: null,
-          });
-          return;
-        }
-
-        contentLog("LB_CROSS_SYNC response", {
-          requestId: data.requestId || null,
-          ok: resp?.ok === true,
-          error: resp?.error || null,
-        });
-        reply({
-          ok: resp?.ok === true,
-          error: resp?.error || null,
-          summary: resp || null,
-        });
-      });
-    } catch (e) {
-      contentLog("LB_CROSS_SYNC threw", {
+    safeSendMessage({
+      type: "LB_CROSS_SYNC",
+      maxPushPerKind: data.maxPushPerKind,
+      historyMaxPages: data.historyMaxPages,
+      requestId: data.requestId,
+    }, (resp) => {
+      contentLog("LB_CROSS_SYNC response", {
         requestId: data.requestId || null,
-        error: e.message,
+        ok: resp?.ok === true,
+        error: resp?.error || null,
       });
-      reply({ ok: false, error: e.message, summary: null });
-    }
+      reply({
+        ok: resp?.ok === true,
+        error: resp?.error || null,
+        errorCode: resp?.code || null,
+        originalError: resp?.original || null,
+        summary: resp?.ok ? resp : null,
+      });
+    });
   }
 });
 

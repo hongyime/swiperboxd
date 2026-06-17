@@ -661,24 +661,49 @@ class SupabaseStore:
         return {row["movie_slug"] for row in response.data}
 
     def upsert_movie(self, movie: dict) -> None:
-        """Upsert movie metadata to Supabase cache."""
+        """Upsert movie metadata to Supabase cache.
+        
+        Only includes non-empty fields to avoid overwriting existing metadata 
+        with placeholders during partial updates (like LID backfills).
+        """
         normalized = normalize_movie_record(movie)
-        record = {
-            "slug": normalized["slug"],
-            "title": normalized["title"],
-            "poster_url": normalized.get("poster_url"),
-            "rating": normalized.get("rating"),
-            "popularity": normalized.get("popularity", 0),
-            "genres": normalized.get("genres", []),
-            "synopsis": normalized.get("synopsis", ""),
-            "cast": normalized.get("cast", []),
-        }
-        if "year" in movie:
+        
+        # Start with required slug
+        record = {"slug": normalized["slug"]}
+        
+        # Only add fields if they have meaningful data
+        if normalized.get("title") and normalized["title"] != normalized["slug"].replace("-", " ").title():
+            record["title"] = normalized["title"]
+        
+        if normalized.get("poster_url"):
+            record["poster_url"] = normalized["poster_url"]
+        
+        if normalized.get("rating") is not None and normalized["rating"] > 0:
+            record["rating"] = normalized["rating"]
+            
+        if normalized.get("popularity") is not None and normalized["popularity"] > 0:
+            record["popularity"] = normalized["popularity"]
+            
+        if normalized.get("genres"):
+            record["genres"] = normalized["genres"]
+            
+        if normalized.get("synopsis"):
+            record["synopsis"] = normalized["synopsis"]
+            
+        if normalized.get("cast"):
+            record["cast"] = normalized["cast"]
+
+        if movie.get("year"):
             record["year"] = movie["year"]
-        if "director" in movie:
+            
+        if movie.get("director"):
             record["director"] = movie["director"]
+            
         if movie.get("lb_film_id"):
             record["lb_film_id"] = movie["lb_film_id"]
+
+        # If we only have the slug, don't do a full upsert of empty strings
+        # because normalize_movie_record might have added default empties.
         self.client.table("movies").upsert(record, on_conflict="slug").execute()
 
     def get_movie(self, slug: str) -> dict | None:
