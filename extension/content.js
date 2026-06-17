@@ -63,7 +63,7 @@ function safeSendMessage(message, callback) {
   if (typeof chrome === "undefined" || !chrome.runtime || !chrome.runtime.sendMessage) {
     const mapped = normalizeRuntimeError("Extension context invalidated");
     contentLog("ERROR: " + mapped.message, { requestId });
-    if (callback) callback({ ok: false, ...mapped });
+    if (callback) callback({ ok: false, error: mapped.message, errorCode: mapped.code });
     return false;
   }
 
@@ -72,7 +72,7 @@ function safeSendMessage(message, callback) {
       if (chrome.runtime.lastError) {
         const mapped = normalizeRuntimeError(chrome.runtime.lastError.message);
         contentLog("Runtime error:", { requestId, error: mapped });
-        if (callback) callback({ ok: false, ...mapped });
+        if (callback) callback({ ok: false, error: mapped.message, errorCode: mapped.code });
         return;
       }
       if (callback) callback(response);
@@ -81,7 +81,7 @@ function safeSendMessage(message, callback) {
   } catch (e) {
     const mapped = normalizeRuntimeError(e.message);
     contentLog("Exception in sendMessage:", { requestId, error: mapped });
-    if (callback) callback({ ok: false, ...mapped });
+    if (callback) callback({ ok: false, error: mapped.message, errorCode: mapped.code });
     return false;
   }
 }
