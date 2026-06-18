@@ -456,6 +456,10 @@ class SupabaseStore:
         self.genre_weights = {}
         self.lock = threading.Lock()
 
+    def cleanup_expired_progress(self, ttl_seconds: float = 3600.0) -> int:
+        """No-op for Supabase; progress is stateless."""
+        return 0
+
     def _get_or_create_user_id(self, letterboxd_username: str) -> str:
         """Get user ID from Supabase or create new user."""
         # Try to find existing user by letterboxd_username
