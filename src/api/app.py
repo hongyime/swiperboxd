@@ -847,7 +847,17 @@ async def get_discovery_deck(
         elif not before_slug:
             skipped_invalid += 1
 
-    movies = store.weighted_shuffle(user_id, matched)
+    try:
+        watchlist = store.get_watchlist(user_id)
+        diary = store.get_diary(user_id)
+        exclusions = store.get_exclusions(user_id)
+    except Exception as exc:
+        print(f"[deck] failed to load user filters: {exc}", flush=True)
+        watchlist, diary, exclusions = set(), set(), set()
+    
+    seen = watchlist | diary | exclusions
+
+    movies = store.weighted_shuffle(user_id, [m for m in matched if m.get("slug") not in seen])
     return {
         "status": "ok",
         "profile": profile,

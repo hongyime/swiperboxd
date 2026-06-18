@@ -2131,9 +2131,26 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
           sendResponse({ ok: false, error: e.message });
         }
         return;
-      case "LB_CROSS_SYNC":
-        sendResponse(await runCrossSync({ maxPushPerKind: msg.maxPushPerKind, force: msg.force }));
+      case "LB_CROSS_SYNC": {
+        // Respond immediately so the message port doesn't time out.
+        // The sync runs in the background; results are broadcast via syncState.
+        sendResponse({ ok: true, started: true });
+        runCrossSync({
+          maxPushPerKind: msg.maxPushPerKind,
+          historyMaxPages: msg.historyMaxPages,
+          force: msg.force,
+        }).then((result) => {
+          log(`[cross-sync] background sync finished: ${JSON.stringify({
+            watchlistPulled: result.watchlistPulled || 0,
+            diaryPulled: result.diaryPulled || 0,
+            watchlistPushed: result.watchlistPushed || 0,
+            diaryPushed: result.diaryPushed || 0,
+          })}`);
+        }).catch((e) => {
+          log(`[cross-sync] background sync error: ${e.message}`);
+        });
         return;
+      }
       case "BACKFILL":
         try {
           const cfgB = await ensureConfig();
