@@ -515,7 +515,7 @@ async function maybeRunInitialCrossSync() {
   let lastError = null;
   for (let attempt = 1; attempt <= 2; attempt++) {
     // Increase timeout to 5 minutes (300,000ms) for large histories
-    const result = await requestExtensionCrossSync(300000, 0, 1);
+    const result = await requestExtensionCrossSync(300000);
     if (result.ok) {
       markCrossSyncSuccess(username);
       const summary = result.summary || {};
