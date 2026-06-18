@@ -515,7 +515,7 @@ async function maybeRunInitialCrossSync() {
   let lastError = null;
   for (let attempt = 1; attempt <= 2; attempt++) {
     // Increase timeout to 5 minutes (300,000ms) for large histories
-    const result = await requestExtensionCrossSync(300000);
+    const result = await requestExtensionCrossSync(300000, 300, 15);
     if (result.ok) {
       markCrossSyncSuccess(username);
       const summary = result.summary || {};
@@ -555,18 +555,15 @@ function applyWriteAccess() {
   const logBtn = $('#btn-log');
   const syncReason = 'Sync your Letterboxd data via the extension first to enable saving';
   const browseReason = 'Browse-only mode is active, so watchlist/log are disabled';
-  const writeEnabled = state.hasSynced && !state.browseOnlyMode;
+  const writeEnabled = state.hasSynced;
 
   watchlistBtn.disabled = !writeEnabled;
   logBtn.disabled = !writeEnabled;
   if (!writeEnabled) {
-    const reason = state.browseOnlyMode ? browseReason : syncReason;
-    watchlistBtn.title = reason;
-    logBtn.title = reason;
+    watchlistBtn.title = syncReason;
+    logBtn.title = syncReason;
     if (hint) {
-      hint.textContent = state.browseOnlyMode
-        ? 'Browse-only fallback active (saving disabled)'
-        : 'Sync extension to enable saving';
+      hint.textContent = 'Sync extension to enable saving';
       hint.classList.remove('hidden');
     }
   } else {
@@ -921,10 +918,8 @@ function hideInfoPill() {
 
 async function executeSwipe(action) {
   if (state.isSyncing || state.deck.length === 0 || state.currentIndex >= state.deck.length) return;
-  if (action !== 'dismiss' && (!state.hasSynced || state.browseOnlyMode)) {
-    showToast(state.browseOnlyMode
-      ? 'Browse-only mode: saving is disabled for fallback movies'
-      : 'Sync your Letterboxd data via the extension before saving');
+  if (action !== 'dismiss' && !state.hasSynced) {
+    showToast('Sync your Letterboxd data via the extension before saving');
     return;
   }
 
