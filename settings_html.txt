@@ -1,0 +1,612 @@
+
+
+<!DOCTYPE html>
+
+<html id="html" lang="en" class="context-client-unknown no-mobile no-js">
+<head>
+	<meta charset="UTF-8">
+	
+	
+			
+			
+		
+	<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+	<meta http-equiv="X-UA-Compatible" content="IE=edge,chrome=1">
+	<meta name="description" content="Sign in or create an account to begin your film diary.">
+	
+	
+	<meta property="og:url" content="https://letterboxd.com/settings/">
+	<meta property="og:title" content="Sign in">
+	<meta property="og:image" content="https://s.ltrbxd.com/static/img/default-share-7md9L34t.png">
+	<meta property="fb:app_id" content="173683136069040">
+	
+	<meta name="application-name" content="Letterboxd">
+	<meta name="theme-color" content="#14181C">
+	<meta name="msapplication-TileColor" content="#445566">
+	<meta name="apple-itunes-app" content="app-id=1054271011, affiliate-data=11l5KW">
+	<meta name="mobile-web-app-capable" content="yes">
+	
+
+	<title>&lrm;Sign in &bull; Letterboxd</title>
+	<script>
+		
+		((r, n) => {
+			r.dataset.useragent = n.userAgent
+			r.dataset.platform = n.platform
+		})(document.documentElement, navigator)
+
+		var isMobile = false,
+			isMobileOptimised = false,
+			renderMobile = false,
+			useStaticFonts = false,
+			disableFrameProtection = false,
+			baseURL = '',
+			staticAssetBaseURL = 'https://s.ltrbxd.com/'.slice(0, -1),
+			successMessages = [],
+			errorMessages = [],
+			stickyMessages = [],
+			globals = {
+			autoAddFilm: false
+				, spinners: {
+					ajax_242d35: 'https://s.ltrbxd.com/static/img/spinner-dark-2x-BA9SNVrD.gif',
+					spinner_12_2C3641: 'https://s.ltrbxd.com/static/img/spinner-dark-2x-BA9SNVrD.gif',
+					spinner_14_20272f: 'https://s.ltrbxd.com/static/img/spinner-dark-2x-BA9SNVrD.gif',
+					spinner_16_161B21: 'https://s.ltrbxd.com/static/img/spinner-dark-2x-BA9SNVrD.gif'
+				}
+			},
+			supermodelCSRF = "",
+			configuration = {
+				cloudflare: {
+					turnstile: {
+						managedSiteKey: '0x4AAAAAACeEHQVg5SDQxB2s',
+						invisibleSiteKey: '0x4AAAAAACoeo5dsZfnzc50M',
+					}
+				},
+			},
+			geolocation = {
+				country: ""
+			},
+			privacyPolicyDetails = function(privacyPolicy) {
+				
+				const policies = {
+				'Anyone': { 'label': 'Anyone', 'description': 'Anyone (public)', 'tooltip': 'Reactions visible to anyone' },
+				
+				'Friends': { 'label': 'Friends', 'description': 'Close Friends (selected by you)', 'tooltip': 'Reactions visible to owner’s Close Friends' },
+				
+				'You': { 'label': 'Private', 'description': 'You (private)', 'tooltip': 'Reactions only visible to you' },
+				
+				'Draft': { 'label': 'Draft', 'description': 'Draft entry', 'tooltip': 'Draft entry' },
+				}
+				return policies[privacyPolicy]
+			},
+			sharePolicyDetails = function(sharePolicy) {
+				
+				const policies = {
+				'Anyone': { 'label': 'Anyone', 'description': 'Anyone with share link', 'tooltip': 'Visible to anyone (with link)' },
+				
+				'Friends': { 'label': 'Friends', 'description': 'Friends (people you follow) with share link', 'tooltip': 'Visible to the member’s friends (with link)' },
+				
+				'You': { 'label': 'Private', 'description': 'You (private list)', 'tooltip': 'Only visible to you' },
+				}
+				return policies[sharePolicy]
+			},
+			person = {
+				username: ""
+				, loggedIn: false
+				
+				, showAds: true
+				, role: "guest"
+				, hasExtendedServiceFilters: false
+				, canBulkAddToLists: false
+				, canFilterOwned: false
+				, canPublishStories: false
+				, canHaveHqDashboard: false
+				, hasMemberStatistics: false
+				, blockedMembers: []
+				, showAdultContent: false
+				, validated: null
+				, trusted: false
+				, hasBlocked : function(member) { for (var i = 0; i !== person.blockedMembers.length; i++) {if (person.blockedMembers[i] === member) return true;} return false; }
+				, getCustomPoster : function(uid) { return null; }
+				, getCustomBackdrop : function(uid) { return null; }
+			},
+			disableAds = true,
+			analytic_params = {};
+		
+		
+supermodelCSRF = '4b2e24dc443803124ec3'; geolocation.country = 'SG'; analytic_params['user_type'] = 'Visitor';
+
+	</script>
+	
+	<script>
+		window.dataLayer = window.dataLayer || [];
+		window.gtag = window.gtag || function () {
+			dataLayer.push(arguments);
+		};
+		function ga() {}
+	</script>
+
+	<script async src="https://www.googletagmanager.com/gtag/js?id=G-D3ECBB4D7L"></script>
+	<script>
+		window.dataLayer = window.dataLayer || [];
+		window.gtag = window.gtag || function () {
+			dataLayer.push(arguments);
+		};
+		gtag('js', new Date());
+	
+		analytic_params['template'] = '/main/sign-in';
+		
+		
+
+		if (analytic_params.member_type) {
+			gtag('set', 'user_properties', { 
+				member_type: analytic_params.member_type,
+			});
+			delete analytic_params.member_type;
+		}
+		var config = {
+			...analytic_params,
+			'cookie_domain': 'letterboxd.com', 
+			'optimize_id': 'GTM-TB8HSDN', 
+		};
+		gtag('config', 'G-D3ECBB4D7L', config);
+	</script>
+
+
+	
+<script>
+function ASAP(callback) {
+	if (window.__ASAPPED) {
+		callback()
+		return
+	}
+	if (!window.__ASAP) {
+		window.__ASAP = []
+	}
+	window.__ASAP.push(callback)
+}
+</script>
+
+	<script>
+		
+
+		
+			
+		
+
+		
+
+		
+		
+	</script>
+	
+
+	<link rel="manifest" href="/manifest.json">
+	<link rel="author" type="text/plain" href="/humans.txt">
+	<link rel="mask-icon" href="https://s.ltrbxd.com/static/img/letterboxd-decal-l-16px-DorUFlWn.svg" color="#445566">
+	<link rel="shortcut icon" sizes="196x196" href="https://s.ltrbxd.com/static/img/touch-icon-192x192-lO1g3Ot4.png">
+	<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+	<link rel="shortcut icon" href="/favicon.ico">
+	<link rel="search" type="application/opensearchdescription+xml" title="Letterboxd" href="/static/opensearch.xml">
+	
+	
+	
+
+	
+  <script type="module" crossorigin src="https://s.ltrbxd.com/static/js/es/js/app-detection-D3x_9C1n.js"></script>
+  <link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/B5Qt9EMX.js">
+  <link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/Duz0x7wZ.js">
+  <link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/mSiswM4t.js">
+  <link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/Cs7k2HOf.js">
+
+	
+	
+			
+		<script type="module" crossorigin src="https://s.ltrbxd.com/static/js/es/main-CHkSDuht.js"></script>
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/B5Qt9EMX.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/BEh0EAda.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/CE1G-McA.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/BlBOTiew.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/BTbw2yZC.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/PPVm8Dsz.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/TpU2xSpz.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/CQlmKRwL.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/D_HMbgrs.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/EpvHjxoY.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/CqyoUr6N.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/CIwTRCSN.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/C3e4t58V.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/Dipz0mOK.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/DMf_iQbA.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/CpLRuFB8.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/Duz0x7wZ.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/mM7Yvz_n.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/D2jRIctz.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/bKpgursT.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/CKq5vs_k.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/Djse-5Ca.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/BzsRfMHQ.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/C5Bl89MF.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/YsB_f21X.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/dhB5lZxu.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/mSiswM4t.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/B30j35gA.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/CsRfLxjK.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/D3XJYZMo.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/nYEoF91a.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/DlzHfbPr.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/ptERNnoK.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/CanRTkMK.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/DiTwaWGK.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/Dj9SCjiC.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/iD1dFnW8.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/CAE5rLWi.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/y8SHEkMO.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/CUcMfv5U.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/BUNV7Yfj.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/CEFL1qJ-.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/Bm2VxMIc.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/C0W8MuWa.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/CuwYxpr1.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/N7_jh33K.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/BjQ7CV49.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/DKIcSP_k.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/BXyKo_6k.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/Dxzbedgu.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/B99H3mUd.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/CF74jhiq.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/D2nGpDRe.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/yadulnUg.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/vCWiOUpe.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/C-GAFnFO.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/BUmmIXl7.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/BQTTvRNJ.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/B8Bgxl5a.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/C5G_qGSQ.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/CKB2xK2v.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/DHFQjEqI.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/B2WiYux-.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/CFzIlgjb.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/DsBTdQfD.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/VRZCEy3x.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/CGti6Y0s.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/K_m7pvFJ.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/DbkyL-rk.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/C9J1s9jt.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/COP6KYvR.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/2wjpxkGD.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/JdY9lcu0.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/_RochNgE.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/DDuZeICe.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/CEW8cuzC.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/DxtJGFC4.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/B9ioO-Cz.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/oFLv5v-6.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/AxRaG6ks.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/7bXZGMzV.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/BriguwlJ.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/xOi41wgj.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/SOgt3rgE.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/7bvoeu9A.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/DnPH3YWS.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/Bmf5NzL9.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/DCJSHDU_.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/ClCzpgdw.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/BlHrUzdB.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/cYXQUpen.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/BNu_qTbF.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/3vjeV-Lq.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/DWOVpevv.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/BpaZWnmd.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/BCi0_APx.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/aCtx-NXh.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/DZS6wBS8.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/1boum-Eo.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/BH6S_9FS.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/DBTBPqXq.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/CWA0zIdb.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/BecwoVc6.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/BHTRq8m6.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/DgK0j0Ew.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/DIH7t9Yp.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/DnMqBK5o.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/W_fga3ho.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/ClYCXE9U.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/DTesheLO.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/aH6TQryh.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/UdgKdoew.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/BTJN0naG.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/z11Ldus5.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/Dy-E0KiV.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/CM8f4aGX.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/q-DyYw_u.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/Bx3BiLdU.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/BE2pWpL8.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/C8j9hE_h.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/CpHQ3FI9.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/C_5Uuxuf.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/CpMBxvmP.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/D7CdynVa.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/CkEEJX_R.js">
+		<link rel="stylesheet" crossorigin href="https://s.ltrbxd.com/static/css/modal-manager-CdexcB-7.css">
+		<link rel="stylesheet" crossorigin href="https://s.ltrbxd.com/static/css/letterboxd-spinner-C_CJMTy1.css">
+		<link rel="stylesheet" crossorigin href="https://s.ltrbxd.com/static/css/lazy-poster-Dm0Rkx2E.css">
+		<link rel="stylesheet" crossorigin href="https://s.ltrbxd.com/static/css/production-masthead-Dgb-vu2W.css">
+		<link rel="stylesheet" crossorigin href="https://s.ltrbxd.com/static/css/dialog-controls-1Z5kkIph.css">
+		<link rel="stylesheet" crossorigin href="https://s.ltrbxd.com/static/css/private-note-modal-DF2jWKzI.css">
+		<link rel="stylesheet" crossorigin href="https://s.ltrbxd.com/static/css/main-D62_0nYH.css">
+	
+
+			
+			
+			
+			
+			
+				
+		<script type="module" crossorigin src="https://s.ltrbxd.com/static/js/es/standalone-flow/sign-in-BjrPtFLB.js"></script>
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/B5Qt9EMX.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/xOi41wgj.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/CFzIlgjb.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/JdY9lcu0.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/bKpgursT.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/Dipz0mOK.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/C3e4t58V.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/Dxzbedgu.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/CGti6Y0s.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/BriguwlJ.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/DDuZeICe.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/cYXQUpen.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/D2jRIctz.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/CAE5rLWi.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/B9ioO-Cz.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/7bXZGMzV.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/W_fga3ho.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/ClYCXE9U.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/DTesheLO.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/CE1G-McA.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/TpU2xSpz.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/BzsRfMHQ.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/C5Bl89MF.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/Djse-5Ca.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/dhB5lZxu.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/mSiswM4t.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/Duz0x7wZ.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/B30j35gA.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/CsRfLxjK.js">
+		<link rel="modulepreload" crossorigin href="https://s.ltrbxd.com/static/js/es/chunks/D3XJYZMo.js">
+		<link rel="stylesheet" crossorigin href="https://s.ltrbxd.com/static/css/sign-in-ClG4UE-z.css">
+	
+		
+	
+			
+			
+			
+
+			
+					
+		<link rel="stylesheet" crossorigin href="https://s.ltrbxd.com/static/css/desktop-CSUSdnZV.css">
+	
+				
+		
+
+	
+
+	
+	
+
+	
+
+
+
+
+	<script>
+	ASAP(function() {
+		if ( $.cookie("letterboxd.admin.signed.in") === person.username ) {
+			successMessages.push("You are signed in as " + person.username);
+			$(function(){$("#header, #content, body").css("background","#543");});
+		}
+	})
+	</script>
+	
+</head>
+
+<body class="screen-standalone-flow screen-standalone-flow-sign-in standalone-flow-document-body">
+	
+
+
+
+
+
+
+
+
+
+
+<template id="share-policy-icon-anyone"><span class="policy-icon -share -anyone -circle inline-symbol" data-policy-type="share" data-policy-code="anyone"><span class="frame tooltip" data-original-title="Visible to anyone (with link)" data-js-trigger="tooltip"> <svg xmlns="http://www.w3.org/2000/svg" role="presentation" class="glyph" width="12" height="12" viewBox="0 0 12 12"><path d="M3.38 4.06a2.5 2.5 0 0 1 3.54 0l.99 1.04-1.06 1.06h-.02l-1-1.06a.96.96 0 0 0-1.36 0l-.43.44q-.15.12-.29.28L1.82 7.75a1 1 0 0 0-.28.7q0 .4.29.68l.4.4c.38.37.98.37 1.36.01l.83-.85q.61.59 1.39.82l-1.13 1.14a2.5 2.5 0 0 1-3.54 0l-.4-.4a2.5 2.5 0 0 1 0-3.54ZM9.1.61c.67 0 1.3.27 1.77.74l.4.4a2.5 2.5 0 0 1 0 3.54L8.63 7.94a2.5 2.5 0 0 1-3.54 0l-1.03-1 .41-.41.13-.15.15-.14.4-.4L6.18 6.9c.35.34.89.37 1.27.08l.09-.08 2.65-2.66a1 1 0 0 0 .27-.56v-.13q0-.4-.28-.69l-.4-.4a1 1 0 0 0-1.36 0l-.84.84q-.62-.59-1.4-.82l1.15-1.13A2.5 2.5 0 0 1 9.09.6"/></svg> </span> <span class="label _sr-only">Visible to anyone (with link)</span> </span></template> <template id="share-policy-icon-friends"><span class="policy-icon -share -friends -circle inline-symbol" data-policy-type="share" data-policy-code="friends"><span class="frame tooltip" data-original-title="Visible to the member’s friends (with link)" data-js-trigger="tooltip"> <svg xmlns="http://www.w3.org/2000/svg" role="presentation" class="glyph" width="14" height="12" viewBox="0 0 14 12"><path fill-rule="evenodd" d="M10.33 8.23h-.26c1.16 0 1.88.2 2.62.5q.65.25 1 .59.45.4.44.83v1.35h-3.15V9.8c0-.51-.19-1.06-.65-1.58m-.26-5.53c.58 0 1.11.21 1.5.61.34.35.56.85.56 1.49a3.7 3.7 0 0 1-.54 2c-.34.48-.84.8-1.52.8-.65 0-1.15-.32-1.5-.84a3.7 3.7 0 0 1-.57-2 2 2 0 0 1 .56-1.46c.39-.4.92-.6 1.5-.6M4.98 7.41A7 7 0 0 1 9.3 8.77q.54.52.53 1.04v1.69H.13V9.81q0-.52.53-1.04.45-.41 1.26-.74c.92-.37 1.6-.62 3.06-.62m0-6.91c.72 0 1.4.27 1.88.76.42.44.7 1.07.7 1.86 0 .87-.21 1.82-.68 2.5a2.23 2.23 0 0 1-3.78-.04 4.6 4.6 0 0 1-.7-2.5c0-.79.27-1.4.7-1.83A2.6 2.6 0 0 1 4.98.5"/></svg> </span> <span class="label _sr-only">Visible to the member’s friends (with link)</span> </span></template> <template id="share-policy-icon-you"><span class="policy-icon -share -you -circle inline-symbol" data-policy-type="share" data-policy-code="you"><span class="frame tooltip" data-original-title="Only visible to you" data-js-trigger="tooltip"> <svg xmlns="http://www.w3.org/2000/svg" role="presentation" class="glyph" width="10" height="12" viewBox="0 0 10 12"><path fill-rule="evenodd" d="M5 0a3.5 3.5 0 0 1 3.5 3.5V4c.83 0 1.5.67 1.5 1.5v5c0 .83-.67 1.5-1.5 1.5h-7A1.5 1.5 0 0 1 0 10.5v-5C0 4.67.67 4 1.5 4v-.5A3.5 3.5 0 0 1 5 0m0 7a1 1 0 1 0 0 2 1 1 0 0 0 0-2m0-5.5a2 2 0 0 0-2 2V4h4v-.5a2 2 0 0 0-1.85-2z"/></svg> </span> <span class="label _sr-only">Only visible to you</span> </span></template> <template id="dismiss-icon-12"><svg xmlns="http://www.w3.org/2000/svg" role="presentation" class="glyph" width="12" height="12" viewBox="0 0 12 12"><path stroke="currentColor" stroke-linecap="round" d="m1 1 10 10M1 11 11 1" vector-effect="non-scaling-stroke"></svg></template> <template id="add-icon-16"><svg xmlns="http://www.w3.org/2000/svg" role="presentation" class="glyph" width="16" height="16" viewBox="0 0 16 16"> <path stroke="currentColor" stroke-linecap="round" stroke-width="2" vector-effect="non-scaling-stroke" d="M8 3v10M3 8h10"/> </svg></template> <template id="search-icon-16"><svg xmlns="http://www.w3.org/2000/svg" role="presentation" class="glyph" width="16" height="16" viewBox="0 0 16 16"><g fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="6.81" cy="6.81" r="6.06"/><path stroke-linecap="round" d="m15.25 15.25-3.69-3.69"/></g></svg></template>
+
+
+
+
+
+<script> ((person) => { if (person && person.loggedIn) { window.location.replace('/loggedin/'); } })(window.person) </script>
+
+<div class="standalone-flow standalone-flow-sign-in -pending js-standalone-flow">
+	<div class="standalone-flow-panel">
+		<noscript class="standalone-flow-overlay -translucent">
+			<div class="standalone-flow-overlay -translucent">
+				
+
+<div class="standalone-flow-js-required">
+    <h1 class="standalone-flow-title heading">JavaScript required</h1>
+
+    <div class="standalone-flow-text-block body">
+        <p>To use Letterboxd, JavaScript needs to be enabled in your browser.</p>
+    </div>
+</div>
+			</div>
+		</noscript>
+
+		
+				
+
+
+<header class="standalone-flow-header">
+    <svg class="logo" role="presentation" width="57" height="21" viewBox="0 0 57 21" xmlns="http://www.w3.org/2000/svg"><circle cx="10.5" cy="10.5" r="10.5" fill="#FF8000"/><circle cx="46.5" cy="10.5" r="10.5" fill="#40BCF4"/><circle cx="28.5" cy="10.5" r="10.5" fill="#00E054"/><path fill="#FFF" d="M37.5 5.09c.952 1.58 1.5 3.43 1.5 5.41 0 1.979-.547 3.83-1.5 5.41A10.437 10.437 0 0 1 36 10.5c0-1.901.505-3.685 1.39-5.223ZM19.5 5.09c.952 1.58 1.5 3.43 1.5 5.41 0 1.979-.547 3.83-1.5 5.41A10.437 10.437 0 0 1 18 10.5c0-1.901.505-3.685 1.39-5.223Z"/></svg>
+
+    <h1 class="heading standalone-flow-title">Sign in to Letterboxd</h1>
+
+	
+</header>
+
+				
+				<div class="standalone-flow-description">
+					
+				</div>
+			
+
+		
+		
+
+
+
+
+<div class="standalone-flow-description standalone-flow-create-account-block">
+	<div class="standalone-flow-text-block -small">
+		
+		<p class="create-account">New to Letterboxd? <a href="/register/standalone/" class="standalone-flow-button -inline" type="submit"><span class="label">Create an account</span></a></p>
+	</div>
+</div>
+
+<form method="post" action="/user/login.do" class="standalone-flow-body standalone-flow-form js-sign-in-form" data-captcha-action="signin" novalidate='true'><input type="hidden" name="__csrf" value="4b2e24dc443803124ec3" />
+	<input type="hidden" name="authenticationCode" value="" />
+
+	<div class="formbody -va-top">
+		<div class="formrow">
+			<label class="label standalone-flow-field-label" for="field-username">Username</label>
+			<input type="text" name="username" id="field-username" class="standalone-flow-form-control" autofocus required autocorrect='off' autocapitalize='off' autocomplete='username' value="" />
+		</div>
+
+		<div class="formrow">
+			<label class="label standalone-flow-field-label" for="field-password">Password</label>
+			<input type="password" name="password" id="field-password" class="standalone-flow-form-control" autocomplete='current-password' value="" />
+		</div>
+
+		<div class="formrow -actions">
+			<label class="standalone-flow-form-check">
+				<input class="js-remember" type="checkbox" name="remember" value="true" />
+				<span class="label">Remember me</span>
+			</label>
+			<div class="resetpassword standalone-flow-text-block -small">
+				<a class="reset tooltip" href="/user/request-password-reset" data-original-title="Reset your password or retrieve a forgotten username" rel="twipsy" data-modifier-class-name="-contrast"><span class="label">Reset password</span></a>
+			</div>
+		</div>
+	</div>
+	<div class="formactions standalone-flow-panel-nested-outdent -left -right">
+		<button class="standalone-flow-button -action -activity-indicator" type="submit" disabled>
+			<span class="label">Sign&nbsp;In</span>
+		</button>
+	</div>
+</form>
+
+
+		<div class="standalone-flow-overlay standalone-flow-body-overlay js-body-message-overlay" hidden>
+			
+			<div class="standalone-flow-message js-message-frameinvalidrequest" hidden>
+				<div class="body standalone-flow-text-block">
+					<p>We do not support POST requests in the iframe auth flow. Try again with a GET request.</p>
+				</div>
+			</div>
+
+			<div class="standalone-flow-message js-message-revealpopupprompt" hidden>
+				<div class="body standalone-flow-text-block">
+					<p>We’ve opened a new browser window for you to sign in.<br/><br/>No window? <a href="/sign-in-popup" target="bxdSignInFrame" data-js-trigger="popup">Open window and continue</a>.</p>
+				</div>
+			</div>
+		</div>
+	</div>
+
+
+<footer class="standalone-flow-footer">
+    <nav class="standalone-flow-site-nav">
+        <div class="navitem">
+            <a href="https://letterboxd.com/legal/terms-of-use/" target="_blank">
+                <span class="label">Terms</span>
+            </a>
+        </div>
+
+        <div class="navitem">
+            <a href="https://letterboxd.com/legal/privacy-notice/" target="_blank">
+                <span class="label">Privacy Policy</span>
+            </a>
+        </div>
+
+        <div class="navitem">
+            <a href="https://letterboxd.com/contact/" target="_blank">
+                <span class="label">Contact</span>
+            </a>
+        </div>
+    </nav>
+</footer>
+</div>
+
+
+
+
+<script> ASAP(() => { const isInIframe = () => { try { return window.self !== window.top; } catch (e) { return true; } }; const dispatchCustomEvent = (eventName, detail, element) => { if (typeof detail === 'undefined') detail = {}; if (typeof element === 'undefined') element = document; element.dispatchEvent(new CustomEvent(eventName, { bubbles: true, cancelable: false, detail: detail })); }; if (!person.loggedIn) { if (isInIframe()) { try { const frame = window.parent.document.getElementById('partner-iframe'); if (frame && frame.src !== window.location.href) { window.parent.postMessage({ type: 'sign-in.changeiframesrc' }, '*'); } else { dispatchCustomEvent('sign-in.revealpopupprompt', { url: '/sign-in-popup', target: 'bxdSignInFrame', windowContext: window.parent }); } } catch (error) { console.error(error) } return } dispatchCustomEvent('sign-in.formready'); } }) </script>
+
+	
+
+
+
+
+
+
+<div id="poster-picker-modal" class="modal fade content-media-picker-modal poster-picker-modal" tabindex="-1" role="dialog" aria-labelledby="poster-picker-modal-title" aria-hidden="true" data-bs-backdrop="static">
+    <div class="modal-dialog modal-lg modal-fullscreen-sm-down modal-dialog-centered modal-dialog-scrollable">
+        <div class="modal-content" data-theme="dialog">
+            <div class="modal-header">
+                <h5 class="modal-title" id="poster-picker-modal-title">Select your preferred <span class="js-image-type">poster</span></h5>
+                
+                <button type="button" class="modal-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <form id="poster-picker-009b3489-e83b-4077-87c8-bb5c2edfe9c3" method="post" action="" novalidate="novalidate" data-poster-picker-options='{&#034;id&#034;: &#034;009b3489-e83b-4077-87c8-bb5c2edfe9c3&#034;}' data-js-target="poster-picker"></form>
+            </div>
+            <div class="modal-footer">
+                <div class="content-media-picker-note" hidden></div>
+                <div class="content-media-picker-controls poster-picker-controls" data-poster-picker-controls-for="poster-picker-009b3489-e83b-4077-87c8-bb5c2edfe9c3"> <div class="modal-action-group -center"> <button form="poster-picker-009b3489-e83b-4077-87c8-bb5c2edfe9c3" class="button-neue -destructive -rounded" type="button" data-js-trigger="reset" disabled> <span class="label" data-js-label-for="film" >Reset <span class="js-image-type">poster</span></span> <span class="label" data-js-label-for="object" hidden>Reset for <span class="js-object-name">item</span></span> </button> <button form="poster-picker-009b3489-e83b-4077-87c8-bb5c2edfe9c3" class="button-neue -primary -rounded" type="submit" data-js-trigger="submit" disabled> <span class="label" data-js-label-for="film" >Save<span class="mob-hide"> changes</span></span> <span class="label" data-js-label-for="object" hidden>Save<span class="mob-hide"> for <span class="js-object-name">item</span></span></span> </button> </div> <div class="objectonly js-objectonly" aria-hidden="true" hidden> <label for="poster-picker-frm-object-only" class="option-label -checkbox -medium -reversed"> <input type="checkbox" value="true" class="checkbox" id="poster-picker-frm-object-only" data-js-trigger="object-only" disabled /><i class="substitute"></i>This <span class="js-object-name">item</span> only </label> </div> </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+	
+
+
+
+
+
+
+<div id="backdrop-picker-modal" class="modal fade content-media-picker-modal backdrop-picker-modal" tabindex="-1" role="dialog" aria-labelledby="backdrop-picker-modal-title" aria-hidden="true" data-bs-backdrop="static">
+    <div class="modal-dialog modal-lg modal-fullscreen-sm-down modal-dialog-centered modal-dialog-scrollable">
+        <div class="modal-content" data-theme="dialog">
+            <div class="modal-header">
+                <h5 class="modal-title" id="backdrop-picker-modal-title">Select your preferred backdrop</a></h5>
+                
+                <button type="button" class="modal-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <form id="backdrop-picker-dac480fc-eacb-4e8e-8319-9281fd2e4f71" method="post" action="" novalidate="novalidate" data-backdrop-picker-options='{&#034;id&#034;: &#034;dac480fc-eacb-4e8e-8319-9281fd2e4f71&#034;}' data-js-target="backdrop-picker"></form>
+            </div>
+            <div class="modal-footer">
+                <div class="content-media-picker-note" hidden></div>
+                <div class="content-media-picker-controls backdrop-picker-controls" data-backdrop-picker-controls-for="backdrop-picker-dac480fc-eacb-4e8e-8319-9281fd2e4f71"> <div class="modal-action-group -center"> <button form="backdrop-picker-dac480fc-eacb-4e8e-8319-9281fd2e4f71" class="button-neue -destructive -rounded" type="button" data-js-trigger="reset" disabled> <span class="label" data-js-label-for="film" >Reset <span class="js-image-type">poster</span></span> <span class="label" data-js-label-for="object" hidden>Reset for <span class="js-object-name">item</span></span> </button> <button form="backdrop-picker-dac480fc-eacb-4e8e-8319-9281fd2e4f71" class="button-neue -primary -rounded" type="submit" data-js-trigger="submit" disabled> <span class="label" data-js-label-for="film" >Save<span class="mob-hide"> changes</span></span> <span class="label" data-js-label-for="object" hidden>Save<span class="mob-hide"> for <span class="js-object-name">item</span></span></span> </button> </div> <div class="objectonly js-objectonly" aria-hidden="true" hidden> <label for="backdrop-picker-frm-object-only" class="option-label -checkbox -medium -reversed"> <input type="checkbox" value="true" class="checkbox" id="backdrop-picker-frm-object-only" data-js-trigger="object-only" disabled /><i class="substitute"></i>This <span class="js-object-name">item</span> only </label> </div> </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+	
+	
+<script>(function(){function c(){var b=a.contentDocument||a.contentWindow.document;if(b){var d=b.createElement('script');d.innerHTML="window.__CF$cv$params={r:'a0d22b6f78f7585b',t:'MTc4MTcwMDUxOA=='};var a=document.createElement('script');a.src='/cdn-cgi/challenge-platform/scripts/jsd/main.js';document.getElementsByTagName('head')[0].appendChild(a);";b.getElementsByTagName('head')[0].appendChild(d)}}if(document.body){var a=document.createElement('iframe');a.height=1;a.width=1;a.style.position='absolute';a.style.top=0;a.style.left=0;a.style.border='none';a.style.visibility='hidden';document.body.appendChild(a);if('loading'!==document.readyState)c();else if(window.addEventListener)document.addEventListener('DOMContentLoaded',c);else{var e=document.onreadystatechange||function(){};document.onreadystatechange=function(b){e(b);'loading'!==document.readyState&&(document.onreadystatechange=e,c())}}}})();</script></body>
+</html>
