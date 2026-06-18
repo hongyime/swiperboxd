@@ -129,76 +129,50 @@
       <span id="api-status" class="value">—</span>
     </div>
     <button id="connect-btn" class="accent-2">Connect Letterboxd</button>
-    <details>
-      <summary>Advanced: API base URL</summary>
-      <div class="field">
-        <input type="url" id="api-base" placeholder="https://swiperboxd.vercel.app" />
-        <button id="save-api-base" class="secondary">Save</button>
-      </div>
-    </details>
+    <div style="display: none;">
+      <input type="url" id="api-base" value="https://swiperboxd.vercel.app" />
+      <button id="save-api-base">Save</button>
+    </div>
   </section>
-
-  <div class="tabs">
-    <div class="tab active" data-pane="history">Sync</div>
-    <div class="tab" data-pane="list">One-off list</div>
-  </div>
 
   <section id="pane-history" class="pane active">
     <div class="row"><span class="label">Phase</span><span id="phase" class="value">idle</span></div>
     <div class="row"><span class="label">Progress</span><span id="page" class="value">—</span></div>
     <div class="row"><span class="label">Watchlist</span><span id="wl-count" class="value">0</span></div>
     <div class="row"><span class="label">Diary</span><span id="diary-count" class="value">0</span></div>
-    <div class="row"><span class="label">Lists discovered</span><span id="lists-discovered" class="value">0</span></div>
-    <div class="row"><span class="label">Lists filled</span><span id="lists-filled" class="value">0</span></div>
     <div class="progress"><div id="progress-fill" class="progress-fill"></div></div>
-    <label class="check"><input type="checkbox" id="opt-watchlist" checked /> Sync my watchlist</label>
-    <label class="check"><input type="checkbox" id="opt-diary" checked /> Sync my diary</label>
-    <label class="check"><input type="checkbox" id="opt-discover" checked /> Discover popular lists</label>
-    <label class="check"><input type="checkbox" id="opt-fill" checked /> Fetch films for under-scraped lists</label>
-    <details>
-      <summary>Advanced: scrape caps</summary>
-      <div class="field">
-        <div class="k">Discover pages (popular lists, ~12 lists/page)</div>
-        <input type="text" id="discover-pages" placeholder="3" />
-      </div>
-      <div class="field">
-        <div class="k">Max under-scraped lists to fill per run</div>
-        <input type="text" id="fill-max-lists" placeholder="25" />
-      </div>
-      <div class="field">
-        <div class="k">Max film pages per list (~30 films/page)</div>
-        <input type="text" id="fill-list-pages" placeholder="10" />
-      </div>
+    
+    <!-- Hidden options for script compatibility -->
+    <div style="display: none;">
+      <label class="check"><input type="checkbox" id="opt-watchlist" checked /> Sync my watchlist</label>
+      <label class="check"><input type="checkbox" id="opt-diary" checked /> Sync my diary</label>
+      <label class="check"><input type="checkbox" id="opt-discover" checked /> Discover popular lists</label>
+      <label class="check"><input type="checkbox" id="opt-fill" checked /> Fetch films for under-scraped lists</label>
+      <input type="text" id="discover-pages" value="3" />
+      <input type="text" id="fill-max-lists" value="25" />
+      <input type="text" id="fill-list-pages" value="10" />
       <button id="save-caps" class="secondary">Save caps</button>
-    </details>
-    <button id="start-btn">Start full sync</button>
-    <button id="backfill-btn" class="secondary">Backfill missing metadata</button>
-    <button id="stop-btn" class="secondary" disabled>Stop</button>
-    <label class="check">
+      <button id="backfill-btn">Backfill</button>
       <input type="checkbox" id="auto-sync" />
-      Auto-sync every 6 hours (while Chrome is running)
-    </label>
+      <input type="url" id="list-url" />
+      <input type="checkbox" id="fetch-metadata" />
+      <span id="list-count"></span>
+      <span id="list-page"></span>
+      <span id="lists-discovered"></span>
+      <span id="lists-filled"></span>
+      <div id="list-progress-fill"></div>
+      <button id="scrape-list-btn">Scrape list</button>
+      <div id="list-log"></div>
+    </div>
+
+    <button id="start-btn">Start full sync</button>
+    <button id="stop-btn" class="secondary" disabled>Stop sync</button>
+    
     <div class="log-header">
-      <span class="log-label">Log (persists across popup close)</span>
+      <span class="log-label">Log</span>
       <button id="clear-log-btn" class="clear-btn">Clear</button>
     </div>
     <div id="log" class="log"></div>
-  </section>
-
-  <section id="pane-list" class="pane">
-    <div class="field">
-      <div class="k">List URL (letterboxd.com/&lt;owner&gt;/list/&lt;slug&gt;/)</div>
-      <input type="url" id="list-url" placeholder="https://letterboxd.com/dave/list/official-top-250-narrative-feature-films/" />
-    </div>
-    <label class="check">
-      <input type="checkbox" id="fetch-metadata" />
-      Also fetch movie metadata for each film in the list
-    </label>
-    <div class="progress"><div id="list-progress-fill" class="progress-fill"></div></div>
-    <div class="row"><span class="label">Films found</span><span id="list-count" class="value">0</span></div>
-    <div class="row"><span class="label">Page</span><span id="list-page" class="value">—</span></div>
-    <button id="scrape-list-btn">Scrape list</button>
-    <div id="list-log" class="log"></div>
   </section>
 
   <script src="common.js"></script>
