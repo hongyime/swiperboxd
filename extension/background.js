@@ -705,7 +705,7 @@ async function scrapeListType({
       slugs_found: totalFound,
     });
     await writeSyncCheckpoint({
-      mode: "full",
+      mode: syncSettings.syncMode || "full",
       phase: phaseName,
       nextPage: page + 1,
       totalPages,
@@ -1812,7 +1812,20 @@ async function runCrossSync(opts = {}) {
     ? Math.max(1, Math.min(20, Math.floor(rawHistoryMaxPages)))
     : MAX_PAGES_HARD_CAP;
 
+  let checkpoint = null;
+  if (opts.resumeFromCheckpoint) {
+    const checkpointData = await chrome.storage.local.get(SYNC_CHECKPOINT_KEY);
+    checkpoint = checkpointData[SYNC_CHECKPOINT_KEY] || null;
+    if (checkpoint?.mode !== "cross_sync") {
+      checkpoint = null;
+    }
+  }
+
   resetState("cross_sync", "cross-sync starting");
+  if (checkpoint?.phase && checkpoint?.nextPage) {
+    const p = Math.max(1, Number(checkpoint.nextPage) || 1);
+    log(`Resuming interrupted cross-sync from ${checkpoint.phase} page ${p}`);
+  }
   broadcast();
 
   await chrome.storage.local.set({ [SYNC_RUNNING_KEY]: true });
@@ -1834,11 +1847,15 @@ async function runCrossSync(opts = {}) {
 
     log(`[cross-sync] history pull mode: watchlistMaxPages=${historyMaxPages} diaryMaxPages=${historyMaxPages} pushLimit=${maxPushPerKind}`);
     const history = await scrapeUserHistory(cfg, {
+      syncMode: "cross_sync",
       syncWatchlist: true,
       syncDiary: true,
       watchlistMaxPages: historyMaxPages,
       diaryMaxPages: historyMaxPages,
       fetchMetadata: false,
+      resumePhase: checkpoint?.phase || null,
+      resumePage: checkpoint?.nextPage || 1,
+      resumeTotalPages: checkpoint?.totalPages || null,
     });
     summary.watchlistPulled = history.watchlist || 0;
     summary.diaryPulled = history.diary || 0;
@@ -2233,14 +2250,23 @@ chrome.runtime.onConnect.addListener((port) => {
 });
 
 // Detect if the SW was killed mid-sync (running flag still set from previous run)
-chrome.storage.local.get(SYNC_RUNNING_KEY).then((data) => {
+chrome.storage.local.get([SYNC_RUNNING_KEY, SYNC_CHECKPOINT_KEY]).then((data) => {
   if (data[SYNC_RUNNING_KEY]) {
     const msg = "⚠️ Chrome killed the service worker while sync was running — resuming from last checkpoint.";
     console.warn("[swiperboxd-ext]", msg);
     appendLogToStorage(msg);
-    runSync({ resumeFromCheckpoint: true }).catch((e) => {
-      appendLogToStorage(`ERROR auto-resume failed: ${e.message}`);
-      chrome.storage.local.set({ [SYNC_RUNNING_KEY]: false });
-    });
+    
+    const checkpoint = data[SYNC_CHECKPOINT_KEY] || {};
+    if (checkpoint.mode === "cross_sync") {
+      runCrossSync({ resumeFromCheckpoint: true }).catch((e) => {
+        appendLogToStorage(`ERROR auto-resume failed: ${e.message}`);
+        chrome.storage.local.set({ [SYNC_RUNNING_KEY]: false });
+      });
+    } else {
+      runSync({ resumeFromCheckpoint: true }).catch((e) => {
+        appendLogToStorage(`ERROR auto-resume failed: ${e.message}`);
+        chrome.storage.local.set({ [SYNC_RUNNING_KEY]: false });
+      });
+    }
   }
 }).catch(() => {});
