@@ -2132,7 +2132,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         }
         return;
       case "LB_CROSS_SYNC":
-        sendResponse(await runCrossSync({ maxPushPerKind: msg.maxPushPerKind }));
+        sendResponse(await runCrossSync({ maxPushPerKind: msg.maxPushPerKind, force: msg.force }));
         return;
       case "BACKFILL":
         try {
