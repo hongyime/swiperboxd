@@ -671,3 +671,10 @@ body {
 }
 
 @keyframes spin { to { transform: rotate(360deg); } }
+
+/* Greyed out list option */
+.profile-option.greyed-out {
+  opacity: 0.4;
+  pointer-events: none;
+  filter: grayscale(100%);
+}

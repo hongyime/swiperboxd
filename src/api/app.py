@@ -455,19 +455,12 @@ def list_catalog(q: str | None = None, page: int = Query(default=1, ge=1)):
                q_lower in item.get("description", "").lower()
         ]
     
-    # Filter out lists that have a partial scrape: we started but captured
-    # less than 50% of the film_count. scraped_film_count == 0 is treated as
-    # "not yet attempted" and the list stays visible (the list-detail endpoint
-    # scrapes memberships on demand).
-    before_filter = len(items)
-    items = [
-        item for item in items
-        if item.get("film_count", 0) == 0
-        or item.get("scraped_film_count", 0) == 0
-        or item.get("scraped_film_count", 0) >= item.get("film_count", 1) * 0.5
-    ]
-    if len(items) < before_filter:
-        print(f"[lists] filtered {before_filter - len(items)} partially scraped lists", flush=True)
+    # Add is_ready flag based on whether the list is fully scraped
+    # Allow a small margin (0.95) for slight discrepancies between listed and actual count
+    for item in items:
+        film_count = item.get("film_count", 0)
+        scraped = item.get("scraped_film_count", 0)
+        item["is_ready"] = (film_count == 0) or (scraped >= film_count * 0.95)
 
     # Sort: official first, then by like count, then by title
     items.sort(key=lambda item: (
@@ -565,11 +558,12 @@ def list_deck(
             raise HTTPException(status_code=500, detail={"code": "store_error", "reason": str(exc)})
         print(f"[deck] using {len(movie_slugs)} cached slugs for {list_id}", flush=True)
 
-    # Only fetch missing metadata on non-Vercel (too slow for serverless)
-    if not os.getenv("VERCEL"):
-        missing = [slug for slug in movie_slugs if not store.get_movie(slug)]
+    missing = [slug for slug in movie_slugs if not store.get_movie(slug)]
+    if missing:
+        # Fetch a small batch even on Vercel so the deck isn't completely empty
+        fetch_limit = 10 if os.getenv("VERCEL") else len(missing)
         try:
-            for movie in scraper.metadata_for_slugs(missing):
+            for movie in scraper.metadata_for_slugs(missing[:fetch_limit]):
                 store.upsert_movie(movie.__dict__)
         except Exception as exc:
             print(f"[deck] metadata_for_slugs failed: {exc} — continuing with existing movies", flush=True)

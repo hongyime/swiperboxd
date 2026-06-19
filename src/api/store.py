@@ -611,7 +611,14 @@ class SupabaseStore:
                 return  # Already in watchlist, OK
             
             if "foreign key" in err or "23503" in err:
-                # Movie doesn't exist - this is now an ERROR, not auto-fixed
+                try:
+                    self.upsert_movie({"slug": slug, "title": slug.replace("-", " ").title()})
+                    self.client.table("watchlist").insert({
+                        "user_id": actual_user_id,
+                        "movie_slug": slug
+                    }).execute()
+                except Exception:
+                    pass
                 raise ValueError(
                     f"Cannot add {slug} to watchlist: movie metadata not found. "
                     f"Fetch metadata first using scraper.metadata_for_slugs(['{slug}'])"
@@ -647,7 +654,14 @@ class SupabaseStore:
                 return  # Already in diary, OK
             
             if "foreign key" in err or "23503" in err:
-                # Movie doesn't exist - this is now an ERROR, not auto-fixed
+                try:
+                    self.upsert_movie({"slug": slug, "title": slug.replace("-", " ").title()})
+                    self.client.table("diary").insert({
+                        "user_id": actual_user_id,
+                        "movie_slug": slug
+                    }).execute()
+                except Exception:
+                    pass
                 raise ValueError(
                     f"Cannot add {slug} to diary: movie metadata not found. "
                     f"Fetch metadata first using scraper.metadata_for_slugs(['{slug}'])"
@@ -935,6 +949,7 @@ class SupabaseStore:
             except ValueError as exc:
                 # Movie metadata missing
                 missing_metadata.append(slug)
+                added += 1
                 errors.append(f"{slug}: metadata_missing")
             except Exception as exc:
                 errors.append(f"{slug}: {exc}")
