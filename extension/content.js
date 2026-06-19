@@ -71,7 +71,9 @@ function safeSendMessage(message, callback) {
     chrome.runtime.sendMessage(message, (response) => {
       if (chrome.runtime.lastError) {
         const mapped = normalizeRuntimeError(chrome.runtime.lastError.message);
-        contentLog("Runtime error:", { requestId, error: mapped });
+        if (!(message.type === 'PING' && mapped.code === 'receiving_end_missing')) {
+          contentLog("Runtime error:", { requestId, error: mapped });
+        }
         if (callback) callback({ ok: false, error: mapped.message, errorCode: mapped.code });
         return;
       }

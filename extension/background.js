@@ -704,9 +704,8 @@ async function scrapeListType({
 
         // ENRICHMENT: Fetch metadata immediately for anything the backend marked as missing
         if (missing.length > 0) {
-          const toEnrich = missing.slice(0, 20); // Limit to avoid SW timeout
-          log(`${phaseName}: enriching ${toEnrich.length} movies missing metadata…`);
-          await scrapeMoviesMetadata(cfg, toEnrich);
+          log(`${phaseName}: enriching ${missing.length} movies missing metadata…`);
+          await scrapeMoviesMetadata(cfg, missing);
           syncState.phase = phaseName;
           broadcast();
         }
@@ -1013,7 +1012,7 @@ async function scrapeMoviesMetadata(cfg, slugs) {
           const movie = parseMovieFromHtml(slug, html);
           movie.lb_film_id = lbFilmId;
           movies.push(movie);
-          log(`+ metadata fetched for ${slug}`);
+          log(`+ metadata fetched for ${slug} (${processed + 1}/${slugs.length})`);
         } finally {
           clearTimeout(timeoutId);
         }
