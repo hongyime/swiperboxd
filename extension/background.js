@@ -689,8 +689,11 @@ async function scrapeListType({
 
         // ENRICHMENT: Fetch metadata immediately for anything the backend marked as missing
         if (missing.length > 0) {
-          log(`${phaseName}: enriching ${missing.length} movies missing metadata…`);
-          await scrapeMoviesMetadata(cfg, missing);
+          const toEnrich = missing.slice(0, 20); // Limit to avoid SW timeout
+          log(`${phaseName}: enriching ${toEnrich.length} movies missing metadata…`);
+          await scrapeMoviesMetadata(cfg, toEnrich);
+          syncState.phase = phaseName;
+          broadcast();
         }
       } catch (e) {
         log(`ERROR: ${phaseName} push failed: ${e.message}`);
@@ -2051,6 +2054,10 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   (async () => {
     if (!msg || !msg.type) return sendResponse({ ok: false });
     switch (msg.type) {
+      case "PING":
+        // Keep-alive heartbeat from webapp
+        sendResponse({ ok: true });
+        return;
       case "GET_STATE":
         sendResponse({ ok: true, state: syncState });
         return;

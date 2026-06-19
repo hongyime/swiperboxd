@@ -684,8 +684,9 @@ async function loadLists(query = '') {
 
 function renderLists() {
   profileOptions.innerHTML = state.lists.map(item => `
-    <div class="profile-option ${item.list_id === state.selectedListId ? 'active' : ''}"
-         data-list-id="${esc(item.list_id)}">
+    <div class="profile-option ${item.list_id === state.selectedListId ? 'active' : ''} ${!item.is_ready ? 'greyed-out' : ''}"
+         data-list-id="${esc(item.list_id)}"
+         title="${!item.is_ready ? 'Syncing in background...' : ''}">
       <div class="list-option-title">${esc(item.title)}</div>
       <div class="list-option-meta">${esc(item.owner_name)} · ${esc(item.film_count)} films</div>
     </div>
@@ -694,6 +695,7 @@ function renderLists() {
   profileOptions.querySelectorAll('.profile-option').forEach(opt => {
     opt.addEventListener('click', () => {
       const selected = state.lists.find(item => item.list_id === opt.dataset.listId);
+      if (selected && !selected.is_ready) return; // Prevent clicking unready lists
       state.selectedListId = opt.dataset.listId;
       state.selectedListTitle = selected?.title || 'Choose a List';
       currentProfileSpan.textContent = state.selectedListTitle;
@@ -830,6 +832,13 @@ function renderDeck() {
     cardStack.appendChild(createCard(state.deck[state.currentIndex]));
   }
 }
+
+// Keep extension alive while the tab is open
+setInterval(() => {
+  if (state.username && state.username !== '_guest_') {
+    window.postMessage({ type: 'SWIPERBOXD_PING', payload: {} }, '*');
+  }
+}, 20000);
 
 function createCard(movie) {
   const card = document.createElement('div');

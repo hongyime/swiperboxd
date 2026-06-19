@@ -93,6 +93,12 @@ window.addEventListener("message", (event) => {
   const data = event.data;
   if (!data || !data.type) return;
 
+  // Heartbeat to keep extension service worker alive
+  if (data.type === "SWIPERBOXD_PING") {
+    safeSendMessage({ type: "PING" });
+    return;
+  }
+
   // Webapp requesting auth state from extension
   if (data.type === "SWIPERBOXD_GET_AUTH") {
     contentLog("auth request received", {
