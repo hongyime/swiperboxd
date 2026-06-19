@@ -21,7 +21,7 @@ const BATCH_FLUSH_THRESHOLD = 50;
 const METADATA_BATCH_SIZE = 10;
 const MAX_PAGES_HARD_CAP = 300;
 const PAGE_DELAY_MS = 900;
-const MOVIE_DELAY_MS = 600;
+const MOVIE_DELAY_MS = 200; // Aggressive metadata scraping
 const ALARM_NAME = "swiperboxd-periodic-sync";
 const SYNC_LOG_KEY = "swiperboxd-sync-log";
 const SYNC_RUNNING_KEY = "swiperboxd-sync-running";
@@ -998,6 +998,7 @@ async function scrapeMoviesMetadata(cfg, slugs) {
           const movie = parseMovieFromHtml(slug, html);
           movie.lb_film_id = lbFilmId;
           movies.push(movie);
+          log(`+ metadata fetched for ${slug}`);
         } finally {
           clearTimeout(timeoutId);
         }
