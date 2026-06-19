@@ -288,6 +288,7 @@ class ExtensionSyncStatusRequest(BaseModel):
 
 class ExtensionRegisterRequest(BaseModel):
     letterboxd_session_cookie: str = Field(min_length=1)
+    username: str | None = None
 
 
 class ExtensionRegisterResponse(BaseModel):
@@ -558,12 +559,11 @@ def list_deck(
             raise HTTPException(status_code=500, detail={"code": "store_error", "reason": str(exc)})
         print(f"[deck] using {len(movie_slugs)} cached slugs for {list_id}", flush=True)
 
-    missing = [slug for slug in movie_slugs if not store.get_movie(slug)]
-    if missing:
-        # Fetch a small batch even on Vercel so the deck isn't completely empty
-        fetch_limit = 10 if os.getenv("VERCEL") else len(missing)
+    # Only fetch missing metadata on non-Vercel (too slow for serverless)
+    if not os.getenv("VERCEL"):
+        missing = [slug for slug in movie_slugs if not store.get_movie(slug)]
         try:
-            for movie in scraper.metadata_for_slugs(missing[:fetch_limit]):
+            for movie in scraper.metadata_for_slugs(missing):
                 store.upsert_movie(movie.__dict__)
         except Exception as exc:
             print(f"[deck] metadata_for_slugs failed: {exc} — continuing with existing movies", flush=True)
@@ -1027,17 +1027,20 @@ def extension_register(payload: ExtensionRegisterRequest, request: Request):
     if not master_key:
         raise HTTPException(status_code=500, detail={"code": "missing_master_key"})
 
-    try:
-        _validate_letterboxd_session("", payload.letterboxd_session_cookie)
-    except Exception as exc:
-        raise HTTPException(status_code=401, detail={"code": "invalid_letterboxd_cookie", "reason": str(exc)}) from exc
+    if payload.username:
+        username = payload.username
+    else:
+        try:
+            _validate_letterboxd_session("", payload.letterboxd_session_cookie)
+        except Exception as exc:
+            raise HTTPException(status_code=401, detail={"code": "invalid_letterboxd_cookie", "reason": str(exc)}) from exc
 
-    username = _extract_username_from_cookie(payload.letterboxd_session_cookie)
-    if not username:
-        raise HTTPException(
-            status_code=422,
-            detail={"code": "username_unresolved", "message": "could not parse username from Letterboxd response"},
-        )
+        username = _extract_username_from_cookie(payload.letterboxd_session_cookie)
+        if not username:
+            raise HTTPException(
+                status_code=422,
+                detail={"code": "username_unresolved", "message": "could not parse username from Letterboxd response"},
+            )
 
     token_payload = json.dumps({"u": username, "c": payload.letterboxd_session_cookie})
     encrypted = encrypt_session_cookie(token_payload, master_key)

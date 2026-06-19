@@ -333,12 +333,27 @@ async function registerExtension({ apiBase } = {}) {
   const cookie = await getLetterboxdCookie();
   if (!cookie) throw new Error("Not signed in to Letterboxd — sign in at letterboxd.com first.");
 
+  // Extract username from Letterboxd directly from the browser to bypass backend Vercel IP blocks
+  let lbUsername = null;
+  try {
+    const lbRes = await fetchWithRetry(`${LB_BASE}/settings/`, { credentials: "include" });
+    const lbHtml = await lbRes.text();
+    const match = lbHtml.match(/<body[^>]*class="[^"]*signed-in[^"]*"[^>]*data-owner="([^"]+)"/i);
+    if (match && match[1]) {
+      lbUsername = match[1];
+    } else {
+      throw new Error("Could not find signed-in username in Letterboxd HTML.");
+    }
+  } catch (e) {
+    throw new Error(`Failed to verify Letterboxd session locally: ${e.message}`);
+  }
+
   const base = normalizeApiBase(apiBase || DEFAULT_API_BASE);
   if (!base) throw new Error("Invalid API base — Supabase endpoints are not allowed.");
   const res = await fetchWithRetry(`${base}/api/extension/register`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ letterboxd_session_cookie: cookie }),
+    body: JSON.stringify({ letterboxd_session_cookie: cookie, username: lbUsername }),
   });
   if (!res.ok) {
     const txt = await res.text().catch(() => "");
