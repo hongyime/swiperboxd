@@ -113,11 +113,11 @@ function renderApiStatus(cfg) {
   if (cfg.username && cfg.sessionToken) {
     el("api-dot").className = "dot ok";
     el("api-status").textContent = cfg.username;
-    if (el("register-btn")) el("register-btn").style.display = "none";
+    if (el("connect-btn")) el("connect-btn").style.display = "none";
   } else {
     el("api-dot").className = "dot warn";
     el("api-status").textContent = "Not connected";
-    if (el("register-btn")) el("register-btn").style.display = "block";
+    if (el("connect-btn")) el("connect-btn").style.display = "block";
   }
 }
 
