@@ -288,6 +288,13 @@ function parseMovieFromHtml(slug, html) {
       || html.match(/<h1[^>]*class="[^"]*headline-1[^"]*"[^>]*>([\s\S]*?)<\/h1>/);
     if (h1) movie.title = h1[1].replace(/<[^>]+>/g, "").trim();
   }
+  if (!movie.synopsis) {
+    const metaDesc = html.match(/<meta[^>]+name="description"[^>]+content="([^"]+)"/i);
+    const ogDesc = html.match(/<meta[^>]+property="og:description"[^>]+content="([^"]+)"/i);
+    let desc = (ogDesc && ogDesc[1]) || (metaDesc && metaDesc[1]) || "";
+    // Remove boilerplate "Directed by..." prefix if present
+    movie.synopsis = desc.replace(/^[^.]+\.\s*Synopsis\s*/i, "").trim();
+  }
   if (!movie.poster_url) {
     const og = html.match(/<meta[^>]+property="og:image"[^>]+content="([^"]+)"/);
     if (og) movie.poster_url = og[1];

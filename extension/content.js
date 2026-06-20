@@ -82,7 +82,9 @@ function safeSendMessage(message, callback) {
     return true;
   } catch (e) {
     const mapped = normalizeRuntimeError(e.message);
-    contentLog("Exception in sendMessage:", { requestId, error: mapped });
+    if (message.type !== 'PING') {
+      contentLog("Exception in sendMessage:", { requestId, error: mapped });
+    }
     if (callback) callback({ ok: false, error: mapped.message, errorCode: mapped.code });
     return false;
   }
