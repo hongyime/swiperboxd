@@ -1164,6 +1164,17 @@ def extension_movies_needing_backfill(
     return {"status": "ok", "mode": mode, "count": len(slugs), "slugs": slugs}
 
 
+@app.delete("/api/extension/lists/{list_id}")
+def extension_delete_list(list_id: str, verified_user: str = Depends(verify_extension_user)):
+    """Delete a list that no longer exists on Letterboxd (404)."""
+    try:
+        store.delete_list(list_id)
+        return {"status": "ok", "deleted": list_id}
+    except Exception as exc:
+        print(f"[extension] delete_list failed: {exc}", flush=True)
+        return {"status": "error", "reason": str(exc)}
+
+
 @app.get("/api/extension/lists-needing-scrape")
 def extension_lists_needing_scrape(
     limit: int = Query(default=25, ge=1, le=200),
