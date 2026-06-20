@@ -638,6 +638,7 @@ async function scrapeOneListForFill(cfg, listRow, maxPages) {
       html = await fetchLetterboxdPage(page === 1 ? `${info.basePath}/` : `${info.basePath}/page/${page}/`);
     } catch (e) {
       log(`fill ${info.listId} page ${page}: ${e.message}`);
+      if (page === 1 && e.message.includes("404")) throw e;
       break;
     }
     if (totalPages === null) totalPages = detectTotalPages(html) || 1;
