@@ -559,14 +559,9 @@ def list_deck(
             raise HTTPException(status_code=500, detail={"code": "store_error", "reason": str(exc)})
         print(f"[deck] using {len(movie_slugs)} cached slugs for {list_id}", flush=True)
 
-    # Only fetch missing metadata on non-Vercel (too slow for serverless)
-    if not os.getenv("VERCEL"):
-        missing = [slug for slug in movie_slugs if not store.get_movie(slug)]
-        try:
-            for movie in scraper.metadata_for_slugs(missing):
-                store.upsert_movie(movie.__dict__)
-        except Exception as exc:
-            print(f"[deck] metadata_for_slugs failed: {exc} — continuing with existing movies", flush=True)
+    # We completely rely on the extension's background worker and cron jobs
+    # for metadata enrichment. Do not fetch synchronously here to prevent
+    # blocking the API for 60+ seconds on cold starts.
 
     # Filter out movies the user has already watchlisted, logged, or dismissed
     try:
