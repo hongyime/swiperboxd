@@ -740,18 +740,23 @@ class SupabaseStore:
         """Fetch multiple movies in a single query. Returns slug→movie dict."""
         if not slugs:
             return {}
-        # Supabase .in_() filter — single round-trip for all slugs
-        response = (
-            self.client.table("movies")
-            .select("*")
-            .in_("slug", list(slugs))
-            .execute()
-        )
-        return {
-            row["slug"]: normalize_movie_record(row)
-            for row in (response.data or [])
-            if row.get("slug")
-        }
+        results = {}
+        # Supabase/PostgREST URIs can exceed length limits if too many slugs are passed in a single .in_()
+        # We chunk them into batches of 50 to be safe
+        chunk_size = 50
+        slugs_list = list(slugs)
+        for i in range(0, len(slugs_list), chunk_size):
+            chunk = slugs_list[i:i + chunk_size]
+            response = (
+                self.client.table("movies")
+                .select("*")
+                .in_("slug", chunk)
+                .execute()
+            )
+            for row in (response.data or []):
+                if row.get("slug"):
+                    results[row["slug"]] = normalize_movie_record(row)
+        return results
 
     def set_ingest_progress(self, user_id: str, value: int) -> None:
         """Set ingest progress (in-memory only - for performance)."""
