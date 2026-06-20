@@ -101,6 +101,8 @@ class Store(Protocol):
 
     def get_lists(self) -> list[dict]: ...
 
+    def delete_list(self, list_id: str) -> None: ...
+
     def replace_list_memberships(self, list_id: str, movie_slugs: list[str]) -> None: ...
 
     def get_list_memberships(self, list_id: str) -> list[str]: ...
@@ -908,6 +910,10 @@ class SupabaseStore:
     def get_lists(self) -> list[dict]:
         response = self.client.table("list_summaries").select("*").execute()
         return list(response.data)
+
+    def delete_list(self, list_id: str) -> None:
+        self.client.table("list_summaries").delete().eq("list_id", list_id).execute()
+        # list_memberships are deleted automatically via Supabase foreign key CASCADE
 
     def replace_list_memberships(self, list_id: str, movie_slugs: list[str]) -> None:
         seen: set[str] = set()

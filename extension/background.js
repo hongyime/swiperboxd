@@ -329,6 +329,26 @@ async function apiPost(cfg, endpoint, body) {
   return await res.json().catch(() => ({}));
 }
 
+async function apiDelete(cfg, endpoint) {
+  const safeBase = normalizeApiBase(cfg.apiBase);
+  if (!safeBase) throw new Error("Invalid API base — use your backend URL, not a Supabase endpoint.");
+  const url = `${safeBase}${endpoint}`;
+  const res = await fetchWithRetry(url, {
+    method: "DELETE",
+    headers: {
+      "Content-Type": "application/json",
+      ...(cfg.sessionToken ? { "X-Session-Token": cfg.sessionToken } : {}),
+    },
+  });
+  if (!res.ok) {
+    const txt = await res.text().catch(() => "");
+    const err = new Error(`${endpoint} → ${res.status}: ${txt.slice(0, 200)}`);
+    err.status = res.status;
+    throw err;
+  }
+  return await res.json().catch(() => ({}));
+}
+
 async function registerExtension({ apiBase } = {}) {
   const cookie = await getLetterboxdCookie();
   if (!cookie) throw new Error("Not signed in to Letterboxd — sign in at letterboxd.com first.");
@@ -582,6 +602,14 @@ async function fillUnderscrapedLists(
       broadcast();
     } catch (e) {
       log(`fill ${lst.list_id} failed: ${e.message}`);
+      if (e.message.includes("404")) {
+        try {
+          await apiDelete(cfg, `/api/extension/lists/${encodeURIComponent(lst.list_id)}`);
+          log(`Deleted 404 list from catalog: ${lst.list_id}`);
+        } catch (delErr) {
+          log(`Failed to delete 404 list ${lst.list_id}: ${delErr.message}`);
+        }
+      }
     }
     await sleep(PAGE_DELAY_MS);
   }
