@@ -2183,7 +2183,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         }));
         return;
       case "SET_AUTO_SYNC":
-        if (msg.value) chrome.alarms.create(ALARM_NAME, { periodInMinutes: 360 });
+        if (msg.value) chrome.alarms.create(ALARM_NAME, { periodInMinutes: 15 });
         else chrome.alarms.clear(ALARM_NAME);
         await setSyncedConfig({ autoSync: !!msg.value });
         sendResponse({ ok: true });
@@ -2312,7 +2312,7 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
 
 chrome.runtime.onInstalled.addListener(async () => {
   const cfg = await getConfig();
-  if (cfg.autoSync) chrome.alarms.create(ALARM_NAME, { periodInMinutes: 360 });
+  if (cfg.autoSync) chrome.alarms.create(ALARM_NAME, { periodInMinutes: 15 });
 });
 
 chrome.runtime.onStartup.addListener(async () => {
