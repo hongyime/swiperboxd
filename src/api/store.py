@@ -91,7 +91,7 @@ class Store(Protocol):
 
     def get_placeholder_movie_slugs(self, limit: int = 200) -> list[str]: ...
 
-    def get_underscraped_lists(self, limit: int = 50, min_coverage: float = 0.5) -> list[dict]: ...
+    def get_underscraped_lists(self, limit: int = 50, min_coverage: float = 0.96) -> list[dict]: ...
 
     def upsert_list_summary(self, list_summary: dict) -> None: ...
 
@@ -160,7 +160,7 @@ class InMemoryStore:
                     placeholders.append(slug)
         return placeholders
 
-    def get_underscraped_lists(self, limit: int = 50, min_coverage: float = 0.5) -> list[dict]:
+    def get_underscraped_lists(self, limit: int = 50, min_coverage: float = 0.96) -> list[dict]:
         """Return list summaries where scraped_film_count < min_coverage * film_count."""
         out: list[dict] = []
         threshold = max(0.0, min(1.0, float(min_coverage)))
@@ -536,7 +536,7 @@ class SupabaseStore:
         print(f"[store] get_placeholder_movie_slugs: {len(placeholders)} placeholders", flush=True)
         return placeholders
 
-    def get_underscraped_lists(self, limit: int = 50, min_coverage: float = 0.5) -> list[dict]:
+    def get_underscraped_lists(self, limit: int = 50, min_coverage: float = 0.96) -> list[dict]:
         """Return list summaries where scraped_film_count < min_coverage * film_count."""
         threshold = max(0.0, min(1.0, float(min_coverage)))
         response = (

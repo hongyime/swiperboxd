@@ -564,7 +564,7 @@ async function discoverPublicLists(cfg, { maxPages = DEFAULT_DISCOVER_PAGES } = 
 
 async function fillUnderscrapedLists(
   cfg,
-  { maxLists = DEFAULT_FILL_MAX_LISTS, maxListPages = DEFAULT_FILL_LIST_PAGES, minCoverage = 0.5 } = {},
+  { maxLists = DEFAULT_FILL_MAX_LISTS, maxListPages = DEFAULT_FILL_LIST_PAGES, minCoverage = 0.96 } = {},
 ) {
   syncState.phase = "fill_lists";
   syncState.listsFilled = 0;
