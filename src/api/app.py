@@ -1178,7 +1178,7 @@ def extension_delete_list(list_id: str, verified_user: str = Depends(verify_exte
 @app.get("/api/extension/lists-needing-scrape")
 def extension_lists_needing_scrape(
     limit: int = Query(default=25, ge=1, le=200),
-    min_coverage: float = Query(default=0.5, ge=0.0, le=1.0),
+    min_coverage: float = Query(default=0.96, ge=0.0, le=1.0),
     verified_user: str = Depends(verify_extension_user),
 ):
     """Return list_summaries rows that are under 50% scraped (or brand-new).
