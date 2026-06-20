@@ -338,10 +338,24 @@ async function registerExtension({ apiBase } = {}) {
   try {
     const lbRes = await fetchWithRetry(`${LB_BASE}/settings/`, { credentials: "include" });
     const lbHtml = await lbRes.text();
-    const match = lbHtml.match(/<body[^>]*class="[^"]*signed-in[^"]*"[^>]*data-owner="([^"]+)"/i);
-    if (match && match[1]) {
-      lbUsername = match[1];
-    } else {
+    
+    const patterns = [
+      /data-owner="([a-zA-Z0-9_-]+)"/,
+      /data-current-user="([a-zA-Z0-9_-]+)"/,
+      /data-username="([a-zA-Z0-9_-]+)"/,
+      /<a[^>]+class="[^"]*navitem[^"]*account[^"]*"[^>]+href="\/([a-zA-Z0-9_-]+)\/"/,
+      /href="\/([a-zA-Z0-9_-]+)\/settings\/"/
+    ];
+    
+    for (const p of patterns) {
+      const match = lbHtml.match(p);
+      if (match && match[1]) {
+        lbUsername = match[1];
+        break;
+      }
+    }
+    
+    if (!lbUsername) {
       throw new Error("Could not find signed-in username in Letterboxd HTML.");
     }
   } catch (e) {
