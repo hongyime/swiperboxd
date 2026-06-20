@@ -1746,6 +1746,7 @@ async function ensureConfig() {
 
 async function runSync(opts = {}) {
   if (syncState.running) return { ok: false, error: "already running" };
+  syncState.running = true; // Set lock synchronously to prevent race conditions
 
   const stored = await chrome.storage.local.get([
     "syncHistory",
@@ -1869,6 +1870,7 @@ async function runCrossSync(opts = {}) {
     syncState.running = false;
   }
   if (syncState.running) return { ok: false, error: "already running" };
+  syncState.running = true; // Set lock synchronously to prevent race conditions
 
   const rawMaxPush = Number.isFinite(Number(opts.maxPushPerKind))
     ? Number(opts.maxPushPerKind)
