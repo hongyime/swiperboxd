@@ -338,25 +338,43 @@ class InMemoryStore:
             memberships = self.list_memberships.get(list_id, [])
         return list(memberships)
 
-    def batch_add_watchlist(self, user_id: str, slugs: list[str]) -> dict:
-        """Add many watchlist slugs with per-slug error handling."""
-        added = 0
-        errors: list[str] = []
-        missing_metadata: list[str] = []
-        
-        for slug in slugs:
-            if not slug or not slug.strip():
-                continue
+    def _bulk_ensure_movies(self, slugs: list[str]) -> list[str]:
+        """Bulk insert stub movies for missing slugs. Returns list of missing metadata slugs."""
+        if not slugs:
+            return []
+        try:
+            res = self.client.table("movies").select("slug").in_("slug", slugs).execute()
+            existing = {r["slug"] for r in res.data}
+        except Exception as e:
+            print(f"[store] Failed to fetch existing movies: {e}", flush=True)
+            existing = set()
+            
+        missing = [s for s in slugs if s not in existing]
+        if missing:
+            stubs = [{"slug": s, "title": s.replace("-", " ").title()} for s in missing]
             try:
-                self.add_watchlist(user_id, slug)
-                added += 1
-            except ValueError as exc:
-                # Movie metadata missing (in-memory doesn't enforce FK, but keep consistent API)
-                missing_metadata.append(slug)
-                errors.append(f"{slug}: metadata_missing")
-            except Exception as exc:
-                errors.append(f"{slug}: {exc}")
-        
+                self.client.table("movies").upsert(stubs, on_conflict="slug").execute()
+            except Exception as e:
+                print(f"[store] Failed to bulk insert missing movies: {e}", flush=True)
+        return missing
+
+    def batch_add_watchlist(self, user_id: str, slugs: list[str]) -> dict:
+        """Add many watchlist slugs using bulk operations."""
+        actual_user_id = self._get_or_create_user_id(user_id)
+        valid_slugs = [s.strip() for s in slugs if s and s.strip()]
+        if not valid_slugs:
+            return {"added": 0, "errors": [], "missing_metadata": [], "total": 0}
+            
+        missing_metadata = self._bulk_ensure_movies(valid_slugs)
+        records = [{"user_id": actual_user_id, "movie_slug": s} for s in valid_slugs]
+        added = 0
+        errors = []
+        try:
+            self.client.table("watchlist").upsert(records, on_conflict="user_id,movie_slug").execute()
+            added = len(valid_slugs)
+        except Exception as e:
+            errors.append(f"bulk_insert_failed: {e}")
+            
         return {
             "added": added,
             "errors": errors,
@@ -365,24 +383,22 @@ class InMemoryStore:
         }
 
     def batch_add_diary(self, user_id: str, slugs: list[str]) -> dict:
-        """Add many diary slugs with per-slug error handling."""
+        """Add many diary slugs using bulk operations."""
+        actual_user_id = self._get_or_create_user_id(user_id)
+        valid_slugs = [s.strip() for s in slugs if s and s.strip()]
+        if not valid_slugs:
+            return {"added": 0, "errors": [], "missing_metadata": [], "total": 0}
+            
+        missing_metadata = self._bulk_ensure_movies(valid_slugs)
+        records = [{"user_id": actual_user_id, "movie_slug": s} for s in valid_slugs]
         added = 0
-        errors: list[str] = []
-        missing_metadata: list[str] = []
-        
-        for slug in slugs:
-            if not slug or not slug.strip():
-                continue
-            try:
-                self.add_diary(user_id, slug)
-                added += 1
-            except ValueError as exc:
-                # Movie metadata missing (in-memory doesn't enforce FK, but keep consistent API)
-                missing_metadata.append(slug)
-                errors.append(f"{slug}: metadata_missing")
-            except Exception as exc:
-                errors.append(f"{slug}: {exc}")
-        
+        errors = []
+        try:
+            self.client.table("diary").upsert(records, on_conflict="user_id,movie_slug").execute()
+            added = len(valid_slugs)
+        except Exception as e:
+            errors.append(f"bulk_insert_failed: {e}")
+            
         return {
             "added": added,
             "errors": errors,
