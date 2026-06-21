@@ -387,6 +387,11 @@ def root():
     return FileResponse(str(_WEB_DIR / "index.html"))
 
 
+@app.get("/favicon.ico", include_in_schema=False)
+def favicon():
+    return FileResponse(str(_WEB_DIR / "logo.svg"), media_type="image/svg+xml")
+
+
 @app.get("/web/{path:path}")
 def web_assets(path: str):
     # Resolve and verify the path stays within the web directory
