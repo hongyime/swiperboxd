@@ -957,38 +957,44 @@ class SupabaseStore:
         )
         return [row["movie_slug"] for row in response.data]
 
-    def batch_add_watchlist(self, user_id: str, slugs: list[str]) -> dict:
-        """Add many watchlist slugs with per-slug error handling.
-        
-        REQUIRES: All movies must exist in movies table.
-        Missing movies will be logged as errors, not auto-created.
-        """
-        added = 0
-        errors: list[str] = []
-        missing_metadata: list[str] = []
-        
-        for slug in slugs:
-            if not slug or not slug.strip():
-                continue
+    def _bulk_ensure_movies(self, slugs: list[str]) -> list[str]:
+        """Bulk insert stub movies for missing slugs. Returns list of missing metadata slugs."""
+        if not slugs:
+            return []
+        try:
+            res = self.client.table("movies").select("slug").in_("slug", slugs).execute()
+            existing = {r["slug"] for r in res.data}
+        except Exception as e:
+            print(f"[store] Failed to fetch existing movies: {e}", flush=True)
+            existing = set()
+            
+        missing = [s for s in slugs if s not in existing]
+        if missing:
+            stubs = [{"slug": s, "title": s.replace("-", " ").title()} for s in missing]
             try:
-                self.add_watchlist(user_id, slug)
-                added += 1
-            except ValueError as exc:
-                # Movie metadata missing
-                missing_metadata.append(slug)
-                added += 1
-                errors.append(f"{slug}: metadata_missing")
-            except Exception as exc:
-                errors.append(f"{slug}: {exc}")
-                print(f"[store] batch_add_watchlist error for {slug}: {exc}", flush=True)
-        
-        if missing_metadata:
-            print(
-                f"[store] WARNING: {len(missing_metadata)} movies missing metadata. "
-                f"These should have been fetched during sync. Slugs: {missing_metadata[:10]}",
-                flush=True
-            )
-        
+                self.client.table("movies").upsert(stubs, on_conflict="slug").execute()
+            except Exception as e:
+                print(f"[store] Failed to bulk insert missing movies: {e}", flush=True)
+        return missing
+
+    def batch_add_watchlist(self, user_id: str, slugs: list[str]) -> dict:
+        """Add many watchlist slugs using bulk operations."""
+        actual_user_id = self._get_or_create_user_id(user_id)
+        valid_slugs = [s.strip() for s in slugs if s and s.strip()]
+        if not valid_slugs:
+            return {"added": 0, "errors": [], "missing_metadata": [], "total": 0}
+            
+        missing_metadata = self._bulk_ensure_movies(valid_slugs)
+        records = [{"user_id": actual_user_id, "movie_slug": s} for s in valid_slugs]
+        added = 0
+        errors = []
+        try:
+            self.client.table("watchlist").upsert(records, on_conflict="user_id,movie_slug").execute()
+            added = len(valid_slugs)
+        except Exception as e:
+            errors.append(f"bulk_insert_failed: {e}")
+            print(f"[store] batch_add_watchlist error: {e}", flush=True)
+            
         print(
             f"[store] batch_add_watchlist: added={added} missing_metadata={len(missing_metadata)} "
             f"errors={len(errors)} total={len(slugs)}",
@@ -1002,36 +1008,23 @@ class SupabaseStore:
         }
 
     def batch_add_diary(self, user_id: str, slugs: list[str]) -> dict:
-        """Add many diary slugs with per-slug error handling.
-        
-        REQUIRES: All movies must exist in movies table.
-        Missing movies will be logged as errors, not auto-created.
-        """
+        """Add many diary slugs using bulk operations."""
+        actual_user_id = self._get_or_create_user_id(user_id)
+        valid_slugs = [s.strip() for s in slugs if s and s.strip()]
+        if not valid_slugs:
+            return {"added": 0, "errors": [], "missing_metadata": [], "total": 0}
+            
+        missing_metadata = self._bulk_ensure_movies(valid_slugs)
+        records = [{"user_id": actual_user_id, "movie_slug": s} for s in valid_slugs]
         added = 0
-        errors: list[str] = []
-        missing_metadata: list[str] = []
-        
-        for slug in slugs:
-            if not slug or not slug.strip():
-                continue
-            try:
-                self.add_diary(user_id, slug)
-                added += 1
-            except ValueError as exc:
-                # Movie metadata missing
-                missing_metadata.append(slug)
-                errors.append(f"{slug}: metadata_missing")
-            except Exception as exc:
-                errors.append(f"{slug}: {exc}")
-                print(f"[store] batch_add_diary error for {slug}: {exc}", flush=True)
-        
-        if missing_metadata:
-            print(
-                f"[store] WARNING: {len(missing_metadata)} movies missing metadata. "
-                f"These should have been fetched during sync. Slugs: {missing_metadata[:10]}",
-                flush=True
-            )
-        
+        errors = []
+        try:
+            self.client.table("diary").upsert(records, on_conflict="user_id,movie_slug").execute()
+            added = len(valid_slugs)
+        except Exception as e:
+            errors.append(f"bulk_insert_failed: {e}")
+            print(f"[store] batch_add_diary error: {e}", flush=True)
+            
         print(
             f"[store] batch_add_diary: added={added} missing_metadata={len(missing_metadata)} "
             f"errors={len(errors)} total={len(slugs)}",
