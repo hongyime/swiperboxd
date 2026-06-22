@@ -369,7 +369,7 @@ function initAuth() {
   });
 }
 
-function requestExtensionAuth(timeoutMs = 4000) {
+function requestExtensionAuth(timeoutMs = 10000) {
   return new Promise((resolve) => {
     const requestId = `auth-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     extensionBridge.authAttempts += 1;
