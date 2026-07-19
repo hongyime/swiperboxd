@@ -7,6 +7,6 @@ supabase==2.30.0
 redis==7.4.0
 requests==2.34.2
 pytest==9.0.3
-PyJWT==2.12.1
+PyJWT==2.13.0
 python-dotenv==1.2.2
 playwright==1.60.0
