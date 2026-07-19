@@ -342,66 +342,48 @@ class InMemoryStore:
         """Bulk insert stub movies for missing slugs. Returns list of missing metadata slugs."""
         if not slugs:
             return []
-        try:
-            res = self.client.table("movies").select("slug").in_("slug", slugs).execute()
-            existing = {r["slug"] for r in res.data}
-        except Exception as e:
-            print(f"[store] Failed to fetch existing movies: {e}", flush=True)
-            existing = set()
-            
-        missing = [s for s in slugs if s not in existing]
-        if missing:
-            stubs = [{"slug": s, "title": s.replace("-", " ").title()} for s in missing]
-            try:
-                self.client.table("movies").upsert(stubs, on_conflict="slug").execute()
-            except Exception as e:
-                print(f"[store] Failed to bulk insert missing movies: {e}", flush=True)
+        missing = []
+        with self.lock:
+            for slug in slugs:
+                if slug in self.movies:
+                    continue
+                missing.append(slug)
+                self.movies[slug] = normalize_movie_record({
+                    "slug": slug,
+                    "title": slug.replace("-", " ").title(),
+                })
         return missing
 
     def batch_add_watchlist(self, user_id: str, slugs: list[str]) -> dict:
         """Add many watchlist slugs using bulk operations."""
-        actual_user_id = self._get_or_create_user_id(user_id)
         valid_slugs = [s.strip() for s in slugs if s and s.strip()]
         if not valid_slugs:
             return {"added": 0, "errors": [], "missing_metadata": [], "total": 0}
-            
+
         missing_metadata = self._bulk_ensure_movies(valid_slugs)
-        records = [{"user_id": actual_user_id, "movie_slug": s} for s in valid_slugs]
-        added = 0
-        errors = []
-        try:
-            self.client.table("watchlist").upsert(records, on_conflict="user_id,movie_slug").execute()
-            added = len(valid_slugs)
-        except Exception as e:
-            errors.append(f"bulk_insert_failed: {e}")
-            
+        with self.lock:
+            self.watchlist.setdefault(user_id, set()).update(valid_slugs)
+
         return {
-            "added": added,
-            "errors": errors,
+            "added": len(valid_slugs),
+            "errors": [],
             "missing_metadata": missing_metadata,
             "total": len(slugs)
         }
 
     def batch_add_diary(self, user_id: str, slugs: list[str]) -> dict:
         """Add many diary slugs using bulk operations."""
-        actual_user_id = self._get_or_create_user_id(user_id)
         valid_slugs = [s.strip() for s in slugs if s and s.strip()]
         if not valid_slugs:
             return {"added": 0, "errors": [], "missing_metadata": [], "total": 0}
-            
+
         missing_metadata = self._bulk_ensure_movies(valid_slugs)
-        records = [{"user_id": actual_user_id, "movie_slug": s} for s in valid_slugs]
-        added = 0
-        errors = []
-        try:
-            self.client.table("diary").upsert(records, on_conflict="user_id,movie_slug").execute()
-            added = len(valid_slugs)
-        except Exception as e:
-            errors.append(f"bulk_insert_failed: {e}")
-            
+        with self.lock:
+            self.diary.setdefault(user_id, set()).update(valid_slugs)
+
         return {
-            "added": added,
-            "errors": errors,
+            "added": len(valid_slugs),
+            "errors": [],
             "missing_metadata": missing_metadata,
             "total": len(slugs)
         }
