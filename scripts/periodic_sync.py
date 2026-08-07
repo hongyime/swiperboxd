@@ -20,7 +20,7 @@ Cookie expiry
 Letterboxd rotates session cookies periodically. When the stored cookie 403s,
 re-login with Playwright and push the fresh cookie back into Supabase:
 
-    python scripts/periodic_sync.py --refresh-my-session bryanseah234
+    python scripts/periodic_sync.py --refresh-my-session hongyime
 
 This opens Chromium, waits for you to log in, extracts the cookie, encrypts
 it with MASTER_ENCRYPTION_KEY, and writes it to users.letterboxd_session.
@@ -30,10 +30,10 @@ Usage
     python scripts/periodic_sync.py
     python scripts/periodic_sync.py --users-only
     python scripts/periodic_sync.py --backfill-only
-    python scripts/periodic_sync.py --only-user bryanseah234
+    python scripts/periodic_sync.py --only-user hongyime
     python scripts/periodic_sync.py --max-watchlist-pages 50 --max-diary-pages 200
-    python scripts/periodic_sync.py --refresh-my-session bryanseah234
-    python scripts/periodic_sync.py --refresh-my-session bryanseah234 --manual-cookie
+    python scripts/periodic_sync.py --refresh-my-session hongyime
+    python scripts/periodic_sync.py --refresh-my-session hongyime --manual-cookie
     python scripts/periodic_sync.py --dry-run
 
 Cookie refresh modes
