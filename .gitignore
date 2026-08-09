@@ -244,3 +244,8 @@ __marimo__/
 !.env.sample
 !.sourcery.yml
 !.deepsource.toml
+.env.*
+node_modules/
+.venv/
+.next/
+coverage/
