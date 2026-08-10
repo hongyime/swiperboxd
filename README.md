@@ -692,7 +692,7 @@ mypy src/
 
 ## License
 
-[Add your license information here]
+Apache-2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
 
 ## Contributing
 
