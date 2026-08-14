@@ -219,9 +219,16 @@ __marimo__/
 # IDE settings
 .vscode/
 
+
 # AI / editor dot directories (managed via sourcerepo)
 .*
 !.github/
+!.agents/
+.agents/*
+!.agents/STATE.md
+!.agents/JOURNAL.md
+!.agents/handoffs/
+!.agents/handoffs/**
 !.gitignore
 !.gitattributes
 !.gitmodules
@@ -244,8 +251,7 @@ __marimo__/
 !.env.sample
 !.sourcery.yml
 !.deepsource.toml
-.env.*
-node_modules/
-.venv/
-.next/
-coverage/
+skills/
+skills-lock.json
+docs/
+# End AI / editor dot directories (managed via sourcerepo)
