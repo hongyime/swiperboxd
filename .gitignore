@@ -220,6 +220,7 @@ __marimo__/
 .vscode/
 
 
+
 # AI / editor dot directories (managed via sourcerepo)
 .*
 !.github/
