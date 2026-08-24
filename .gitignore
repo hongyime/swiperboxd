@@ -221,6 +221,7 @@ __marimo__/
 
 
 
+
 # AI / editor dot directories (managed via sourcerepo)
 .*
 !.github/
