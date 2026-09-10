@@ -940,75 +940,59 @@ class SupabaseStore:
         return [row["movie_slug"] for row in response.data]
 
     def _bulk_ensure_movies(self, slugs: list[str]) -> list[str]:
-        """Bulk insert stub movies for missing slugs. Returns list of missing metadata slugs."""
-        if not slugs:
-            return []
-        try:
-            res = self.client.table("movies").select("slug").in_("slug", slugs).execute()
-            existing = {r["slug"] for r in res.data}
-        except Exception as e:
-            print(f"[store] Failed to fetch existing movies: {e}", flush=True)
-            existing = set()
-            
-        missing = [s for s in slugs if s not in existing]
-        if missing:
-            stubs = [{"slug": s, "title": s.replace("-", " ").title()} for s in missing]
-            try:
-                self.client.table("movies").upsert(stubs, on_conflict="slug").execute()
-            except Exception as e:
-                print(f"[store] Failed to bulk insert missing movies: {e}", flush=True)
-        return missing
+        """Insert only absent movies; return the new placeholders for enrichment.
+
+        Conflict handling is atomic, so another sync's metadata cannot be replaced
+        by a placeholder. Bounded POST bodies avoid long slug-filter URLs, and
+        selecting only inserted slugs keeps the response small.
+        """
+        unique_slugs = list(dict.fromkeys(slugs))
+        inserted = []
+        for start in range(0, len(unique_slugs), 200):
+            stubs = [{"slug": slug, "title": slug.replace("-", " ").title()}
+                     for slug in unique_slugs[start:start + 200]]
+            response = (self.client.table("movies")
+                        .upsert(stubs, on_conflict="slug", ignore_duplicates=True)
+                        .select("slug").execute())
+            inserted.extend(row["slug"] for row in response.data)
+        return inserted
 
     def batch_add_watchlist(self, user_id: str, slugs: list[str]) -> dict:
         """Add many watchlist slugs using bulk operations."""
-        actual_user_id = self._get_or_create_user_id(user_id)
-        valid_slugs = [s.strip() for s in slugs if s and s.strip()]
-        if not valid_slugs:
-            return {"added": 0, "errors": [], "missing_metadata": [], "total": 0}
-            
-        missing_metadata = self._bulk_ensure_movies(valid_slugs)
-        records = [{"user_id": actual_user_id, "movie_slug": s} for s in valid_slugs]
-        added = 0
-        errors = []
-        try:
-            self.client.table("watchlist").upsert(records, on_conflict="user_id,movie_slug").execute()
-            added = len(valid_slugs)
-        except Exception as e:
-            errors.append(f"bulk_insert_failed: {e}")
-            print(f"[store] batch_add_watchlist error: {e}", flush=True)
-            
-        print(
-            f"[store] batch_add_watchlist: added={added} missing_metadata={len(missing_metadata)} "
-            f"errors={len(errors)} total={len(slugs)}",
-            flush=True
-        )
-        return {
-            "added": added,
-            "errors": errors,
-            "missing_metadata": missing_metadata,
-            "total": len(slugs)
-        }
+        return self._batch_add_memberships("watchlist", user_id, slugs)
 
     def batch_add_diary(self, user_id: str, slugs: list[str]) -> dict:
         """Add many diary slugs using bulk operations."""
-        actual_user_id = self._get_or_create_user_id(user_id)
+        return self._batch_add_memberships("diary", user_id, slugs)
+
+    def _batch_add_memberships(self, table: str, user_id: str, slugs: list[str]) -> dict:
+        """Ensure memberships without updating existing rows.
+
+        `added` retains its API meaning: accepted nonblank input entries, including
+        existing memberships. It is not the count of newly inserted database rows.
+        """
         valid_slugs = [s.strip() for s in slugs if s and s.strip()]
         if not valid_slugs:
             return {"added": 0, "errors": [], "missing_metadata": [], "total": 0}
-            
-        missing_metadata = self._bulk_ensure_movies(valid_slugs)
-        records = [{"user_id": actual_user_id, "movie_slug": s} for s in valid_slugs]
+        actual_user_id = self._get_or_create_user_id(user_id)
+        unique_slugs = list(dict.fromkeys(valid_slugs))
+        missing_metadata = []
         added = 0
         errors = []
         try:
-            self.client.table("diary").upsert(records, on_conflict="user_id,movie_slug").execute()
+            missing_metadata = self._bulk_ensure_movies(unique_slugs)
+            records = [{"user_id": actual_user_id, "movie_slug": slug} for slug in unique_slugs]
+            self.client.table(table).upsert(
+                records, on_conflict="user_id,movie_slug",
+                ignore_duplicates=True, returning="minimal",
+            ).execute()
             added = len(valid_slugs)
         except Exception as e:
             errors.append(f"bulk_insert_failed: {e}")
-            print(f"[store] batch_add_diary error: {e}", flush=True)
+            print(f"[store] batch_add_{table} error: {e}", flush=True)
             
         print(
-            f"[store] batch_add_diary: added={added} missing_metadata={len(missing_metadata)} "
+            f"[store] batch_add_{table}: added={added} missing_metadata={len(missing_metadata)} "
             f"errors={len(errors)} total={len(slugs)}",
             flush=True
         )

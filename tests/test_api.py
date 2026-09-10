@@ -40,6 +40,19 @@ def test_encrypt_roundtrip():
     assert plain == "session::abc"
 
 
+@pytest.mark.parametrize("table", ["watchlist", "diary"])
+def test_extension_batch_failure_is_not_reported_as_success(monkeypatch, table):
+    import src.api.app as app_module
+
+    result = {"added": 0, "errors": ["bulk_insert_failed"], "missing_metadata": [], "total": 1}
+    monkeypatch.setattr(app_module.store, f"batch_add_{table}", lambda *_: result)
+    response = client.post(f"/api/extension/batch/{table}", headers=_NEW_FORMAT_HEADERS,
+                           json={"user_id": "testuser", "slugs": ["film"], "page": 2, "total_pages": 3})
+    assert response.status_code == 503
+    assert response.json()["status"] == "error"
+    assert response.json()["result"] == result
+
+
 def test_auth_session_endpoint(monkeypatch):
     import src.api.app as app_module
     monkeypatch.setattr(app_module, "_extract_username_from_cookie", lambda cookie: "u")

@@ -661,6 +661,23 @@ uvicorn src.api.app:app --log-level debug
 
 ### Code Quality
 
+Run `npm test` for the web state tests and Python suite (`tests/`). The API
+tests use synthetic data, disable dotenv loading, and block remote socket
+connections; they do not require database credentials or a scraper session.
+The same suite runs in the Swiperboxd Tests workflow for source changes.
+
+Extension diary/watchlist batches insert missing memberships and ignore rows
+already present. Placeholder creation also ignores existing movies atomically,
+so it cannot replace real metadata during concurrent syncs. Movie placeholder
+requests contain at most 200 rows and return only newly inserted slugs for
+enrichment; membership responses omit unused database row bodies. The API's
+`result.added` remains the number of accepted nonblank input entries, including
+duplicates and existing memberships, for extension compatibility. It is not a
+new-row count. Real movie metadata updates continue through `upsert_movie`.
+Batch persistence failures return HTTP 503, so the extension reports the failure
+instead of treating it as a successful sync with no more history to load.
+These changes require no schema migration and do not remove existing records.
+
 **Linting:**
 
 ```bash

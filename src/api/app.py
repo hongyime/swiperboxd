@@ -933,6 +933,17 @@ async def submit_swipe_action(
 _EXTENSION_BATCH_LIMIT = 500
 
 
+def _extension_batch_response(payload: ExtensionBatchRequest, result: dict) -> JSONResponse:
+    failed = bool(result.get("errors"))
+    return JSONResponse(status_code=503 if failed else 200, content={
+        "status": "error" if failed else "ok",
+        "user_id": payload.user_id,
+        "page": payload.page,
+        "total_pages": payload.total_pages,
+        "result": result,
+    })
+
+
 @app.post("/api/extension/batch/watchlist")
 async def extension_batch_watchlist(
     payload: ExtensionBatchRequest,
@@ -963,13 +974,7 @@ async def extension_batch_watchlist(
             flush=True
         )
     
-    return {
-        "status": "ok",
-        "user_id": payload.user_id,
-        "page": payload.page,
-        "total_pages": payload.total_pages,
-        "result": result,
-    }
+    return _extension_batch_response(payload, result)
 
 
 @app.post("/api/extension/batch/diary")
@@ -1002,13 +1007,7 @@ async def extension_batch_diary(
             flush=True
         )
     
-    return {
-        "status": "ok",
-        "user_id": payload.user_id,
-        "page": payload.page,
-        "total_pages": payload.total_pages,
-        "result": result,
-    }
+    return _extension_batch_response(payload, result)
 
 
 @app.post("/api/extension/register", response_model=ExtensionRegisterResponse)
