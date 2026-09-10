@@ -4,7 +4,8 @@
 
 - Completed locally: release-note/application review, 48.0.1 synthetic fixtures, pin and minimum updated to 50.0.1, and old/new token compatibility in both directions. The installed package comparison changed only cryptography among 51 packages; dependency compatibility and vulnerability audit passed with zero known advisories.
 - Current suite: 72 Python tests passed, five optional live-service tests skipped, four web tests passed, and compilation/diff checks passed. Eighteen compatibility tests preserve legacy-token decoding and rejection of tampered tokens/wrong keys.
-- Remaining release task: verify the published production commit, hosted suite and repository advisory state. Record final release evidence in https://aoo181uudk96.postplan.dev.
+- Dependency release `79e92a0726b4efe49800dde2f694e0d363ff4150` is verified on production deployment `dpl_DQnicksnBz2Qb6RhXXza7dgJmit2`. All six hosted workflows passed, including the 72-case Python suite and four web tests. Both public domains passed 12 HTTP checks and desktop/mobile anonymous setup checks.
+- GitHub marked advisory 7 fixed at 2026-09-10 18:17:26 UTC; the subsequent repository query returned zero open dependency alerts. Full release evidence is maintained in https://aoo181uudk96.postplan.dev. No production sessions or database writes were exercised.
 - Direct application crypto use is Fernet with SHA-256 key derivation. No production keys, stored sessions or application records are needed for validation.
 
 - Confirmed: merge-style upserts rewrite existing memberships; placeholder movie upserts can replace real titles after a failed lookup or concurrent metadata insert.
