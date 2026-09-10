@@ -1,11 +1,18 @@
 # Current work
 
-2026-09-11: Maintenance of extension watchlist/diary batch persistence.
+2026-09-11: Targeted cryptography dependency update following the batch-sync release.
+
+- Completed locally: release-note/application review, 48.0.1 synthetic fixtures, pin and minimum updated to 50.0.1, and old/new token compatibility in both directions. The installed package comparison changed only cryptography among 51 packages; dependency compatibility and vulnerability audit passed with zero known advisories.
+- Current suite: 72 Python tests passed, five optional live-service tests skipped, four web tests passed, and compilation/diff checks passed. Eighteen compatibility tests preserve legacy-token decoding and rejection of tampered tokens/wrong keys.
+- Remaining release task: verify the published production commit, hosted suite and repository advisory state. Record final release evidence in https://aoo181uudk96.postplan.dev.
+- Direct application crypto use is Fernet with SHA-256 key derivation. No production keys, stored sessions or application records are needed for validation.
 
 - Confirmed: merge-style upserts rewrite existing memberships; placeholder movie upserts can replace real titles after a failed lookup or concurrent metadata insert.
 - Implemented: conflict-ignore placeholder/membership inserts, deduplicated payloads, 200-row placeholder chunks with slug-only returns, minimal membership responses, and HTTP 503 for failed batches. `added` retains its accepted-input meaning.
 - Verified locally: 54 Python tests passed, five optional live-service tests skipped, four web state tests passed, and compile checks passed. Twelve persistence tests use the real PostgREST client against synthetic SQLite conflict semantics; two API tests cover failure responses. Ten of the persistence tests failed against the original implementation. Remote sockets are blocked during the automated suite.
 - Live read-only metadata confirms the required uniqueness constraints and no custom triggers on movies, diary or watchlist. This is not a live database write test or a measured savings claim.
-- Next: publish the reviewed source, verify release workflows and exact production deployment, then record public route checks in the portfolio report.
+- Published `b2d41241f04dda49a0270745d548b4d96d23302e`; production deployment `dpl_GX4ad9J1eywY3YykFDkjsvvs2dzN` is READY on both public domains. All five release workflows passed. Twelve public HTTP checks and desktop/mobile anonymous setup checks passed. Detailed evidence is linked from https://aoo181uudk96.postplan.dev.
+- Portfolio queue after this release: real movie/list metadata write churn and scheduled sync/keepalive behavior. No monthly savings claim has been established. Rotate to another repository after closing the dependency release.
+- Main tracks origin/main. The prior release's verification notes are included with this dependency update.
 - Keep all existing application records and real metadata updates. Do not invoke live sync, scraping, cookies or migrations for testing.
-- Source baseline and rollback reference: `9a6bed4`.
+- Dependency-update baseline and rollback reference: `b2d4124`. Rollback token compatibility was checked using synthetic data.

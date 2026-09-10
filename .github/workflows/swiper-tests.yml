@@ -3,9 +3,9 @@ name: Swiperboxd Tests
 on:
   push:
     branches: [main]
-    paths: ['src/**', 'tests/**', 'requirements.txt', 'package.json', '.github/workflows/swiper-tests.yml']
+    paths: ['src/**', 'tests/**', 'requirements.txt', 'pyproject.toml', 'package.json', '.github/workflows/swiper-tests.yml']
   pull_request:
-    paths: ['src/**', 'tests/**', 'requirements.txt', 'package.json', '.github/workflows/swiper-tests.yml']
+    paths: ['src/**', 'tests/**', 'requirements.txt', 'pyproject.toml', 'package.json', '.github/workflows/swiper-tests.yml']
 
 permissions:
   contents: read

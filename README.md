@@ -666,6 +666,13 @@ tests use synthetic data, disable dotenv loading, and block remote socket
 connections; they do not require database credentials or a scraper session.
 The same suite runs in the Swiperboxd Tests workflow for source changes.
 
+The runtime pin and package minimum use `cryptography` 50.0.1, including the fix
+for [GHSA-g6cj-pr64-35w5](https://github.com/pyca/cryptography/security/advisories/GHSA-g6cj-pr64-35w5).
+Session compatibility tests decrypt synthetic tokens generated with 48.0.1 and
+check rejection of wrong keys and tampered tokens. The application continues to
+use the same Fernet format and SHA-256 key derivation; keep the existing
+`MASTER_ENCRYPTION_KEY` when deploying this update.
+
 Extension diary/watchlist batches insert missing memberships and ignore rows
 already present. Placeholder creation also ignores existing movies atomically,
 so it cannot replace real metadata during concurrent syncs. Movie placeholder
