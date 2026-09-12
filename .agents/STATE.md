@@ -17,3 +17,14 @@
 - Main tracks origin/main. The prior release's verification notes are included with this dependency update.
 - Keep all existing application records and real metadata updates. Do not invoke live sync, scraping, cookies or migrations for testing.
 - Dependency-update baseline and rollback reference: `b2d4124`. Rollback token compatibility was checked using synthetic data.
+
+
+2026-09-12 — portfolio build-check repair: make the named Build check validate this application using existing fixture tests and production build/entrypoint checks. Preserve live data and existing collector behavior. No provider workflows are invoked for testing. Required-check enforcement and bot reactivation remain open because the shared heartbeat still pushes directly to main.
+
+- [ ] Preserve original clean checkouts and work from current remote commits.
+- [ ] Make GMapLists run its existing unit suite and production TypeScript/Vite build on every PR.
+- [ ] Make Swiperboxd Build run the existing isolated Python and web suites; retain its legacy test workflow for manual use without duplicate automatic runs.
+- [ ] Validate locally, publish small PRs, verify hosted checks and production deployments.
+- [ ] Keep bot reactivation and required-check enforcement open until heartbeat direct commits are accounted for.
+
+2026-09-12 validation: the replacement Build workflow runs the existing Python/API and browser-state suites instead of skipping when package.json has no build script. Local Python 3.12 checks pass: 72 tests, five optional live-service skips, four web tests, compilation of src/api and compatibility of 51 installed packages. The legacy Swiperboxd Tests workflow is retained for manual diagnostics; automatic runs are consolidated under Build Check. Application code, dependencies, provider calls and collection schedules are unchanged by this repair. Hosted checks and production verification are next.
