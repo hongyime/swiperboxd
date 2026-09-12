@@ -1,11 +1,9 @@
 name: Swiperboxd Tests
 
 on:
-  push:
-    branches: [main]
-    paths: ['src/**', 'tests/**', 'requirements.txt', 'pyproject.toml', 'package.json', '.github/workflows/swiper-tests.yml']
-  pull_request:
-    paths: ['src/**', 'tests/**', 'requirements.txt', 'pyproject.toml', 'package.json', '.github/workflows/swiper-tests.yml']
+  # Automatic coverage now lives in Build Check. Keep this entrypoint for
+  # manual diagnostics without running the same suite twice for each PR.
+  workflow_dispatch:
 
 permissions:
   contents: read
