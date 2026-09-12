@@ -24,5 +24,10 @@
       "path": "/api/cron/backfill-scrapes",
       "schedule": "30 3 * * *"
     }
-  ]
+  ],
+  "git": {
+    "deploymentEnabled": {
+      "automation/heartbeat": false
+    }
+  }
 }

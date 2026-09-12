@@ -39,3 +39,8 @@ jobs:
         run: npm test
       - name: Compile application and Vercel entrypoint
         run: python -m compileall -q src api
+      - name: Validate maintenance opt-in
+        working-directory: .
+        run: |
+          python3 .github/scripts/branch-heartbeat.py --validate-config .github/branch-heartbeat.json
+          python3 -m compileall -q .github/scripts
