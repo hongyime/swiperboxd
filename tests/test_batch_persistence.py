@@ -5,6 +5,7 @@ and insert/update behavior; it is not a deployed PostgreSQL integration test.
 """
 
 import json
+import os
 import sqlite3
 
 import httpx
@@ -14,9 +15,66 @@ from postgrest import SyncPostgrestClient
 from src.api.store import SupabaseStore
 
 
+@pytest.mark.parametrize("table", ["watchlist", "diary"])
+@pytest.mark.parametrize("failed_method", ["GET", "POST"])
+def test_user_gateway_timeout_keeps_batch_retryable_and_existing_rows_intact(monkeypatch, table, failed_method):
+    """Use the real PostgREST error parser and HTTP endpoint with synthetic rows."""
+    from fastapi.testclient import TestClient
+    import src.api.app as app_module
+    from src.api.security import encrypt_session_cookie
+
+    rest = SyntheticRest()
+    rest.db.execute("INSERT INTO movies(slug, title, rating) VALUES ('existing', 'Original title', 4.5)")
+    rest.db.execute(f"INSERT INTO {table}(user_id, movie_slug) VALUES ('synthetic-user', 'existing')")
+    before = (rest.rows("movies"), rest.rows(table))
+    unavailable = True
+    requests = []
+
+    def respond(request):
+        target = request.url.path.rsplit("/", 1)[-1]
+        requests.append((target, request.method))
+        if target == "users":
+            if unavailable and request.method == failed_method:
+                return httpx.Response(504, json={"message": "Gateway Timeout"})
+            if request.method == "GET" and failed_method == "POST":
+                return httpx.Response(200, json=[])
+            return httpx.Response(200 if request.method == "GET" else 201, json=[{"id": "synthetic-user"}])
+        return rest(request)
+
+    token = encrypt_session_cookie(json.dumps({"u": "testuser", "c": "fixture-cookie"}), os.environ["MASTER_ENCRYPTION_KEY"])
+    payload = {"user_id": "testuser", "slugs": ["existing", "new-film"], "page": 2, "total_pages": 3}
+    try:
+        with httpx.Client(transport=httpx.MockTransport(respond)) as http:
+            sdk = SyncPostgrestClient("https://database.test/rest/v1", http_client=http)
+            monkeypatch.setattr("src.api.store.get_supabase_client", lambda: sdk)
+            monkeypatch.setattr(app_module, "store", SupabaseStore())
+            with TestClient(app_module.app, raise_server_exceptions=False) as api:
+                endpoint = f"/api/extension/batch/{table}"
+                failed = api.post(endpoint, headers={"X-Session-Token": token}, json=payload)
+                assert failed.status_code == 503
+                body = failed.json()
+                assert (body["status"], body["page"], body["total_pages"]) == ("error", 2, 3)
+                assert body["result"]["added"] == 0 and body["result"]["errors"]
+                assert requests == ([("users", "GET")] if failed_method == "GET" else [("users", "GET"), ("users", "POST")])
+                assert (rest.rows("movies"), rest.rows(table)) == before
+                unavailable = False
+                retried = api.post(endpoint, headers={"X-Session-Token": token}, json=payload)
+                assert retried.status_code == 200 and retried.json()["result"]["added"] == 2
+                after = (rest.rows("movies"), rest.rows(table))
+                repeated = api.post(endpoint, headers={"X-Session-Token": token}, json=payload)
+                assert repeated.status_code == 200
+                assert (rest.rows("movies"), rest.rows(table)) == after
+                assert before[0][0] in after[0] and before[1][0] in after[1]
+                assert rest.rows("updates") == []
+    finally:
+        rest.db.close()
+
+
 class SyntheticRest:
     def __init__(self):
-        self.db = sqlite3.connect(":memory:")
+        # TestClient serves requests on its event-loop thread; fixtures issue
+        # sequential requests and inspect rows on the test thread afterwards.
+        self.db = sqlite3.connect(":memory:", check_same_thread=False)
         self.db.row_factory = sqlite3.Row
         self.requests = []
         self.fail_table = None
