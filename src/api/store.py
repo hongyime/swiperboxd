@@ -999,12 +999,14 @@ class SupabaseStore:
         valid_slugs = [s.strip() for s in slugs if s and s.strip()]
         if not valid_slugs:
             return {"added": 0, "errors": [], "missing_metadata": [], "total": 0}
-        actual_user_id = self._get_or_create_user_id(user_id)
         unique_slugs = list(dict.fromkeys(valid_slugs))
         missing_metadata = []
         added = 0
         errors = []
         try:
+            # User lookup/creation can time out before any membership write.
+            # Keep that failure in the same retryable batch response contract.
+            actual_user_id = self._get_or_create_user_id(user_id)
             missing_metadata = self._bulk_ensure_movies(unique_slugs)
             records = [{"user_id": actual_user_id, "movie_slug": slug} for slug in unique_slugs]
             self.client.table(table).upsert(
