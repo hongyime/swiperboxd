@@ -1,4 +1,9 @@
 import { createSuppressionStore } from './state.js';
+import { createReadLane } from './read-requests.js';
+
+const catalogueReads = createReadLane();
+const deckReads = createReadLane();
+let accountVersion = 0;
 
 const suppression = createSuppressionStore(() => Date.now());
 
@@ -39,6 +44,7 @@ const state = {
   username: null,
   encryptedSession: null,
   hasSynced: false,
+  syncStatusKnown: null,
   browseOnlyMode: false,
   deck: [],
   currentIndex: 0,
@@ -361,9 +367,14 @@ document.addEventListener('DOMContentLoaded', () => {
 function initAuth() {
   $('#setup-connect-btn')?.addEventListener('click', connectViaExtension);
   $('#logout-btn')?.addEventListener('click', () => {
+    accountVersion++;
+    catalogueReads.cancel();
+    deckReads.cancel();
     state.username = null;
     state.encryptedSession = null;
     state.hasSynced = false;
+    state.syncStatusKnown = false;
+    state.deck = [];
     discoveryScreen.classList.remove('active');
     setupScreen.classList.add('active');
   });
@@ -480,6 +491,7 @@ async function connectViaExtension() {
 }
 
 function checkSavedSession() {
+  const version = accountVersion;
   // Try silent auto-connect on load — succeeds if extension is installed and connected
   requestExtensionAuth(3000).then((result) => {
     extLog('silent auth attempt completed', {
@@ -487,7 +499,7 @@ function checkSavedSession() {
       requestId: result.requestId || null,
       error: result.error || null,
     });
-    if (result.ok) {
+    if (result.ok && version === accountVersion && !state.username) {
       state.username = result.username;
       state.encryptedSession = result.sessionToken;
       showDiscovery();
@@ -498,7 +510,8 @@ function checkSavedSession() {
 
 async function maybeRunInitialCrossSync() {
   const username = state.username;
-  if (!username || username === '_guest_') return;
+  const version = accountVersion;
+  if (!username || username === '_guest_' || !state.syncStatusKnown) return;
   if (crossSyncAttemptedUsers.has(username)) return;
   
   // Only honor the cooldown if the backend actually confirms we have data.
@@ -515,7 +528,9 @@ async function maybeRunInitialCrossSync() {
   let lastError = null;
   for (let attempt = 1; attempt <= 2; attempt++) {
     // Increase timeout to 5 minutes (300,000ms) for large histories
+    if (version !== accountVersion) return;
     const result = await requestExtensionCrossSync(300000, 300, 15);
+    if (version !== accountVersion) return;
     if (result.ok) {
       markCrossSyncSuccess(username);
       const summary = result.summary || {};
@@ -523,10 +538,10 @@ async function maybeRunInitialCrossSync() {
       const pushed = Number(summary.watchlistPushed || 0) + Number(summary.diaryPushed || 0);
       setCrossSyncBadge('success', `Synced • +${pulled}/${pushed}`);
       showToast(`Cross-sync complete • pulled ${pulled}, pushed ${pushed}`);
-      // Clear suppression store after successful sync — user may want to re-see movies
-      extLog('clearing suppression store after sync', { suppressedCount: suppression.size() });
-      // Re-load the deck to clear any suppressed movies
-      await loadDeck();
+      // Re-read status as well: a first sync can now enable saving.
+      deckReads.cancel();
+      catalogueReads.cancel();
+      await loadLists();
       return;
     }
     lastError = result.error;
@@ -555,7 +570,7 @@ function applyWriteAccess() {
   const logBtn = $('#btn-log');
   const syncReason = 'Sync your Letterboxd data via the extension first to enable saving';
   const browseReason = 'Browse-only mode is active, so watchlist/log are disabled';
-  const writeEnabled = state.hasSynced;
+  const writeEnabled = state.hasSynced && state.syncStatusKnown;
 
   watchlistBtn.disabled = !writeEnabled;
   logBtn.disabled = !writeEnabled;
@@ -563,7 +578,18 @@ function applyWriteAccess() {
     watchlistBtn.title = syncReason;
     logBtn.title = syncReason;
     if (hint) {
-      hint.textContent = 'Sync extension to enable saving';
+      hint.textContent = state.syncStatusKnown
+        ? 'Sync extension to enable saving'
+        : state.syncStatusKnown === null ? 'Checking sync status…' : 'Could not check sync status. ';
+      if (state.syncStatusKnown === false) {
+        const retry = document.createElement('button');
+        retry.id = 'status-retry-btn';
+        retry.className = 'btn-secondary';
+        retry.style.pointerEvents = 'auto';
+        retry.textContent = 'Retry';
+        retry.addEventListener('click', () => loadLists());
+        hint.appendChild(retry);
+      }
       hint.classList.remove('hidden');
     }
   } else {
@@ -574,6 +600,15 @@ function applyWriteAccess() {
 }
 
 function showDiscovery() {
+  accountVersion++;
+  catalogueReads.cancel();
+  deckReads.cancel();
+  Object.assign(state, { hasSynced: false, syncStatusKnown: null, deck: [],
+    currentIndex: 0, lists: [], selectedListId: null,
+    selectedListTitle: 'Choose a List', listSearchQuery: '' });
+  if (listSearchInput) listSearchInput.value = '';
+  cardStack.classList.add('hidden');
+  applyWriteAccess();
   setupScreen.classList.remove('active');
   discoveryScreen.classList.add('active');
   setCrossSyncBadge('idle', 'Sync pending');
@@ -593,9 +628,9 @@ function initDiscovery() {
     }
   });
 
-  listSearchInput?.addEventListener('input', async (e) => {
+  listSearchInput?.addEventListener('input', (e) => {
     state.listSearchQuery = e.target.value.trim();
-    await loadLists(state.listSearchQuery);
+    renderLists();
   });
 
   $('#refresh-btn')?.addEventListener('click', () => loadDeck());
@@ -614,6 +649,7 @@ function initDiscovery() {
   // Keyboard shortcuts
   document.addEventListener('keydown', (e) => {
     if (!discoveryScreen.classList.contains('active')) return;
+    if (e.target.closest('input, textarea, select, button, a, [contenteditable]')) return;
     if (e.key === 'Escape') { hideInfoPill(); return; }
     if (state.deck.length === 0 || state.currentIndex >= state.deck.length) return;
     switch (e.key) {
@@ -627,73 +663,77 @@ function initDiscovery() {
 
 // ==================== LISTS ====================
 
-async function loadLists(query = '') {
-  try {
-    const res = await api(`/lists/catalog?q=${encodeURIComponent(query)}`);
-    state.lists = res.results || [];
-    renderLists();
-
-    if (state.lists.length === 0) {
-      cardStack.classList.add('hidden');
-      setEmptyState(
-        '📋',
-        'No lists available',
-        'Use the Chrome extension to sync Letterboxd lists into Swiperboxd.',
-      );
+function loadLists() {
+  const username = state.username;
+  if (!username) return Promise.resolve();
+  const sessionToken = state.encryptedSession;
+  return catalogueReads.run(accountVersion, async ({ signal, current }) => {
+    const options = { signal, sessionToken };
+    try {
+      const res = await api('/lists/catalog', options);
+      if (!current()) return;
+      state.lists = res.results || [];
+      if (!state.lists.some(item => item.list_id === state.selectedListId)) {
+        const pick = state.lists[0];
+        state.selectedListId = pick?.list_id || null;
+        state.selectedListTitle = pick?.title || 'Choose a List';
+      }
+      renderLists();
+    } catch (err) {
+      if (!current()) return;
+      loadingSkeleton.classList.add('hidden');
+      setEmptyState('⚠️', 'Error loading lists', err.message || 'Check your connection.', loadLists);
       return;
     }
-  } catch (err) {
-    console.error('[lists] failed:', err.message);
-    setEmptyState('⚠️', 'Error loading lists', err.message || 'Check your connection.');
-    return;
-  }
 
-  if (!state.selectedListId && state.lists.length > 0) {
-    // Pick the top-ranked list deterministically (backend already sorts by
-    // official + popularity). Random selection can land users on an empty list
-    // and create a false "sync is broken" impression.
-    const pick = state.lists[0];
-    state.selectedListId = pick.list_id;
-    state.selectedListTitle = pick.title;
-    currentProfileSpan.textContent = state.selectedListTitle;
-  }
-
-  // Check if this user has synced Letterboxd data into Supabase
-  if (state.username && state.username !== '_guest_') {
-    try {
-      const status = await api(`/users/${encodeURIComponent(state.username)}/sync-status`);
-      state.hasSynced = status.has_synced;
-    } catch (_) {
+    if (username !== '_guest_') {
+      try {
+        const status = await api(`/users/${encodeURIComponent(username)}/sync-status`, options);
+        if (!current()) return;
+        state.hasSynced = status.has_synced === true;
+        state.syncStatusKnown = true;
+      } catch (err) {
+        if (!current()) return;
+        state.syncStatusKnown = false;
+        setCrossSyncBadge('error', 'Sync status unavailable');
+      }
+    } else {
       state.hasSynced = false;
+      state.syncStatusKnown = true;
     }
-  } else {
-    state.hasSynced = false;
-  }
-
-  applyWriteAccess();
-  if (!state.username || state.username === '_guest_') {
-    setCrossSyncBadge('idle', 'Connect extension');
-  } else if (!shouldRunCrossSync(state.username)) {
-    setCrossSyncBadge('success', 'Synced');
-  } else {
-    setCrossSyncBadge('idle', 'Sync pending');
-  }
-  void maybeRunInitialCrossSync();
-  if (state.selectedListId) loadDeck();
+    applyWriteAccess();
+    // Unknown status must never be treated as an empty account requiring sync.
+    if (state.syncStatusKnown) void maybeRunInitialCrossSync();
+    if (state.selectedListId) {
+      await loadDeck();
+    } else {
+      deckReads.cancel();
+      state.deck = [];
+      cardStack.classList.add('hidden');
+      loadingSkeleton.classList.add('hidden');
+      setEmptyState('📋', 'No lists available',
+        'Use the Chrome extension to sync Letterboxd lists into Swiperboxd.', loadLists);
+    }
+  });
 }
 
 function renderLists() {
-  profileOptions.innerHTML = state.lists.map(item => `
+  const query = state.listSearchQuery.toLowerCase();
+  const matches = state.lists.filter(item =>
+    String(item.title || '').toLowerCase().includes(query) ||
+    String(item.description || '').toLowerCase().includes(query));
+  profileOptions.innerHTML = matches.map(item => `
     <div class="profile-option ${item.list_id === state.selectedListId ? 'active' : ''} ${!item.is_ready ? 'greyed-out' : ''}"
          data-list-id="${esc(item.list_id)}"
          title="${!item.is_ready ? 'Syncing in background...' : ''}">
       <div class="list-option-title">${esc(item.title)}</div>
       <div class="list-option-meta">${esc(item.owner_name)} · ${esc(item.film_count)} films</div>
     </div>
-  `).join('');
+  `).join('') || '<p>No matching lists</p>';
 
   profileOptions.querySelectorAll('.profile-option').forEach(opt => {
     opt.addEventListener('click', () => {
+      if (state.isSyncing) return;
       const selected = state.lists.find(item => item.list_id === opt.dataset.listId);
       if (selected && !selected.is_ready) return; // Prevent clicking unready lists
       state.selectedListId = opt.dataset.listId;
@@ -711,116 +751,71 @@ function renderLists() {
 
 // ==================== DECK ====================
 
-async function loadDeck() {
-  if (!state.username || !state.selectedListId) return;
-  if (state.isSyncing) return;
-
-  hideInfoPill();
-  cardStack.classList.add('hidden');
-  emptyState.classList.add('hidden');
-  loadingSkeleton.classList.remove('hidden');
-
-  try {
-    const res = await api(
-      `/lists/${encodeURIComponent(state.selectedListId)}/deck?user_id=${encodeURIComponent(state.username)}`
-    );
-    const raw = res.results || [];
-    let filtered = raw.filter(m => !suppression.isSuppressed(m.slug));
-    state.browseOnlyMode = false;
-
-    // If personalized unseen deck is empty, gracefully degrade to browse-only.
-    if (filtered.length === 0 && state.hasSynced) {
-      extLog('personalized deck empty; trying include_seen fallback', {
-        username: state.username,
-        listId: state.selectedListId,
-      });
-      const includeSeenRes = await api(
-        `/lists/${encodeURIComponent(state.selectedListId)}/deck?user_id=${encodeURIComponent(state.username)}&include_seen=true`
-      );
-      const includeSeen = includeSeenRes.results || [];
-      filtered = includeSeen.filter(m => !suppression.isSuppressed(m.slug));
-      if (filtered.length > 0) {
-        state.browseOnlyMode = true;
-        showToast('Showing browse-only fallback from this list');
-      }
-    }
-
-    // Final fallback: any movies in catalog so app never appears blank.
-    if (filtered.length === 0 && state.hasSynced) {
-      extLog('include_seen fallback empty; trying discovery fallback', {
-        username: state.username,
-        listId: state.selectedListId,
-      });
-      const discoveryRes = await api(
-        `/discovery/deck?user_id=${encodeURIComponent(state.username)}&profile=gold-standard`
-      );
-      filtered = (discoveryRes.results || []).filter(m => !suppression.isSuppressed(m.slug));
-      if (filtered.length > 0) {
-        state.browseOnlyMode = true;
-        showToast('Showing browse-only fallback from your catalog');
-      }
-    }
-
-    state.deck = filtered;
+function loadDeck() {
+  if (!state.username || !state.selectedListId || state.isSyncing) return Promise.resolve();
+  const username = state.username;
+  const listId = state.selectedListId;
+  const listTitle = state.selectedListTitle;
+  const hasSynced = state.hasSynced && state.syncStatusKnown;
+  const sessionToken = state.encryptedSession;
+  const key = JSON.stringify([accountVersion, listId, hasSynced]);
+  return deckReads.run(key, async ({ signal, current }) => {
+    if (!current()) return;
+    hideInfoPill();
+    cardStack.classList.add('hidden');
+    emptyState.classList.add('hidden');
+    loadingSkeleton.classList.remove('hidden');
+    // Old cards must not remain actionable while the next list is loading.
+    state.deck = [];
     state.currentIndex = 0;
-    applyWriteAccess();
-
-    loadingSkeleton.classList.add('hidden');
-
-    // Detailed logging for debugging empty deck issues
-    if (raw.length > 0 && filtered.length === 0) {
-      const suppressedCount = raw.length;
-      console.warn(`[deck] WARNING: All ${suppressedCount} movies filtered by suppression store!`, {
-        suppressedCount,
-        suppressedSlugs: raw.slice(0, 5).map(m => m.slug),
-        username: state.username,
-        listId: state.selectedListId,
-      });
-    }
-
-    extLog('deck loaded', {
-      username: state.username,
-      listId: state.selectedListId,
-      total: raw.length,
-      afterSuppression: filtered.length,
-      hasSynced: state.hasSynced,
-    });
-
-    if (state.deck.length > 0) {
-      renderDeck();
-    } else {
-      if (state.hasSynced) {
-        const listLabel = state.selectedListTitle && state.selectedListTitle !== 'Choose a List'
-          ? `"${state.selectedListTitle}"`
-          : 'This list';
-        setEmptyState(
-          '🎬',
-          'No movies left in this list',
-          `${listLabel} has no unseen movies for your account right now. Try another list, or run Start Sync to pull in more data.`,
-        );
-      } else {
-        setEmptyState(
-          '🎬',
-          'No movies to show',
-          'Open the Chrome extension popup and click Start Sync to load your Letterboxd data into Swiperboxd.',
-        );
+    const options = { signal, sessionToken };
+    const deckPath = `/lists/${encodeURIComponent(listId)}/deck?user_id=${encodeURIComponent(username)}`;
+    const visible = res => (res.results || []).filter(m => !suppression.isSuppressed(m.slug));
+    try {
+      const res = await api(deckPath, options);
+      if (!current()) return;
+      let filtered = visible(res);
+      let browseOnly = false;
+      if (!filtered.length && hasSynced) {
+        const includeSeen = await api(`${deckPath}&include_seen=true`, options);
+        if (!current()) return;
+        filtered = visible(includeSeen);
+        browseOnly = filtered.length > 0;
       }
+      if (!filtered.length && hasSynced) {
+        const discovery = await api(`/discovery/deck?user_id=${encodeURIComponent(username)}&profile=gold-standard`, options);
+        if (!current()) return;
+        filtered = visible(discovery);
+        browseOnly = filtered.length > 0;
+      }
+      state.deck = filtered;
+      state.browseOnlyMode = browseOnly;
+      applyWriteAccess();
+      loadingSkeleton.classList.add('hidden');
+      if (filtered.length) {
+        renderDeck();
+        if (browseOnly) showToast('Showing browse-only fallback from your catalog');
+      } else {
+        setEmptyState('🎬', hasSynced ? 'No movies left in this list' : 'No movies to show',
+          hasSynced ? `"${listTitle}" has no unseen movies for your account right now. Try another list, or run Start Sync to pull in more data.`
+            : 'Open the Chrome extension popup and click Start Sync to load your Letterboxd data into Swiperboxd.');
+      }
+    } catch (err) {
+      if (!current()) return;
+      loadingSkeleton.classList.add('hidden');
+      setEmptyState('⚠️', 'Failed to load deck', err.message);
     }
-  } catch (err) {
-    console.error('[deck] load failed:', err.message);
-    loadingSkeleton.classList.add('hidden');
-    setEmptyState('⚠️', 'Failed to load deck', err.message);
-  }
+  });
 }
 
-function setEmptyState(icon, title, body) {
+function setEmptyState(icon, title, body, retry = loadDeck) {
   emptyState.innerHTML = `
     <span class="empty-icon">${icon}</span>
     <h2>${esc(title)}</h2>
     <p>${esc(body)}</p>
     <button id="empty-retry-btn" class="btn-secondary" style="margin-top:0.5rem">Retry</button>
   `;
-  emptyState.querySelector('#empty-retry-btn')?.addEventListener('click', () => loadDeck());
+  emptyState.querySelector('#empty-retry-btn')?.addEventListener('click', retry);
   emptyState.classList.remove('hidden');
 }
 
@@ -927,7 +922,7 @@ function hideInfoPill() {
 
 async function executeSwipe(action) {
   if (state.isSyncing || state.deck.length === 0 || state.currentIndex >= state.deck.length) return;
-  if (action !== 'dismiss' && !state.hasSynced) {
+  if (action !== 'dismiss' && (!state.hasSynced || !state.syncStatusKnown)) {
     showToast('Sync your Letterboxd data via the extension before saving');
     return;
   }
@@ -1003,26 +998,42 @@ async function executeSwipe(action) {
 
 async function api(path, options = {}) {
   const headers = { 'Content-Type': 'application/json' };
-  if (state.encryptedSession) headers['X-Session-Token'] = state.encryptedSession;
-
-  const res = await fetch(path, {
-    method: options.method || 'GET',
-    headers,
-    ...(options.body ? { body: JSON.stringify(options.body) } : {}),
-  });
-
-  if (!res.ok) {
-    const data   = await res.json().catch(() => ({}));
-    const detail = data?.detail;
-    const msg    = (typeof detail === 'string' ? detail : detail?.reason || detail?.code) || `HTTP ${res.status}`;
-    const err    = new Error(msg);
-    err.status   = res.status;
-    err.code     = typeof detail === 'object' ? detail?.code : (data?.code || null);
-    err.data     = data;
+  const sessionToken = options.sessionToken ?? state.encryptedSession;
+  if (sessionToken) headers['X-Session-Token'] = sessionToken;
+  const method = options.method || 'GET';
+  const controller = new AbortController();
+  const cancel = () => controller.abort();
+  if (options.signal?.aborted) cancel();
+  else options.signal?.addEventListener('abort', cancel, { once: true });
+  // Reads have a manual retry path. Writes retain their existing lifecycle.
+  let timedOut = false;
+  const timer = method === 'GET' ? setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, 15000) : null;
+  try {
+    const res = await fetch(path, {
+      method, headers, signal: controller.signal,
+      ...(options.body ? { body: JSON.stringify(options.body) } : {}),
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      const detail = data?.detail;
+      const msg = (typeof detail === 'string' ? detail : detail?.reason || detail?.code) || `HTTP ${res.status}`;
+      const err = new Error(msg);
+      err.status = res.status;
+      err.code = typeof detail === 'object' ? detail?.code : (data?.code || null);
+      err.data = data;
+      throw err;
+    }
+    return await res.json();
+  } catch (err) {
+    if (timedOut) throw new Error('Request timed out. Please retry.');
     throw err;
+  } finally {
+    clearTimeout(timer);
+    options.signal?.removeEventListener('abort', cancel);
   }
-
-  return res.json();
 }
 
 // ==================== UTILS ====================

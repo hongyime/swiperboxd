@@ -105,6 +105,7 @@ async def http_exception_handler(request: Request, exc: HTTPException):
     """Enhanced error responses with request context."""
     return JSONResponse(
         status_code=exc.status_code,
+        headers=exc.headers,
         content={
             "status": "error",
             "code": exc.detail.get("code", "http_error") if isinstance(exc.detail, dict) else "http_error",
@@ -407,15 +408,16 @@ def discovery_profiles():
 
 
 @app.get("/users/{username}/sync-status")
-def user_sync_status(username: str):
-    """Return whether the user has synced watchlist or diary data into Supabase."""
+def user_sync_status(username: str, verified_user: str = Depends(verify_extension_user)):
+    """Return read-only membership counts for the authenticated extension user."""
+    headers = {"Cache-Control": "private, no-store"}
+    if username != verified_user:
+        raise HTTPException(status_code=403, detail={"code": "user_id_mismatch"}, headers=headers)
     try:
-        wl = store.get_watchlist(username)
-        diary = store.get_diary(username)
-        return {"has_synced": bool(wl or diary), "watchlist_count": len(wl), "diary_count": len(diary)}
+        return JSONResponse(store.get_sync_status(username), headers=headers)
     except Exception as exc:
-        print(f"[sync-status] failed for {username}: {exc}", flush=True)
-        return {"has_synced": False, "watchlist_count": 0, "diary_count": 0}
+        raise HTTPException(status_code=503, detail={"code": "sync_status_unavailable"},
+                            headers=headers) from exc
 
 
 @app.get("/api/extension/user-history")

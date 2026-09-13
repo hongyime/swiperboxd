@@ -1,0 +1,44 @@
+{
+  "at": "2026-09-13T00:31:56.511521+00:00",
+  "base_head": "3f9a2f67b2e93f83c8e5e1599b2ce6fbe352919b",
+  "tasks": [
+    {
+      "id": "map_request_and_store_contracts",
+      "done": true
+    },
+    {
+      "id": "reproduce_search_deck_and_status_failures",
+      "done": true
+    },
+    {
+      "id": "implement_read_only_status_and_request_coordination",
+      "done": true
+    },
+    {
+      "id": "verify_hosted_checks_and_production",
+      "done": false
+    },
+    {
+      "id": "preserve_records_and_publish_report",
+      "done": false
+    }
+  ],
+  "portfolio_complete": false,
+  "stage": "local_verified_hosted_next",
+  "contracts": [
+    "List search filters already-loaded catalogue without status/deck reloads.",
+    "Only the latest account/list read can render; duplicate active reads and stale fallback chains are stopped.",
+    "Authenticated status checks return counts without membership payloads or implicit user creation; errors remain errors.",
+    "Production checks use synthetic browser/API fixtures and do not sync or change provider records."
+  ],
+  "local_checks": {
+    "python_passed": 85,
+    "optional_live_skipped": 5,
+    "node_passed": 4,
+    "browser_passed": 13
+  },
+  "baseline": {
+    "browser_failures": 6,
+    "initial_status_failures": 8
+  }
+}

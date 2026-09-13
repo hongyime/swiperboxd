@@ -37,6 +37,10 @@ jobs:
         run: python -m pip check
       - name: Test Python API and browser state with synthetic data
         run: npm test
+      - name: Install Chromium for isolated browser fixtures
+        run: python -m playwright install --with-deps chromium
+      - name: Test real browser refresh behavior with synthetic APIs
+        run: python tests/browser_refresh.py
       - name: Compile application and Vercel entrypoint
         run: python -m compileall -q src api
       - name: Validate maintenance opt-in
