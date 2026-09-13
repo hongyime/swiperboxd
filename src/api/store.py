@@ -61,6 +61,8 @@ class Store(Protocol):
 
     def get_diary(self, user_id: str) -> set[str]: ...
 
+    def get_sync_status(self, user_id: str) -> dict[str, bool | int]: ...
+
     def upsert_movie(self, movie: dict) -> None: ...
 
     def get_movie(self, slug: str) -> dict | None: ...
@@ -203,6 +205,14 @@ class InMemoryStore:
         """Get user's diary (already watched films)."""
         with self.lock:
             return set(self.diary.get(user_id, set()))
+
+    def get_sync_status(self, user_id: str) -> dict[str, bool | int]:
+        """Count memberships without creating state or copying all movie slugs."""
+        with self.lock:
+            watchlist = len(self.watchlist.get(user_id, ()))
+            diary = len(self.diary.get(user_id, ()))
+        return {"has_synced": bool(watchlist or diary), "watchlist_count": watchlist,
+                "diary_count": diary}
 
     def upsert_movie(self, movie: dict) -> None:
         normalized = normalize_movie_record(movie)
@@ -459,6 +469,21 @@ class SupabaseStore:
     def cleanup_expired_progress(self, ttl_seconds: float = 3600.0) -> int:
         """No-op for Supabase; progress is stateless."""
         return 0
+
+    def get_sync_status(self, user_id: str) -> dict[str, bool | int]:
+        """Read exact counts without membership payloads or implicit user inserts."""
+        users = (self.client.table("users").select("id")
+                 .eq("letterboxd_username", user_id).limit(1).execute()).data
+        counts = {"watchlist_count": 0, "diary_count": 0}
+        if users:
+            for table in ("watchlist", "diary"):
+                response = (self.client.table(table).select("movie_slug", count="exact", head=True)
+                            .eq("user_id", users[0]["id"]).execute())
+                count = response.count
+                if type(count) is not int or count < 0:
+                    raise ValueError("Membership count unavailable")
+                counts[f"{table}_count"] = count
+        return {"has_synced": any(counts.values()), **counts}
 
     def _get_or_create_user_id(self, letterboxd_username: str) -> str:
         """Get user ID from Supabase or create new user."""
