@@ -1,0 +1,8 @@
+{
+  "task": "Reconcile shared configuration PR 103 without Action downgrades",
+  "branch": "chore/config-sync-34864413485-1",
+  "base": "0fe8fa9f10e4be1e756f9534a6063a4e4019771f",
+  "validation": {"python_pass": 89, "optional_service_skips": 5, "node_pass": 11, "chromium_pass": 13, "dependency_check": "pass", "compilation": "pass", "heartbeat_config": "pass", "lfs_workflow_sha256": "5bc0f0a73e4e225ced4a8b417e63a482e4af75d3ef8f781a8697cef5a4d44203", "lfs_linux_proof": "https://github.com/hongyime/sourcerepo/actions/runs/34687616954"},
+  "release_gates": ["Required Build and Vercel pass on the PR head", "Ordinary merge with head SHA guard", "Exact production commit READY and public static assets verified"],
+  "constraints": ["Free plans only", "No provider data calls or migrations for tests", "Preserve reviewed Action versions", "No app, dependency or stored-record changes"]
+}

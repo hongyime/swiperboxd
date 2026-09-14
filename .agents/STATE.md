@@ -1,5 +1,7 @@
 # Current work
 
+2026-09-15: Reconcile config PR #103 on its existing `chore/config-sync-34864413485-1` branch. Retain main's setup-python v7 and labeler v7 instead of the generated v6 downgrades. Keep the shallow, fail-closed LFS index guard. Application source, dependencies, records and extension behavior are unchanged. Local checks pass: 89 Python tests (five optional live-service skips), 11 Node tests, 13 Chromium cases, dependency compatibility, compilation and heartbeat configuration. The LFS workflow is byte-identical to source PR #51's ten successful hosted Linux fixtures. Required Build/Vercel checks and exact production verification remain release gates. Resume details: `.agents/handoffs/swiper-config-20260915.json`.
+
 2026-09-14: Reduce avoidable Vercel CPU after the owner reported the shared Free CPU allowance exhausted. Baseline production is 9fbb114; Swiperboxd accounted for 38m 6s (15.7%) of the supplied 30-day dashboard, without route-level attribution. Work is isolated from the original checkout.
 
 - Route only the existing public homepage/assets through the static CDN, preserving their contents and security headers. Personal and API responses remain on Python without a new shared cache. A real local Vercel build produces seven static files and anchored routes before the Python fallback; output/content parity verification is being completed.

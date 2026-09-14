@@ -720,7 +720,10 @@ Apache-2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
 
 ## Contributing
 
-[Add contribution guidelines here]
+Follow [CONTRIBUTING.md](CONTRIBUTING.md) and the repository PR template.
+Shared configuration updates must retain this repository's reviewed Action
+versions. The LFS guard checks the current index with a depth-one checkout and
+reports scan failures; historical blobs are not needed for that check.
 
 ## Support
 
