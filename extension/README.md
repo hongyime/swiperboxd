@@ -28,6 +28,17 @@ halts after the in-flight batch flushes.
 
 Tick **Auto-sync every 6 hours** to run periodically in the background.
 
+Version 0.1.3 corrects a legacy 15-minute alarm to the documented six-hour
+interval. Startup and extension updates migrate that alarm while preserving
+your on/off choice. This reduces scheduled opportunities from 96 to four per
+day while Chrome is running; actual CPU savings depend on your usage. Automatic
+updates can be up to six hours old. **Start full sync** is still available
+whenever you need fresh data.
+
+For an existing unpacked installation, pull the update and click **Reload** on
+`chrome://extensions/` using the same extension directory. Deploying the web app
+does not replace the files already loaded by Chrome.
+
 ## Files
 
 | File | Purpose |

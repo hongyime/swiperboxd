@@ -1,0 +1,9 @@
+{
+  "date": "2026-09-14",
+  "baseline": "9fbb114e8ef1927c7e12ad75e237660aa09bf260",
+  "objective": "Reduce avoidable Python static serving and restore the documented six-hour extension automatic sync cadence.",
+  "completed": ["Isolated checkout", "Seven worker behavior reproductions and fixes", "Actual Vercel build with seven static files", "89 Python tests and 11 Node tests", "13 Chromium cases and actual popup dispatch checks", "Independent route and alarm review"],
+  "remaining": ["Protected hosted checks", "Exact production release verification", "Installed unpacked extension reload"],
+  "preserve": ["All records", "API authentication and cache behavior", "Manual full sync", "Existing collection scope and handlers", "Original worktree"],
+  "limits": ["No measured CPU savings yet", "Existing extensions need updated files and reload", "Separate cron method mismatch remains unaltered"]
+}

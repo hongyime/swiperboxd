@@ -23,6 +23,7 @@ const MAX_PAGES_HARD_CAP = 300;
 const PAGE_DELAY_MS = 900;
 const MOVIE_DELAY_MS = 200; // Aggressive metadata scraping
 const ALARM_NAME = "swiperboxd-periodic-sync";
+const AUTO_SYNC_PERIOD_MINUTES = 6 * 60;
 const SYNC_LOG_KEY = "swiperboxd-sync-log";
 const SYNC_RUNNING_KEY = "swiperboxd-sync-running";
 const SYNC_CHECKPOINT_KEY = "swiperboxd-sync-checkpoint";
@@ -102,6 +103,22 @@ async function getConfig() {
     ...merged,
     apiBase: safeBase || DEFAULT_API_BASE,
   };
+}
+
+async function reconcileAutoSyncAlarm() {
+  const cfg = await getConfig();
+  if (!cfg.autoSync) {
+    await chrome.alarms.clear(ALARM_NAME);
+    return;
+  }
+  const existing = await chrome.alarms.get(ALARM_NAME);
+  if (existing?.periodInMinutes === AUTO_SYNC_PERIOD_MINUTES) return;
+  // Migrate legacy 15-minute alarms once, without postponing an already
+  // correct six-hour alarm whenever the browser or extension starts.
+  await chrome.alarms.create(ALARM_NAME, {
+    delayInMinutes: AUTO_SYNC_PERIOD_MINUTES,
+    periodInMinutes: AUTO_SYNC_PERIOD_MINUTES,
+  });
 }
 
 async function setSyncedConfig(values) {
@@ -2184,9 +2201,8 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         }));
         return;
       case "SET_AUTO_SYNC":
-        if (msg.value) chrome.alarms.create(ALARM_NAME, { periodInMinutes: 15 });
-        else chrome.alarms.clear(ALARM_NAME);
         await setSyncedConfig({ autoSync: !!msg.value });
+        await reconcileAutoSyncAlarm();
         sendResponse({ ok: true });
         return;
       case "SWIPERBOXD_AUTH":
@@ -2306,14 +2322,18 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
 
 chrome.alarms.onAlarm.addListener(async (alarm) => {
   if (alarm.name !== ALARM_NAME) return;
+  const cfg = await getConfig();
+  if (!cfg.autoSync || alarm.periodInMinutes !== AUTO_SYNC_PERIOD_MINUTES) {
+    await reconcileAutoSyncAlarm();
+    return;
+  }
   if (syncState.running) return;
   console.log("[swiperboxd-ext] periodic sync fired");
   await runSync();
 });
 
 chrome.runtime.onInstalled.addListener(async () => {
-  const cfg = await getConfig();
-  if (cfg.autoSync) chrome.alarms.create(ALARM_NAME, { periodInMinutes: 15 });
+  await reconcileAutoSyncAlarm();
 });
 
 chrome.runtime.onStartup.addListener(async () => {
@@ -2326,6 +2346,7 @@ chrome.runtime.onStartup.addListener(async () => {
     if (Object.keys(merged).length) {
       await chrome.storage.local.set(merged);
     }
+    await reconcileAutoSyncAlarm();
   } catch (e) {
     console.warn("[swiperboxd-ext] startup sync merge failed:", e);
   }

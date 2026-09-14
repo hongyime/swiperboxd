@@ -3,9 +3,69 @@
     {
       "src": "api/index.py",
       "use": "@vercel/python"
+    },
+    {
+      "src": "src/web/index.html",
+      "use": "@vercel/static"
+    },
+    {
+      "src": "src/web/*.js",
+      "use": "@vercel/static"
+    },
+    {
+      "src": "src/web/*.css",
+      "use": "@vercel/static"
+    },
+    {
+      "src": "src/web/*.svg",
+      "use": "@vercel/static"
+    },
+    {
+      "src": "src/web/*.json",
+      "use": "@vercel/static"
     }
   ],
   "routes": [
+    {
+      "src": "/",
+      "methods": ["GET", "HEAD"],
+      "dest": "/src/web/index.html",
+      "headers": {
+        "Cache-Control": "public, max-age=0, must-revalidate",
+        "X-Content-Type-Options": "nosniff",
+        "X-Frame-Options": "DENY",
+        "X-XSS-Protection": "1; mode=block",
+        "Referrer-Policy": "strict-origin-when-cross-origin",
+        "Strict-Transport-Security": "max-age=31536000; includeSubDomains"
+      }
+    },
+    {
+      "src": "/favicon\\.ico",
+      "methods": ["GET", "HEAD"],
+      "dest": "/src/web/logo.svg",
+      "headers": {
+        "Content-Type": "image/svg+xml",
+        "Cache-Control": "public, max-age=0, must-revalidate",
+        "X-Content-Type-Options": "nosniff",
+        "X-Frame-Options": "DENY",
+        "X-XSS-Protection": "1; mode=block",
+        "Referrer-Policy": "strict-origin-when-cross-origin",
+        "Strict-Transport-Security": "max-age=31536000; includeSubDomains"
+      }
+    },
+    {
+      "src": "/web/(index\\.html|app\\.js|read-requests\\.js|state\\.js|styles\\.css|logo\\.svg|manifest\\.json)",
+      "methods": ["GET", "HEAD"],
+      "dest": "/src/web/$1",
+      "headers": {
+        "Cache-Control": "public, max-age=0, must-revalidate",
+        "X-Content-Type-Options": "nosniff",
+        "X-Frame-Options": "DENY",
+        "X-XSS-Protection": "1; mode=block",
+        "Referrer-Policy": "strict-origin-when-cross-origin",
+        "Strict-Transport-Security": "max-age=31536000; includeSubDomains"
+      }
+    },
     {
       "src": "/(.*)",
       "dest": "api/index.py"
