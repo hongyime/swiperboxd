@@ -1,5 +1,14 @@
 # Current work
 
+2026-09-14: Reduce avoidable Vercel CPU after the owner reported the shared Free CPU allowance exhausted. Baseline production is 9fbb114; Swiperboxd accounted for 38m 6s (15.7%) of the supplied 30-day dashboard, without route-level attribution. Work is isolated from the original checkout.
+
+- Route only the existing public homepage/assets through the static CDN, preserving their contents and security headers. Personal and API responses remain on Python without a new shared cache. A real local Vercel build produces seven static files and anchored routes before the Python fallback; output/content parity verification is being completed.
+- Correct the extension's two 15-minute scheduling sites to its documented six hours. Reconcile stored alarms on install/update and browser startup; ignore stale or disabled queued automatic alarms. Manual full sync remains available. Seven worker behavior tests reproduced the original errors and now pass.
+- The extension update requires existing unpacked installations to reload updated files. For enabled installations the schedule permits four rather than 96 automatic runs per day while the browser runs; records can be up to six hours less current. Actual CPU savings require usage measurements after rollout.
+- Preserve all stored records, dependencies, sync scope and existing collection handlers. Separate observed cron GET/POST mismatch must not be changed into active scraping during the CPU incident. No Spotify integration was found in this repository.
+- Local validation: 89 Python tests passed (five optional live-service skips), 11 Node tests passed, all 13 Chromium refresh cases passed, and dependency/compile/maintenance checks passed. The real popup preserves an enabled choice, sends the disable event and still starts manual full sync using synthetic Chrome APIs. An independent review found no blocking route/cache/header or alarm issues. An older original virtual environment did not match the committed dependency pins; the matching isolated environment passes without dependency changes.
+- Next: publish the small PR, wait for protected hosted Build/Vercel checks, verify the exact production commit, and record the release. Task handoff: .agents/handoffs/swiper-free-cpu-20260914.json.
+
 2026-09-11: Targeted cryptography dependency update following the batch-sync release.
 
 - Completed locally: release-note/application review, 48.0.1 synthetic fixtures, pin and minimum updated to 50.0.1, and old/new token compatibility in both directions. The installed package comparison changed only cryptography among 51 packages; dependency compatibility and vulnerability audit passed with zero known advisories.

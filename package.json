@@ -7,7 +7,7 @@
   "scripts": {
     "bootstrap:check": "node -e \"console.log('bootstrap check ok')\"",
     "lint": "python -m compileall src",
-    "test:web": "node --test tests/web_state.test.js",
+    "test:web": "node --test tests/*.test.js",
     "test:api": "python -m pytest tests -q",
     "test": "npm run test:web && npm run test:api",
     "start": "uvicorn src.api.app:app --host 0.0.0.0 --port 8000"
