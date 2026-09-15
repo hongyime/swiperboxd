@@ -539,8 +539,8 @@ def list_deck(
         raise HTTPException(status_code=404, detail={"code": "list_not_found"})
 
     movie_slugs: list[str] = []
-    # On Vercel, skip the live list scrape — it times out and the cache is
-    # kept fresh by the cron job. Only scrape on long-running servers.
+    # On Vercel, use the stored extension data without starting a live scrape.
+    # Only scrape on long-running servers.
     if not os.getenv("VERCEL"):
         try:
             movie_slugs = scraper.fetch_list_movie_slugs(list_id, list_url=summary.get("url")) or []
@@ -557,33 +557,37 @@ def list_deck(
             except Exception as exc:
                 print(f"[deck] replace_list_memberships failed: {exc}", flush=True)
 
-    # Always fall back to cached memberships
-    if not movie_slugs:
-        try:
-            movie_slugs = store.get_list_memberships(list_id)
-        except Exception as exc:
-            print(f"[deck] get_list_memberships failed: {exc}", flush=True)
-            raise HTTPException(status_code=500, detail={"code": "store_error", "reason": str(exc)})
-        print(f"[deck] using {len(movie_slugs)} cached slugs for {list_id}", flush=True)
+    # Read the saved memberships once. If a local scrape could not be saved,
+    # the deck must still use retained membership order and metadata.
+    try:
+        movie_slugs = store.get_list_memberships(list_id)
+    except Exception as exc:
+        print(f"[deck] get_list_memberships failed: {exc}", flush=True)
+        raise HTTPException(status_code=500, detail={"code": "store_error", "reason": str(exc)})
 
     # We completely rely on the extension's background worker and cron jobs
     # for metadata enrichment. Do not fetch synchronously here to prevent
     # blocking the API for 60+ seconds on cold starts.
 
     # Filter out movies the user has already watchlisted, logged, or dismissed
-    try:
-        watchlist = store.get_watchlist(user_id)
-        diary = store.get_diary(user_id)
-        exclusions = store.get_exclusions(user_id)
-    except Exception as exc:
-        print(f"[deck] failed to load user filters: {exc}", flush=True)
-        watchlist, diary, exclusions = set(), set(), set()
-    seen = set() if include_seen else (watchlist | diary | exclusions)
+    watchlist, diary, exclusions = set(), set(), set()
+    if not include_seen:
+        try:
+            watchlist = store.get_watchlist(user_id)
+            diary = store.get_diary(user_id)
+            exclusions = store.get_exclusions(user_id)
+        except Exception as exc:
+            raise HTTPException(
+                status_code=503,
+                detail={"code": "history_unavailable", "message": "Unable to load viewing history. Please retry."},
+                headers={"Cache-Control": "private, no-store"},
+            ) from exc
+    seen = watchlist | diary | exclusions
+    eligible_slugs = [slug for slug in movie_slugs if slug not in seen]
 
     try:
-        cached_slugs = store.get_list_memberships(list_id)
-        movies_by_slug = store.get_movies_by_slugs(cached_slugs)
-        movies = [movies_by_slug[slug] for slug in cached_slugs if slug in movies_by_slug]
+        movies_by_slug = store.get_movies_by_slugs(eligible_slugs)
+        movies = [movies_by_slug[slug] for slug in eligible_slugs if slug in movies_by_slug]
     except Exception as exc:
         print(f"[deck] failed to load movies from store: {exc}", flush=True)
         raise HTTPException(status_code=500, detail={"code": "store_error", "reason": str(exc)})
