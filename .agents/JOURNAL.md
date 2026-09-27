@@ -25,3 +25,5 @@
 2026-09-15: Preserve main Action versions while reconciling config PR #103; retain its existing branch/history. Shallow LFS validation matches the Linux-verified source guard. All application tests use synthetic data; no production provider writes.
 
 2026-09-15: Filter seen slugs before list-deck metadata reads and reuse one saved membership snapshot. Keep the complete eligible shuffle pool and stored data. History lookup failures must remain retryable, with no unfiltered fallback. Use real PostgREST client fixtures over synthetic HTTP; no provider collection or live database writes for validation.
+
+- 2026-09-27: Remove the optional personal security contact and preserve private reporting guidance through a reviewed maintenance pull request.
