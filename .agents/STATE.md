@@ -47,3 +47,7 @@
 2026-09-13 refresh continuation: list typing currently repeats catalogue/status/deck requests, overlapping reads have no cancellation or generation guard, and sync-status loads complete memberships through a user-creating lookup while masking errors as empty data. Reproduce with synthetic HTTP/browser fixtures, implement local search and current-request coordination with read-only authenticated status counts, then verify production and update the portfolio report. Preserve all data, extension synchronization and existing protection rules. Five tasks are recorded in .agents/handoffs/swiper-refresh-20260913.json.
 
 2026-09-13 local refresh verification: reproduced six browser failures and eight initial status failures. The fix passes 85 Python tests (five optional live-service skips), four Node tests and 13 Chromium cases. Search is local, keyboard input is isolated from swipe shortcuts, only current reads render, duplicate reads join, and per-read deadlines permit manual retry. Authenticated status uses one user lookup and two exact HEAD counts without inserts; failures remain 503 with private/no-store headers. No schema, records, schedules or provider calls changed. Hosted checks and production verification are next.
+
+## Privacy maintenance - 2026-09-27
+
+Remove the optional personal security contact while retaining private vulnerability-reporting guidance. The narrow documentation patch is prepared from the current default branch; staged whitespace and the inherited identity hook are publication checks. Application behavior is unchanged.
