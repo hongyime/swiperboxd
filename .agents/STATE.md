@@ -51,3 +51,31 @@
 ## Privacy maintenance - 2026-09-27
 
 Remove the optional personal security contact while retaining private vulnerability-reporting guidance. The narrow documentation patch is prepared from the current default branch; staged whitespace and the inherited identity hook are publication checks. Application behavior is unchanged.
+
+## Session resumption & onboarding - 2026-10-29
+
+Synchronized repository with origin/main (dependency and workflow updates to 5a5f9a0). Verified test suites: 99 Python tests passed (5 live-service skips) via uv/pytest, 11 Node web tests passed. Clean working tree. Completed /grill-me alignment:
+- Objective: Ground-up elimination of user experience and test suite flakiness.
+- Public Username Onboarding: Simple single-input onboarding ("Enter Letterboxd username" + "Start Swiping") generating public session tokens, removing mandatory extension dependency.
+- Resilient Sync: Instant deck presentation from selected lists; non-blocking background public RSS/watchlist ingestion; optional Letterboxd CSV/ZIP file dropzone on setup and in header.
+- Extension Bridge Hardening: Resilient auto-reconnect, service worker wake-up retry with backoff, and local localStorage swipe write-back queue (`pending_lb_sync`).
+- Test Suite Stabilization: Migrate web state/race logic to fast Node tests (<1s); optimize browser_refresh.py with a shared Chromium instance and event-driven waits (<15s).
+
+Phase 1 completed:
+- Added `POST /auth/public-session` (generating encrypted public user session tokens).
+- Added `POST /ingest/public-sync` with Letterboxd RSS syndication parsing (`extract_slugs_from_rss`, `pull_rss_diary_slugs`).
+- Verified swipe actions and sync status for public user sessions.
+- All 100 Python tests pass (5 live-service skips).
+
+Phase 2 completed:
+- Hardened extension content script with `safeSendMessage` service worker wake-up retry and exponential backoff.
+- Implemented `createSyncQueueStore` in `src/web/state.js` for optimistic buffering and deduplication of pending Letterboxd writes.
+- Implemented `parseLetterboxdCsv` and `slugifyTitle` for Letterboxd CSV/ZIP file parsing.
+- Verified with 14 Node web unit tests passing (253ms).
+
+Phase 3 & Phase 4 completed:
+- Redesigned `index.html` setup screen with direct Letterboxd username entry, extension auto-detection pill, and CSV import link.
+- Added CSV drag-and-drop / file selector in setup and header dropdown menu.
+- Updated `app.js` with public session management, non-blocking background RSS sync, optimistic card swiping, and automated write-back queue draining.
+- Re-tested full browser refresh suite: all 13 Playwright Chromium cases passed in 17.96s (reduced from timeouts).
+- Local verification complete: 100 Python tests passed (5 live-service skips), 14 Node web tests passed (129ms), 13 Playwright browser tests passed (17.96s), Python compilation check passed. Working tree clean and verified.

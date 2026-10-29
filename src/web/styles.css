@@ -225,6 +225,40 @@ body {
 }
 .btn-text:hover { color: var(--text-primary); }
 
+.ext-status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.35rem 0.75rem;
+  border-radius: 999px;
+  background: rgba(0, 210, 106, 0.15);
+  border: 1px solid rgba(0, 210, 106, 0.3);
+  color: var(--accent-green);
+  font-size: 0.8rem;
+  font-weight: 500;
+}
+
+.setup-divider {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  max-width: 420px;
+  margin: 0.25rem 0;
+  color: var(--text-secondary);
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.setup-divider::before,
+.setup-divider::after {
+  content: '';
+  flex: 1;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+.setup-divider span {
+  padding: 0 0.75rem;
+}
+
 .error-msg, .success-msg {
   padding: 0.65rem 1rem;
   border-radius: var(--radius-sm);

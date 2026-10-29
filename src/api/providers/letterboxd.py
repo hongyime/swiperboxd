@@ -49,6 +49,8 @@ class Scraper(Protocol):
 
     def pull_diary_slugs(self, session_cookie: str, username: str | None = None) -> set[str]: ...
 
+    def pull_rss_diary_slugs(self, username: str) -> list[str]: ...
+
     def pull_source_slugs(self, source: str, depth_pages: int = 2) -> list[str]: ...
 
     def metadata_for_slugs(self, slugs: list[str]) -> list[LetterboxdMovie]: ...
@@ -123,6 +125,9 @@ class MockLetterboxdScraper:
 
     def pull_diary_slugs(self, session_cookie: str, username: str | None = None) -> set[str]:
         return {"film-b"}
+
+    def pull_rss_diary_slugs(self, username: str) -> list[str]:
+        return ["film-b"]
 
     def pull_source_slugs(self, source: str, depth_pages: int = 2) -> list[str]:
         return ["film-a", "film-b", "film-c", "film-d", "film-e"]
@@ -206,6 +211,19 @@ def _extract_film_slugs(soup) -> list[str]:
             if len(parts) >= 2 and parts[0] == "film":
                 _add(parts[1])
 
+    return slugs
+
+
+def extract_slugs_from_rss(rss_xml: str) -> list[str]:
+    """Extract movie slugs from Letterboxd user RSS XML."""
+    import re as _re
+    slugs: list[str] = []
+    seen: set[str] = set()
+    for match in _re.finditer(r'/film/([a-zA-Z0-9_-]+)/', rss_xml):
+        slug = match.group(1)
+        if slug and slug not in seen:
+            seen.add(slug)
+            slugs.append(slug)
     return slugs
 
 
@@ -434,6 +452,16 @@ class HttpLetterboxdScraper:
             print(f"[scraper] diary: page={page} found {len(page_slugs)} slugs (total so far: {len(slugs)})", flush=True)
         print(f"[scraper] diary: DONE {len(slugs)} total slugs for {username or '(no username)'}", flush=True)
         return slugs
+
+    def pull_rss_diary_slugs(self, username: str) -> list[str]:
+        """Fetch and extract film slugs from a public Letterboxd user's RSS feed."""
+        url = f"{self.base_url}/{username}/rss/"
+        try:
+            resp = self._fetch(url)
+            return extract_slugs_from_rss(resp.text)
+        except Exception as exc:
+            print(f"[scraper] rss diary fetch failed for {username}: {exc}", flush=True)
+            return []
 
     def pull_source_slugs(self, source: str, depth_pages: int = 2) -> list[str]:
         """Pull film slugs from public source pages (trending, popular, recommended)."""

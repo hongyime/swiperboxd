@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import threading
 import time
 from pathlib import Path
@@ -257,6 +258,21 @@ class AuthSessionResponse(BaseModel):
     status: Literal["ok"]
     username: str
     encrypted_session_cookie: str
+
+
+class PublicSessionRequest(BaseModel):
+    username: str = Field(min_length=1, max_length=40)
+
+
+class PublicSessionResponse(BaseModel):
+    status: Literal["ok"]
+    username: str
+    encrypted_session_cookie: str
+    mode: Literal["public"] = "public"
+
+
+class PublicSyncRequest(BaseModel):
+    user_id: str = Field(min_length=1)
 
 
 class IngestStartRequest(BaseModel):
@@ -694,6 +710,80 @@ def create_auth_session(payload: AuthSessionRequest):
         print(f"[auth] WARNING: failed to store session: {exc}", flush=True)
 
     return AuthSessionResponse(status="ok", username=username, encrypted_session_cookie=encrypted_cookie)
+
+
+@app.post("/auth/public-session", response_model=PublicSessionResponse)
+def create_public_session(payload: PublicSessionRequest):
+    """Register or start a public session using only a Letterboxd username.
+
+    No session cookie required. Generates an encrypted token with {"u": username, "public": True}.
+    """
+    clean_username = payload.username.strip().lstrip("@")
+    if not clean_username or not re.match(r"^[a-zA-Z0-9_-]{1,40}$", clean_username):
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "invalid_username", "reason": "Username must be 1-40 alphanumeric characters, underscores, or hyphens."}
+        )
+
+    master_key = os.getenv("MASTER_ENCRYPTION_KEY")
+    if not master_key:
+        raise HTTPException(status_code=500, detail={"code": "missing_master_key"})
+
+    token_payload = json.dumps({"u": clean_username, "public": True})
+    encrypted_cookie = encrypt_session_cookie(token_payload, master_key)
+
+    try:
+        if hasattr(store, "_get_or_create_user_id"):
+            store._get_or_create_user_id(clean_username)
+    except Exception as exc:
+        print(f"[auth] Notice: could not pre-seed user {clean_username}: {exc}", flush=True)
+
+    return PublicSessionResponse(
+        status="ok",
+        username=clean_username,
+        encrypted_session_cookie=encrypted_cookie,
+        mode="public",
+    )
+
+
+@app.post("/ingest/public-sync")
+async def public_sync(
+    payload: PublicSyncRequest,
+    verified_user: str = Depends(verify_session),
+):
+    """Non-blocking public sync: pull public RSS feed and public watchlist for a user."""
+    if verified_user and payload.user_id != verified_user:
+        raise HTTPException(status_code=403, detail={"code": "user_id_mismatch"})
+
+    diary_added = 0
+    watchlist_added = 0
+
+    # 1. Pull public RSS feed (diary/watched)
+    try:
+        if hasattr(scraper, "pull_rss_diary_slugs"):
+            rss_slugs = scraper.pull_rss_diary_slugs(payload.user_id)
+            if rss_slugs:
+                res = store.batch_add_diary(payload.user_id, rss_slugs)
+                diary_added = res.get("added", len(rss_slugs))
+    except Exception as exc:
+        print(f"[ingest] public rss sync failed for {payload.user_id}: {exc}", flush=True)
+
+    # 2. Pull page 1 of public watchlist if supported
+    try:
+        if hasattr(scraper, "pull_watchlist_slugs"):
+            wl_slugs = list(scraper.pull_watchlist_slugs("", username=payload.user_id))
+            if wl_slugs:
+                res = store.batch_add_watchlist(payload.user_id, wl_slugs)
+                watchlist_added = res.get("added", len(wl_slugs))
+    except Exception as exc:
+        print(f"[ingest] public watchlist sync failed for {payload.user_id}: {exc}", flush=True)
+
+    return {
+        "status": "ok",
+        "user_id": payload.user_id,
+        "diary_added": diary_added,
+        "watchlist_added": watchlist_added,
+    }
 
 
 @app.post("/ingest/start")

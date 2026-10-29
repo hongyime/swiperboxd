@@ -27,3 +27,4 @@
 2026-09-15: Filter seen slugs before list-deck metadata reads and reuse one saved membership snapshot. Keep the complete eligible shuffle pool and stored data. History lookup failures must remain retryable, with no unfiltered fallback. Use real PostgREST client fixtures over synthetic HTTP; no provider collection or live database writes for validation.
 
 - 2026-09-27: Remove the optional personal security contact and preserve private reporting guidance through a reviewed maintenance pull request.
+- 2026-10-29: Establish architecture and flakiness overhaul: add standalone public username onboarding with background public RSS/watchlist fetch and optional Letterboxd CSV/ZIP import; make Chrome extension optional with resilient auto-reconnecting bridge and queued write-back; optimize browser tests into fast Node unit checks and a shared Chromium runner.

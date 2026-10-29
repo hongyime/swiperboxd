@@ -63,6 +63,44 @@ def test_auth_session_endpoint(monkeypatch):
     assert body["encrypted_session_cookie"]
 
 
+def test_public_session_endpoint_and_swipes():
+    # 1. Invalid username checks
+    bad_res = client.post("/auth/public-session", json={"username": "bad user!"})
+    assert bad_res.status_code == 400
+
+    # 2. Valid username registration
+    res = client.post("/auth/public-session", json={"username": "cinephile_99"})
+    assert res.status_code == 200
+    data = res.json()
+    assert data["status"] == "ok"
+    assert data["username"] == "cinephile_99"
+    assert data["mode"] == "public"
+    token = data["encrypted_session_cookie"]
+    assert token
+
+    headers = {"X-Session-Token": token}
+
+    # 3. Public sync endpoint
+    sync_res = client.post("/ingest/public-sync", headers=headers, json={"user_id": "cinephile_99"})
+    assert sync_res.status_code == 200
+    sync_data = sync_res.json()
+    assert sync_data["status"] == "ok"
+    assert sync_data["user_id"] == "cinephile_99"
+
+    # 4. Sync status endpoint works with public user token
+    status_res = client.get("/users/cinephile_99/sync-status", headers=headers)
+    assert status_res.status_code == 200
+
+    # 5. Swipe action works with public user token
+    swipe_res = client.post(
+        "/actions/swipe",
+        headers=headers,
+        json={"user_id": "cinephile_99", "movie_slug": "film-test-public", "action": "dismiss"}
+    )
+    assert swipe_res.status_code == 200
+    assert swipe_res.json()["status"] == "accepted"
+
+
 def test_profiles_and_discovery_deck():
     profiles = client.get("/discovery/profiles")
     assert profiles.status_code == 200
