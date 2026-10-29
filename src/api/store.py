@@ -49,17 +49,19 @@ def normalize_movie_record(movie: dict) -> dict:
 class Store(Protocol):
     """Store protocol defining the interface for state persistence."""
 
+    def resolve_user_id(self, user_id: str) -> str: ...
+
     def add_exclusion(self, user_id: str, slug: str) -> None: ...
 
-    def get_exclusions(self, user_id: str) -> set[str]: ...
+    def get_exclusions(self, user_id: str, _user_id: str | None = None) -> set[str]: ...
 
     def add_watchlist(self, user_id: str, slug: str) -> None: ...
 
-    def get_watchlist(self, user_id: str) -> set[str]: ...
+    def get_watchlist(self, user_id: str, _user_id: str | None = None) -> set[str]: ...
 
     def add_diary(self, user_id: str, slug: str) -> None: ...
 
-    def get_diary(self, user_id: str) -> set[str]: ...
+    def get_diary(self, user_id: str, _user_id: str | None = None) -> set[str]: ...
 
     def get_sync_status(self, user_id: str) -> dict[str, bool | int]: ...
 
@@ -81,11 +83,17 @@ class Store(Protocol):
 
     def allow_scrape_request(self, user_id: str, min_interval_seconds: float = 1.0) -> tuple[bool, float]: ...
 
+    def claim_ingest(self, user_id: str) -> bool: ...
+
+    def release_ingest(self, user_id: str) -> None: ...
+
     def record_genre_preference(self, user_id: str, genres: list[str]) -> None: ...
 
-    def get_genre_weights(self, user_id: str) -> dict[str, int]: ...
+    def get_genre_weights(self, user_id: str, _user_id: str | None = None) -> dict[str, int]: ...
 
-    def weighted_shuffle(self, user_id: str, movies: list[dict]) -> list[dict]: ...
+    def weighted_shuffle(
+        self, user_id: str, movies: list[dict], _user_id: str | None = None
+    ) -> list[dict]: ...
 
     def save_user_session(self, username: str, encrypted_session: str) -> None: ...
 
@@ -101,11 +109,15 @@ class Store(Protocol):
 
     def get_list_summary(self, list_id: str) -> dict | None: ...
 
-    def get_lists(self) -> list[dict]: ...
+    def get_lists(
+        self, offset: int = 0, limit: int = 50, q: str | None = None
+    ) -> list[dict]: ...
 
     def delete_list(self, list_id: str) -> None: ...
 
     def replace_list_memberships(self, list_id: str, movie_slugs: list[str]) -> None: ...
+
+    def add_list_memberships(self, list_id: str, movie_slugs: list[str]) -> None: ...
 
     def get_list_memberships(self, list_id: str) -> list[str]: ...
 
@@ -114,6 +126,10 @@ class Store(Protocol):
     def batch_add_diary(self, user_id: str, slugs: list[str]) -> dict: ...
 
     def get_movies_by_slugs(self, slugs: list[str]) -> dict[str, dict]: ...
+
+    def get_deck_movies(
+        self, list_id: str, seen: set[str] | list[str], sample_size: int = 200
+    ) -> list[dict]: ...
 
 
 @dataclass
@@ -176,6 +192,10 @@ class InMemoryStore:
                     out.append(dict(summary))
         return out
 
+    def resolve_user_id(self, user_id: str) -> str:
+        """In-memory store keys on the username, so the id is the username."""
+        return user_id
+
     def add_exclusion(self, user_id: str, slug: str) -> None:
         """Add a movie to user's exclusion list."""
         with self.lock:
@@ -191,17 +211,17 @@ class InMemoryStore:
         with self.lock:
             self.diary.setdefault(user_id, set()).add(slug)
 
-    def get_exclusions(self, user_id: str) -> set[str]:
+    def get_exclusions(self, user_id: str, _user_id: str | None = None) -> set[str]:
         """Get user's exclusion list (movies to skip)."""
         with self.lock:
             return set(self.exclusions.get(user_id, set()))
 
-    def get_watchlist(self, user_id: str) -> set[str]:
+    def get_watchlist(self, user_id: str, _user_id: str | None = None) -> set[str]:
         """Get user's watchlist (saved to watch)."""
         with self.lock:
             return set(self.watchlist.get(user_id, set()))
 
-    def get_diary(self, user_id: str) -> set[str]:
+    def get_diary(self, user_id: str, _user_id: str | None = None) -> set[str]:
         """Get user's diary (already watched films)."""
         with self.lock:
             return set(self.diary.get(user_id, set()))
@@ -271,18 +291,31 @@ class InMemoryStore:
             self.last_scrape_at[user_id] = now
             return True, 0.0
 
+    def claim_ingest(self, user_id: str) -> bool:
+        with self.lock:
+            if user_id in self.ingest_running:
+                return False
+            self.ingest_running.add(user_id)
+            return True
+
+    def release_ingest(self, user_id: str) -> None:
+        with self.lock:
+            self.ingest_running.discard(user_id)
+
     def record_genre_preference(self, user_id: str, genres: list[str]) -> None:
         with self.lock:
             bucket = self.genre_weights.setdefault(user_id, {})
             for genre in genres:
                 bucket[genre] = bucket.get(genre, 0) + 1
 
-    def get_genre_weights(self, user_id: str) -> dict[str, int]:
+    def get_genre_weights(self, user_id: str, _user_id: str | None = None) -> dict[str, int]:
         """Get user's genre weights from in-memory store."""
         with self.lock:
             return dict(self.genre_weights.get(user_id, {}))
 
-    def weighted_shuffle(self, user_id: str, movies: list[dict]) -> list[dict]:
+    def weighted_shuffle(
+        self, user_id: str, movies: list[dict], _user_id: str | None = None
+    ) -> list[dict]:
         with self.lock:
             weights = self.genre_weights.get(user_id, {})
 
@@ -328,10 +361,24 @@ class InMemoryStore:
             summary = self.list_summaries.get(list_id)
         return dict(summary) if summary else None
 
-    def get_lists(self) -> list[dict]:
+    def get_lists(
+        self, offset: int = 0, limit: int = 50, q: str | None = None
+    ) -> list[dict]:
         with self.lock:
-            summaries = list(self.list_summaries.values())
-        return [dict(summary) for summary in summaries]
+            items = [dict(summary) for summary in self.list_summaries.values()]
+        if q:
+            q_lower = q.lower()
+            items = [
+                item for item in items
+                if q_lower in (item.get("title") or "").lower()
+                or q_lower in (item.get("description") or "").lower()
+            ]
+        items.sort(key=lambda item: (
+            not item.get("is_official", False),
+            -(item.get("like_count") or 0),
+            item.get("title") or "",
+        ))
+        return items[offset:offset + limit]
 
     def replace_list_memberships(self, list_id: str, movie_slugs: list[str]) -> None:
         with self.lock:
@@ -342,6 +389,18 @@ class InMemoryStore:
                     seen.add(slug)
                     deduped.append(slug)
             self.list_memberships[list_id] = deduped
+
+    def add_list_memberships(self, list_id: str, movie_slugs: list[str]) -> None:
+        with self.lock:
+            existing = self.list_memberships.get(list_id, [])
+            seen = set(existing)
+            added = []
+            for slug in movie_slugs:
+                if slug and slug not in seen:
+                    seen.add(slug)
+                    added.append(slug)
+            if added:
+                self.list_memberships[list_id] = list(existing) + added
 
     def get_list_memberships(self, list_id: str) -> list[str]:
         with self.lock:
@@ -406,6 +465,20 @@ class InMemoryStore:
                 for slug in slugs
                 if slug in self.movies
             }
+
+    def get_deck_movies(
+        self, list_id: str, seen: set[str] | list[str], sample_size: int = 200
+    ) -> list[dict]:
+        """Return a random sample of unseen list movies (in-memory)."""
+        seen_slugs = set(seen)
+        with self.lock:
+            movies = [
+                normalize_movie_record(self.movies[slug])
+                for slug in self.list_memberships.get(list_id, [])
+                if slug not in seen_slugs and slug in self.movies
+            ]
+        random.shuffle(movies)
+        return movies[:sample_size]
 
     def cleanup_expired_progress(self, ttl_seconds: float = 3600.0) -> int:
         """Remove ingest progress entries older than TTL. Returns count removed."""
@@ -485,23 +558,29 @@ class SupabaseStore:
                 counts[f"{table}_count"] = count
         return {"has_synced": any(counts.values()), **counts}
 
+    def resolve_user_id(self, user_id: str) -> str:
+        """Resolve the database user id for a Letterboxd username."""
+        return self._get_or_create_user_id(user_id)
+
     def _get_or_create_user_id(self, letterboxd_username: str) -> str:
-        """Get user ID from Supabase or create new user."""
-        # Try to find existing user by letterboxd_username
-        response = self.client.table("users").select("id").eq("letterboxd_username", letterboxd_username).execute()
-
+        """Get or create the user row atomically in a single upsert."""
+        response = (
+            self.client.table("users")
+            .upsert({"letterboxd_username": letterboxd_username}, on_conflict="letterboxd_username")
+            .select("id")
+            .execute()
+        )
         if response.data:
-            print(f"[store] found existing user id={response.data[0]['id']} for {letterboxd_username}", flush=True)
             return response.data[0]["id"]
-
-        # Create new user
-        print(f"[store] creating new user for {letterboxd_username}", flush=True)
-        new_user = self.client.table("users").insert({
-            "letterboxd_username": letterboxd_username
-        }).execute()
-
-        print(f"[store] created user id={new_user.data[0]['id']} for {letterboxd_username}", flush=True)
-        return new_user.data[0]["id"]
+        # Defensive fallback only if the upsert returned no row.
+        row = (
+            self.client.table("users")
+            .select("id")
+            .eq("letterboxd_username", letterboxd_username)
+            .limit(1)
+            .execute()
+        )
+        return row.data[0]["id"]
 
     def save_user_session(self, username: str, encrypted_session: str) -> None:
         """Store encrypted session in Supabase users table."""
@@ -611,9 +690,9 @@ class SupabaseStore:
             print(f"[store] ERROR: exclusion insert failed for {slug}: {e}", flush=True)
             raise
 
-    def get_exclusions(self, user_id: str) -> set[str]:
+    def get_exclusions(self, user_id: str, _user_id: str | None = None) -> set[str]:
         """Get user's exclusion list from Supabase."""
-        actual_user_id = self._get_or_create_user_id(user_id)
+        actual_user_id = _user_id or self.resolve_user_id(user_id)
         response = self.client.table("exclusions").select("movie_slug").eq("user_id", actual_user_id).execute()
         return {row["movie_slug"] for row in response.data}
 
@@ -653,9 +732,9 @@ class SupabaseStore:
             print(f"[store] ERROR: watchlist insert failed for {slug}: {e}", flush=True)
             raise
 
-    def get_watchlist(self, user_id: str) -> set[str]:
+    def get_watchlist(self, user_id: str, _user_id: str | None = None) -> set[str]:
         """Get user's watchlist from Supabase."""
-        actual_user_id = self._get_or_create_user_id(user_id)
+        actual_user_id = _user_id or self.resolve_user_id(user_id)
         response = self.client.table("watchlist").select("movie_slug").eq("user_id", actual_user_id).execute()
         print(f"[store] get_watchlist: {len(response.data)} slugs for user_id={actual_user_id}", flush=True)
         return {row["movie_slug"] for row in response.data}
@@ -696,9 +775,9 @@ class SupabaseStore:
             print(f"[store] ERROR: diary insert failed for {slug}: {e}", flush=True)
             raise
 
-    def get_diary(self, user_id: str) -> set[str]:
+    def get_diary(self, user_id: str, _user_id: str | None = None) -> set[str]:
         """Get user's diary from Supabase."""
-        actual_user_id = self._get_or_create_user_id(user_id)
+        actual_user_id = _user_id or self.resolve_user_id(user_id)
         response = self.client.table("diary").select("movie_slug").eq("user_id", actual_user_id).execute()
         print(f"[store] get_diary: {len(response.data)} slugs for user_id={actual_user_id}", flush=True)
         return {row["movie_slug"] for row in response.data}
@@ -783,6 +862,16 @@ class SupabaseStore:
                     results[row["slug"]] = normalize_movie_record(row)
         return results
 
+    def get_deck_movies(
+        self, list_id: str, seen: set[str] | list[str], sample_size: int = 200
+    ) -> list[dict]:
+        """Fetch a random unseen sample of a list's movies in one query."""
+        resp = self.client.rpc(
+            "deck_sample",
+            {"p_list_id": list_id, "p_seen": list(seen), "p_sample_size": sample_size},
+        ).execute()
+        return [normalize_movie_record(row) for row in (resp.data or [])]
+
     def set_ingest_progress(self, user_id: str, value: int) -> None:
         """Set ingest progress (in-memory only - for performance)."""
         with self.lock:
@@ -806,26 +895,38 @@ class SupabaseStore:
         return dict(error) if error else None
 
     def should_rate_limit(self, user_id: str, lock_ms: int = 500) -> tuple[bool, int]:
-        """Check if user should be rate-limited (in-memory only)."""
-        now = time.time() * 1000
-        with self.lock:
-            previous = self.last_action_at.get(user_id, 0)
-            delta = now - previous
-            if delta < lock_ms:
-                return True, int(lock_ms - delta)
-            self.last_action_at[user_id] = now
+        """Atomically claim a swipe slot in the database."""
+        response = self.client.rpc("throttle_claim", {
+            "p_user_id": user_id,
+            "p_column": "last_action_at",
+            "p_window_seconds": lock_ms / 1000.0,
+        }).execute()
+        if response.data:
             return False, 0
+        return True, int(lock_ms)
 
     def allow_scrape_request(self, user_id: str, min_interval_seconds: float = 1.0) -> tuple[bool, float]:
-        """Check if user should be allowed to scrape (in-memory only)."""
-        now = time.time()
-        with self.lock:
-            previous = self.last_scrape_at.get(user_id, 0.0)
-            delta = now - previous
-            if delta < min_interval_seconds:
-                return False, min_interval_seconds - delta
-            self.last_scrape_at[user_id] = now
+        """Atomically claim a scrape slot in the database."""
+        response = self.client.rpc("throttle_claim", {
+            "p_user_id": user_id,
+            "p_column": "last_scrape_at",
+            "p_window_seconds": float(min_interval_seconds),
+        }).execute()
+        if response.data:
             return True, 0.0
+        return False, float(min_interval_seconds)
+
+    def claim_ingest(self, user_id: str) -> bool:
+        """Atomically claim the ingest lease; stale after 120 s."""
+        response = self.client.rpc("throttle_claim", {
+            "p_user_id": user_id,
+            "p_column": "ingest_running_at",
+            "p_window_seconds": 120.0,
+        }).execute()
+        return bool(response.data)
+
+    def release_ingest(self, user_id: str) -> None:
+        self.client.rpc("throttle_release", {"p_user_id": user_id}).execute()
 
     def record_genre_preference(self, user_id: str, genres: list[str]) -> None:
         """Record user's genre preferences in Supabase."""
@@ -845,15 +946,17 @@ class SupabaseStore:
             except Exception as e:
                 print(f"[store] genre_preference upsert failed for {genre}: {e}", flush=True)
 
-    def get_genre_weights(self, user_id: str) -> dict[str, int]:
+    def get_genre_weights(self, user_id: str, _user_id: str | None = None) -> dict[str, int]:
         """Get user's genre weights from Supabase."""
-        actual_user_id = self._get_or_create_user_id(user_id)
+        actual_user_id = _user_id or self.resolve_user_id(user_id)
         response = self.client.table("genre_preferences").select("genre", "score").eq("user_id", actual_user_id).execute()
         return {row["genre"]: int(row["score"]) for row in response.data}
 
-    def weighted_shuffle(self, user_id: str, movies: list[dict]) -> list[dict]:
+    def weighted_shuffle(
+        self, user_id: str, movies: list[dict], _user_id: str | None = None
+    ) -> list[dict]:
         """Shuffle movies with genre bias using persisted genre weights."""
-        weights = self.get_genre_weights(user_id)
+        weights = self.get_genre_weights(user_id, _user_id=_user_id)
 
         if not weights:
             random.shuffle(movies)
@@ -930,8 +1033,19 @@ class SupabaseStore:
         response = self.client.table("list_summaries").select("*").eq("list_id", list_id).execute()
         return response.data[0] if response.data else None
 
-    def get_lists(self) -> list[dict]:
-        response = self.client.table("list_summaries").select("*").execute()
+    def get_lists(
+        self, offset: int = 0, limit: int = 50, q: str | None = None
+    ) -> list[dict]:
+        query = self.client.table("list_summaries").select("*")
+        if q:
+            query = query.or_(f"title.ilike.%{q}%,description.ilike.%{q}%")
+        response = (
+            query.order("is_official", desc=True)
+            .order("like_count", desc=True)
+            .order("title")
+            .range(offset, offset + limit - 1)
+            .execute()
+        )
         return list(response.data)
 
     def delete_list(self, list_id: str) -> None:
@@ -946,13 +1060,30 @@ class SupabaseStore:
                 seen.add(slug)
                 deduped.append(slug)
 
-        self.client.table("list_memberships").delete().eq("list_id", list_id).execute()
-        if deduped:
-            rows = [
-                {"list_id": list_id, "movie_slug": slug, "position": i}
-                for i, slug in enumerate(deduped)
-            ]
-            self.client.table("list_memberships").insert(rows).execute()
+        self.client.rpc(
+            "replace_list_memberships_atomic",
+            {"p_list_id": list_id, "p_slugs": deduped},
+        ).execute()
+
+    def add_list_memberships(self, list_id: str, movie_slugs: list[str]) -> None:
+        deduped = list(dict.fromkeys(slug for slug in movie_slugs if slug))
+        # position is NOT NULL, so the current rows must be read once to offset it.
+        existing = self.get_list_memberships(list_id)
+        existing_set = set(existing)
+        new = [slug for slug in deduped if slug not in existing_set]
+        if not new:
+            return
+
+        start = len(existing)
+        self.client.table("list_memberships").upsert(
+            [
+                {"list_id": list_id, "movie_slug": slug, "position": start + i}
+                for i, slug in enumerate(new)
+            ],
+            on_conflict="list_id,movie_slug",
+            ignore_duplicates=True,
+            returning="minimal",
+        ).execute()
 
     def get_list_memberships(self, list_id: str) -> list[str]:
         response = (

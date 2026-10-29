@@ -16,8 +16,7 @@ from src.api.store import SupabaseStore
 
 
 @pytest.mark.parametrize("table", ["watchlist", "diary"])
-@pytest.mark.parametrize("failed_method", ["GET", "POST"])
-def test_user_gateway_timeout_keeps_batch_retryable_and_existing_rows_intact(monkeypatch, table, failed_method):
+def test_user_gateway_timeout_keeps_batch_retryable_and_existing_rows_intact(monkeypatch, table):
     """Use the real PostgREST error parser and HTTP endpoint with synthetic rows."""
     from fastapi.testclient import TestClient
     import src.api.app as app_module
@@ -34,11 +33,9 @@ def test_user_gateway_timeout_keeps_batch_retryable_and_existing_rows_intact(mon
         target = request.url.path.rsplit("/", 1)[-1]
         requests.append((target, request.method))
         if target == "users":
-            if unavailable and request.method == failed_method:
+            if unavailable:
                 return httpx.Response(504, json={"message": "Gateway Timeout"})
-            if request.method == "GET" and failed_method == "POST":
-                return httpx.Response(200, json=[])
-            return httpx.Response(200 if request.method == "GET" else 201, json=[{"id": "synthetic-user"}])
+            return httpx.Response(200, json=[{"id": "synthetic-user"}])
         return rest(request)
 
     token = encrypt_session_cookie(json.dumps({"u": "testuser", "c": "fixture-cookie"}), os.environ["MASTER_ENCRYPTION_KEY"])
@@ -55,7 +52,7 @@ def test_user_gateway_timeout_keeps_batch_retryable_and_existing_rows_intact(mon
                 body = failed.json()
                 assert (body["status"], body["page"], body["total_pages"]) == ("error", 2, 3)
                 assert body["result"]["added"] == 0 and body["result"]["errors"]
-                assert requests == ([("users", "GET")] if failed_method == "GET" else [("users", "GET"), ("users", "POST")])
+                assert requests == [("users", "POST")]
                 assert (rest.rows("movies"), rest.rows(table)) == before
                 unavailable = False
                 retried = api.post(endpoint, headers={"X-Session-Token": token}, json=payload)

@@ -20,10 +20,13 @@ from src.api.security import decrypt_session_cookie, encrypt_session_cookie
 
 client = TestClient(app)
 
-# Old-format token (raw cookie string) — exercises the backward-compat path in
-# verify_session where json.loads fails and verified_user returns "".
-_TEST_SESSION = encrypt_session_cookie("session::testuser", os.environ["MASTER_ENCRYPTION_KEY"])
-_AUTH_HEADERS = {"X-Session-Token": _TEST_SESSION}
+def _auth_headers(user: str) -> dict:
+    """Fresh identity-bound token for a specific user (keeps per-test isolation)."""
+    token = encrypt_session_cookie(
+        json.dumps({"u": user, "c": "fake-cookie"}),
+        os.environ["MASTER_ENCRYPTION_KEY"],
+    )
+    return {"X-Session-Token": token}
 
 # New-format token (JSON payload) — exercises the identity binding guard.
 # verified_user will be "testuser" when this token is decrypted.
@@ -32,6 +35,8 @@ _NEW_FORMAT_SESSION = encrypt_session_cookie(
     os.environ["MASTER_ENCRYPTION_KEY"],
 )
 _NEW_FORMAT_HEADERS = {"X-Session-Token": _NEW_FORMAT_SESSION}
+# Default identity-bound token used by tests that operate as "testuser".
+_AUTH_HEADERS = _NEW_FORMAT_HEADERS
 
 
 def test_encrypt_roundtrip():
@@ -63,12 +68,78 @@ def test_auth_session_endpoint(monkeypatch):
     assert body["encrypted_session_cookie"]
 
 
+def test_register_ignores_supplied_username_without_valid_cookie(monkeypatch):
+    import src.api.app as app_module
+
+    def _reject(*args, **kwargs):
+        raise RuntimeError("session_expired_or_invalid")
+
+    monkeypatch.setattr(app_module, "_validate_letterboxd_session", _reject)
+    response = client.post(
+        "/api/extension/register",
+        json={"letterboxd_session_cookie": "x", "username": "victim"},
+    )
+    assert response.status_code in {401, 422}
+    assert "session_token" not in response.json()
+
+
+def test_register_derives_username_server_side(monkeypatch):
+    import src.api.app as app_module
+
+    monkeypatch.setattr(app_module, "_validate_letterboxd_session", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app_module, "_extract_username_from_cookie", lambda *args, **kwargs: "derived")
+    response = client.post(
+        "/api/extension/register",
+        json={"letterboxd_session_cookie": "x", "username": "attacker"},
+    )
+    assert response.status_code == 200
+    assert response.json()["username"] == "derived"
+
+
+def test_public_session_endpoint_and_swipes():
+    # 1. Invalid username checks
+    bad_res = client.post("/auth/public-session", json={"username": "bad user!"})
+    assert bad_res.status_code == 400
+
+    # 2. Valid username registration
+    res = client.post("/auth/public-session", json={"username": "cinephile_99"})
+    assert res.status_code == 200
+    data = res.json()
+    assert data["status"] == "ok"
+    assert data["username"] == "cinephile_99"
+    assert data["mode"] == "public"
+    token = data["encrypted_session_cookie"]
+    assert token
+
+    headers = {"X-Session-Token": token}
+
+    # 3. Public sync endpoint
+    sync_res = client.post("/ingest/public-sync", headers=headers, json={"user_id": "cinephile_99"})
+    assert sync_res.status_code == 200
+    sync_data = sync_res.json()
+    assert sync_data["status"] == "ok"
+    assert sync_data["user_id"] == "cinephile_99"
+
+    # 4. Sync status endpoint works with public user token
+    status_res = client.get("/users/cinephile_99/sync-status", headers=headers)
+    assert status_res.status_code == 200
+
+    # 5. Swipe action works with public user token
+    swipe_res = client.post(
+        "/actions/swipe",
+        headers=headers,
+        json={"user_id": "cinephile_99", "movie_slug": "film-test-public", "action": "dismiss"}
+    )
+    assert swipe_res.status_code == 200
+    assert swipe_res.json()["status"] == "accepted"
+
+
 def test_profiles_and_discovery_deck():
     profiles = client.get("/discovery/profiles")
     assert profiles.status_code == 200
     assert "gold-standard" in profiles.json()["profiles"]
 
-    client.post("/ingest/start", headers=_AUTH_HEADERS, json={"user_id": "u1", "source": "trending", "depth_pages": 2})
+    client.post("/ingest/start", headers=_auth_headers("u1"), json={"user_id": "u1", "source": "trending", "depth_pages": 2})
     time.sleep(0.35)
     deck = client.get("/discovery/deck", params={"user_id": "u1", "profile": "gold-standard"})
     assert deck.status_code == 200
@@ -76,7 +147,7 @@ def test_profiles_and_discovery_deck():
 
 
 def test_discovery_details():
-    client.post("/ingest/start", headers=_AUTH_HEADERS, json={"user_id": "u2", "source": "trending", "depth_pages": 2})
+    client.post("/ingest/start", headers=_auth_headers("u2"), json={"user_id": "u2", "source": "trending", "depth_pages": 2})
     time.sleep(0.35)
     details = client.get("/discovery/details", params={"slug": "film-c"})
     assert details.status_code == 200
@@ -192,7 +263,25 @@ def test_extension_batch_movies_persists_lb_film_id():
     assert movie["lb_film_id"] == "123456"
 
 
+def _seed_official_best_picture():
+    import src.api.app as app_module
+
+    slugs = ["film-c", "film-d", "film-e", "film-a"]
+    app_module.store.upsert_list_summary({
+        "list_id": "official-best-picture",
+        "slug": "official-best-picture",
+        "url": "https://letterboxd.com/official/list/best-picture/",
+        "title": "Oscar-winning films: Best Picture",
+        "film_count": len(slugs),
+        "is_official": True,
+    })
+    app_module.store.replace_list_memberships("official-best-picture", slugs)
+    for slug in slugs:
+        app_module.store.upsert_movie({"slug": slug, "title": slug})
+
+
 def test_list_detail_returns_preview():
+    _seed_official_best_picture()
     response = client.get("/lists/official-best-picture")
     assert response.status_code == 200
     payload = response.json()
@@ -202,6 +291,7 @@ def test_list_detail_returns_preview():
 
 
 def test_list_deck_returns_movies():
+    _seed_official_best_picture()
     response = client.get("/lists/official-best-picture/deck", params={"user_id": "list-user"})
     assert response.status_code == 200
     payload = response.json()
@@ -248,13 +338,14 @@ def test_ingest_progress_returns_error_details(monkeypatch):
 
     response = client.post(
         "/ingest/start",
-        headers=_AUTH_HEADERS,
+        headers=_auth_headers("u-ingest-error"),
         json={"user_id": "u-ingest-error", "source": "trending", "depth_pages": 1},
     )
     assert response.status_code == 200
 
     time.sleep(0.15)
-    progress = client.get("/ingest/progress", params={"user_id": "u-ingest-error"})
+    progress = client.get("/ingest/progress", params={"user_id": "u-ingest-error"},
+                          headers=_auth_headers("u-ingest-error"))
     assert progress.status_code == 200
     payload = progress.json()
     assert payload["progress"] == -1
@@ -262,22 +353,41 @@ def test_ingest_progress_returns_error_details(monkeypatch):
     assert "upstream exploded" in payload["error"]["reason"]
 
 
+def test_ingest_progress_requires_session():
+    response = client.get("/ingest/progress", params={"user_id": "testuser"})
+    assert response.status_code == 401
+
+
+def test_ingest_progress_rejects_other_user_identity():
+    response = client.get("/ingest/progress", params={"user_id": "victim"}, headers=_NEW_FORMAT_HEADERS)
+    assert response.status_code == 403
+    assert response.json()["code"] == "user_id_mismatch"
+
+
+def test_ingest_progress_is_private_and_not_cached():
+    response = client.get("/ingest/progress", params={"user_id": "testuser"}, headers=_NEW_FORMAT_HEADERS)
+    assert response.status_code == 200
+    assert "no-store" in response.headers["Cache-Control"]
+
+
 def test_ingest_rate_limit():
-    first = client.post("/ingest/start", headers=_AUTH_HEADERS, json={"user_id": "u-rate", "source": "trending", "depth_pages": 1})
+    headers = _auth_headers("u-rate")
+    first = client.post("/ingest/start", headers=headers, json={"user_id": "u-rate", "source": "trending", "depth_pages": 1})
     assert first.status_code == 200
-    second = client.post("/ingest/start", headers=_AUTH_HEADERS, json={"user_id": "u-rate", "source": "trending", "depth_pages": 1})
+    second = client.post("/ingest/start", headers=headers, json={"user_id": "u-rate", "source": "trending", "depth_pages": 1})
     assert second.status_code == 429
 
 
 def test_swipe_has_sync_lock():
-    client.post("/ingest/start", headers=_AUTH_HEADERS, json={"user_id": "u-lock", "source": "trending", "depth_pages": 2})
+    headers = _auth_headers("u-lock")
+    client.post("/ingest/start", headers=headers, json={"user_id": "u-lock", "source": "trending", "depth_pages": 2})
     time.sleep(0.35)
 
     payload = {"user_id": "u-lock", "movie_slug": "film-a", "action": "dismiss"}
-    first = client.post("/actions/swipe", headers=_AUTH_HEADERS, json=payload)
+    first = client.post("/actions/swipe", headers=headers, json=payload)
     assert first.status_code == 200
 
-    second = client.post("/actions/swipe", headers=_AUTH_HEADERS, json=payload)
+    second = client.post("/actions/swipe", headers=headers, json=payload)
     assert second.status_code == 429
     assert second.json()["code"] == "sync_lock"
 
@@ -296,6 +406,28 @@ def test_guarded_endpoints_reject_invalid_token():
     bad_headers = {"X-Session-Token": "not-a-valid-token"}
     r = client.post("/ingest/start", headers=bad_headers, json={"user_id": "x", "source": "trending", "depth_pages": 1})
     assert r.status_code == 401
+
+
+def test_expired_token_is_rejected():
+    """Tokens older than the 30-day TTL must not authenticate."""
+    from datetime import datetime, timedelta, timezone
+    from cryptography.fernet import Fernet
+    from fastapi import HTTPException
+    from src.api.app import verify_session
+    from src.api.security import _derive_fernet_key
+
+    key = os.environ["MASTER_ENCRYPTION_KEY"]
+    fernet = Fernet(_derive_fernet_key(key))
+    stale_ts = (datetime.now(timezone.utc) - timedelta(days=31)).timestamp()
+    payload = json.dumps({"u": "testuser", "c": "fake-cookie"}).encode("utf-8")
+    expired = fernet.encrypt_at_time(payload, int(stale_ts)).decode("utf-8")
+
+    with pytest.raises(HTTPException) as exc:
+        verify_session(expired)
+    assert exc.value.status_code == 401
+
+    fresh = encrypt_session_cookie(payload.decode("utf-8"), key)
+    assert verify_session(fresh) == "testuser"
 
 
 def test_identity_binding_rejects_mismatched_user_id():
@@ -328,14 +460,16 @@ def test_identity_binding_passes_matching_user_id():
     assert r.json()["status"] in {"queued", "already_running"}
 
 
-def test_identity_binding_bypass_for_old_format_token():
-    """Old-format token returns verified_user="" — any user_id must be accepted (backward compat)."""
+def test_old_format_token_is_rejected():
+    """Legacy non-JSON tokens no longer authenticate."""
+    legacy = encrypt_session_cookie("session::testuser", os.environ["MASTER_ENCRYPTION_KEY"])
     r = client.post(
         "/ingest/start",
-        headers=_AUTH_HEADERS,
+        headers={"X-Session-Token": legacy},
         json={"user_id": "any-random-user", "source": "trending", "depth_pages": 1},
     )
-    assert r.status_code == 200
+    assert r.status_code == 401
+    assert r.json()["code"] == "invalid_session"
 
 
 def test_resilience_helpers():

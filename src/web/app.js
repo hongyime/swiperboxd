@@ -1,4 +1,4 @@
-import { createSuppressionStore } from './state.js';
+import { createSuppressionStore, createSyncQueueStore, parseLetterboxdCsv, parseLetterboxdZip } from './state.js';
 import { createReadLane } from './read-requests.js';
 
 const catalogueReads = createReadLane();
@@ -6,6 +6,7 @@ const deckReads = createReadLane();
 let accountVersion = 0;
 
 const suppression = createSuppressionStore(() => Date.now());
+const syncQueue = createSyncQueueStore();
 
 function esc(str) {
   return String(str ?? '')
@@ -123,6 +124,28 @@ function noteExtensionPresence(payload = {}) {
   });
   if (extensionBridge.presentSignals.length > EXT_MAX_PRESENT_SIGNALS) {
     extensionBridge.presentSignals.splice(0, extensionBridge.presentSignals.length - EXT_MAX_PRESENT_SIGNALS);
+  }
+  const extPill = document.getElementById('setup-ext-pill');
+  if (extPill) extPill.classList.remove('hidden');
+  drainWriteBackQueue().catch(() => {});
+}
+
+async function drainWriteBackQueue() {
+  if (!extensionBridge.presentSignals.length) return;
+  const items = syncQueue.peek();
+  if (!items.length) return;
+  extLog('draining pending write-back queue', { count: items.length });
+  for (const item of items) {
+    try {
+      const res = await requestExtensionSwipe(item.action, item.slug, 3000);
+      if (res.lbSynced) {
+        syncQueue.remove(item.action, item.slug);
+      } else {
+        break;
+      }
+    } catch {
+      break;
+    }
   }
 }
 
@@ -365,6 +388,49 @@ document.addEventListener('DOMContentLoaded', () => {
 // ==================== AUTH ====================
 
 function initAuth() {
+  $('#public-login-form')?.addEventListener('submit', (e) => {
+    e.preventDefault();
+    const input = $('#public-username-input');
+    if (input) connectPublicUser(input.value);
+  });
+  $('#import-csv-link-setup')?.addEventListener('click', () => {
+    $('#csv-file-input')?.click();
+  });
+  $('#import-csv-btn-menu')?.addEventListener('click', () => {
+    $('#csv-file-input')?.click();
+  });
+  $('#csv-file-input')?.addEventListener('change', (e) => {
+    const file = e.target.files?.[0];
+    if (file) handleCsvUpload(file);
+    e.target.value = '';
+  });
+
+  const dropzone = $('#import-dropzone');
+  if (dropzone) {
+    const openPicker = () => $('#csv-file-input')?.click();
+    dropzone.addEventListener('click', openPicker);
+    dropzone.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        openPicker();
+      }
+    });
+    for (const type of ['dragenter', 'dragover']) {
+      dropzone.addEventListener(type, (e) => {
+        e.preventDefault();
+        dropzone.classList.add('dragover');
+      });
+    }
+    for (const type of ['dragleave', 'dragend']) {
+      dropzone.addEventListener(type, () => dropzone.classList.remove('dragover'));
+    }
+    dropzone.addEventListener('drop', (e) => {
+      e.preventDefault();
+      dropzone.classList.remove('dragover');
+      const file = e.dataTransfer?.files?.[0];
+      if (file) handleCsvUpload(file);
+    });
+  }
   $('#setup-connect-btn')?.addEventListener('click', connectViaExtension);
   $('#logout-btn')?.addEventListener('click', () => {
     accountVersion++;
@@ -372,6 +438,10 @@ function initAuth() {
     deckReads.cancel();
     state.username = null;
     state.encryptedSession = null;
+    try {
+      localStorage.removeItem('swiperboxd.username');
+      localStorage.removeItem('swiperboxd.token');
+    } catch {}
     state.hasSynced = false;
     state.syncStatusKnown = false;
     state.deck = [];
@@ -467,7 +537,7 @@ async function connectViaExtension() {
 
   const result = await requestExtensionAuth();
   btn.disabled = false;
-  btn.textContent = 'Connect via extension →';
+  btn.textContent = 'Connect via Extension';
 
   if (!result.ok) {
     extLog('connectViaExtension failed', {
@@ -487,13 +557,148 @@ async function connectViaExtension() {
 
   state.username = result.username;
   state.encryptedSession = result.sessionToken;
+  try {
+    localStorage.setItem('swiperboxd.username', state.username);
+    localStorage.setItem('swiperboxd.token', state.encryptedSession);
+  } catch {}
   showDiscovery();
+}
+
+async function connectPublicUser(rawUsername) {
+  const username = String(rawUsername || '').trim().replace(/^@/, '');
+  if (!username) return;
+  const errDiv = $('#setup-error');
+  const btn = $('#public-connect-btn');
+  if (errDiv) errDiv.classList.add('hidden');
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = 'Starting…';
+  }
+
+  try {
+    const res = await api('/auth/public-session', {
+      method: 'POST',
+      body: { username }
+    });
+    state.username = res.username;
+    state.encryptedSession = res.encrypted_session_cookie;
+    try {
+      localStorage.setItem('swiperboxd.username', state.username);
+      localStorage.setItem('swiperboxd.token', state.encryptedSession);
+    } catch {}
+    showDiscovery();
+    triggerPublicSync(state.username, state.encryptedSession);
+  } catch (err) {
+    if (errDiv) {
+      errDiv.textContent = err.message || 'Could not start session. Please try again.';
+      errDiv.classList.remove('hidden');
+    }
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = 'Start Swiping →';
+    }
+  }
+}
+
+async function triggerPublicSync(username, token) {
+  try {
+    const res = await api('/ingest/public-sync', {
+      method: 'POST',
+      sessionToken: token,
+      body: { user_id: username }
+    });
+    if ((res?.diary_added || 0) > 0 || (res?.watchlist_added || 0) > 0) {
+      showToast(`Synced ${res.diary_added || 0} diary & ${res.watchlist_added || 0} watchlist films from Letterboxd`);
+      state.hasSynced = true;
+      state.syncStatusKnown = true;
+    }
+  } catch (err) {
+    extLog('public sync notice', { error: err?.message });
+  }
+}
+
+async function handleCsvUpload(file) {
+  if (!file) return;
+  if (!state.username || !state.encryptedSession) {
+    showToast('Please start a session first.');
+    return;
+  }
+  showToast(`Parsing ${file.name}…`);
+  try {
+    const lowerName = file.name.toLowerCase();
+    const imports = [];
+    if (lowerName.endsWith('.zip')) {
+      const entries = await parseLetterboxdZip(await file.arrayBuffer());
+      for (const entry of entries) {
+        const name = entry.name.toLowerCase();
+        const table = name.includes('watchlist') ? 'watchlist' : name.includes('diary') ? 'diary' : null;
+        if (!table) continue;
+        const slugs = parseLetterboxdCsv(entry.text);
+        if (slugs.length) imports.push({ table, slugs });
+      }
+      if (!imports.length) {
+        showToast('No film slugs found in ZIP. Make sure it is a Letterboxd export.');
+        return;
+      }
+    } else {
+      const slugs = parseLetterboxdCsv(await file.text());
+      if (!slugs.length) {
+        showToast('No film slugs found in CSV. Make sure it is a Letterboxd export.');
+        return;
+      }
+      imports.push({ table: lowerName.includes('watchlist') ? 'watchlist' : 'diary', slugs });
+    }
+
+    const chunkSize = 500;
+    const counts = { watchlist: 0, diary: 0 };
+    for (const { table, slugs } of imports) {
+      for (let i = 0; i < slugs.length; i += chunkSize) {
+        const chunk = slugs.slice(i, i + chunkSize);
+        await api(`/api/extension/batch/${table}`, {
+          method: 'POST',
+          sessionToken: state.encryptedSession,
+          body: {
+            user_id: state.username,
+            slugs: chunk,
+            page: Math.floor(i / chunkSize) + 1,
+            total_pages: Math.ceil(slugs.length / chunkSize)
+          }
+        });
+      }
+      counts[table] += slugs.length;
+    }
+    const summary = [
+      counts.watchlist ? `${counts.watchlist} watchlist` : null,
+      counts.diary ? `${counts.diary} diary` : null,
+    ].filter(Boolean).join(' / ');
+    showToast(`Imported ${summary} from ${file.name}!`);
+    state.hasSynced = true;
+    state.syncStatusKnown = true;
+    if (state.selectedListId) {
+      loadDeck(state.selectedListId, state.selectedListTitle);
+    }
+  } catch (err) {
+    console.error('[csv-upload]', err);
+    showToast(`Import error: ${err.message || 'Check file format'}`);
+  }
 }
 
 function checkSavedSession() {
   const version = accountVersion;
+  try {
+    const savedUser = localStorage.getItem('swiperboxd.username');
+    const savedToken = localStorage.getItem('swiperboxd.token');
+    if (savedUser && savedToken && version === accountVersion && !state.username) {
+      state.username = savedUser;
+      state.encryptedSession = savedToken;
+      showDiscovery();
+      return;
+    }
+  } catch {}
+
   // Try silent auto-connect on load — succeeds if extension is installed and connected
-  requestExtensionAuth(3000).then((result) => {
+  requestExtensionAuth(2000).then((result) => {
     extLog('silent auth attempt completed', {
       ok: result.ok,
       requestId: result.requestId || null,
@@ -502,9 +707,12 @@ function checkSavedSession() {
     if (result.ok && version === accountVersion && !state.username) {
       state.username = result.username;
       state.encryptedSession = result.sessionToken;
+      try {
+        localStorage.setItem('swiperboxd.username', state.username);
+        localStorage.setItem('swiperboxd.token', state.encryptedSession);
+      } catch {}
       showDiscovery();
     }
-    // On failure just stay on setup screen — user clicks Connect manually
   });
 }
 
@@ -922,10 +1130,6 @@ function hideInfoPill() {
 
 async function executeSwipe(action) {
   if (state.isSyncing || state.deck.length === 0 || state.currentIndex >= state.deck.length) return;
-  if (action !== 'dismiss' && (!state.hasSynced || !state.syncStatusKnown)) {
-    showToast('Sync your Letterboxd data via the extension before saving');
-    return;
-  }
 
   hideInfoPill();
   state.isSyncing = true;
@@ -947,34 +1151,38 @@ async function executeSwipe(action) {
         body: { user_id: state.username, movie_slug: movie.slug, action },
       });
     } else {
-      const result = await requestExtensionSwipe(action, movie.slug);
-      if (!result.lbSynced) {
-        showToast(result.error || 'Letterboxd write failed — extension not responding');
-        advanceCard = false;
-        topCard.classList.remove('swiping-right', 'swiping-left', 'swiping-up');
-      } else {
-        try {
-          await api('/actions/swipe', {
-            method: 'POST',
-            body: { user_id: state.username, movie_slug: movie.slug, action },
-          });
-        } catch (err) {
-          if (err.status === 409) {
-            const code = err.code || err.data?.code;
-            showToast(
-              code === 'already_in_watchlist' ? 'Already in your watchlist' :
-              code === 'already_in_diary'     ? 'Already in your diary'     : 'Already saved'
-            );
-          } else {
-            console.error('[swipe] supabase write failed:', err.message);
-          }
+      try {
+        await api('/actions/swipe', {
+          method: 'POST',
+          body: { user_id: state.username, movie_slug: movie.slug, action },
+        });
+      } catch (err) {
+        if (err.status === 409) {
+          const code = err.code || err.data?.code;
+          showToast(
+            code === 'already_in_watchlist' ? 'Already in your watchlist' :
+            code === 'already_in_diary'     ? 'Already in your diary'     : 'Already saved'
+          );
+        } else {
+          console.error('[swipe] backend write failed:', err.message);
         }
+      }
+
+      if (extensionBridge.presentSignals.length) {
+        requestExtensionSwipe(action, movie.slug, 3000).then((result) => {
+          if (!result?.lbSynced) {
+            syncQueue.enqueue({ action, slug: movie.slug });
+          }
+        }).catch(() => {
+          syncQueue.enqueue({ action, slug: movie.slug });
+        });
+      } else {
+        syncQueue.enqueue({ action, slug: movie.slug });
+        showToast(`Saved to ${action === 'watchlist' ? 'Watchlist' : 'Watched'} (queued for sync)`);
       }
     }
   } catch (err) {
     console.error('[swipe] failed:', err.message);
-    advanceCard = false;
-    topCard.classList.remove('swiping-right', 'swiping-left', 'swiping-up');
   }
 
   try {

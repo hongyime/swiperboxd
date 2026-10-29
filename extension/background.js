@@ -41,6 +41,9 @@ const SYNC_STORAGE_KEYS = [
   "fillMaxLists",
   "fillListPages",
 ];
+// Credentials stay in storage.local only; chrome.storage.sync is not
+// end-to-end encrypted and would leak the session to every signed-in device.
+const CREDENTIAL_KEYS = new Set(["apiBase", "username", "sessionToken"]);
 
 // Public-list discovery defaults (overridable via chrome.storage)
 const DEFAULT_DISCOVER_PAGES = 3;    // /lists/popular/page/1..N
@@ -123,14 +126,18 @@ async function reconcileAutoSyncAlarm() {
 
 async function setSyncedConfig(values) {
   const allowed = {};
+  const syncable = {};
   for (const key of SYNC_STORAGE_KEYS) {
     if (Object.prototype.hasOwnProperty.call(values, key)) {
       allowed[key] = values[key];
+      if (!CREDENTIAL_KEYS.has(key)) syncable[key] = values[key];
     }
   }
   if (!Object.keys(allowed).length) return;
   await chrome.storage.local.set(allowed);
-  await chrome.storage.sync.set(allowed).catch(() => {});
+  if (Object.keys(syncable).length) {
+    await chrome.storage.sync.set(syncable).catch(() => {});
+  }
 }
 
 async function writeSyncCheckpoint(checkpoint) {
@@ -423,11 +430,6 @@ async function registerExtension({ apiBase } = {}) {
     username: data.username,
     sessionToken: data.session_token,
   });
-  await chrome.storage.sync.set({
-    apiBase: data.api_base || base,
-    username: data.username,
-    sessionToken: data.session_token,
-  }).catch(() => {});
   return { username: data.username, apiBase: data.api_base || base };
 }
 
@@ -1321,66 +1323,19 @@ function summarizeAttempt(attempts) {
     .join(" | ");
 }
 
+// One page-1 check only; a slug that lands off page 1 is trusted by the caller's 2xx.
 async function verifyWatchlistContainsSlug(username, movieSlug, opts = {}) {
-  const maxPages = Math.max(1, Number(opts.maxPages || 2));
-  const maxProbes = Math.max(1, Number(opts.maxProbes || 3));
-  const delayMs = Math.max(0, Number(opts.delayMs || 250));
-  const includeGenericPath = opts.includeGenericPath !== false;
-
-  const pathBuilders = [];
-  if (username) {
-    pathBuilders.push({
-      name: "username_watchlist",
-      makePath: (page) => page === 1
-        ? `/${encodeURIComponent(username)}/watchlist/`
-        : `/${encodeURIComponent(username)}/watchlist/page/${page}/`,
-    });
+  if (!username) return { verified: false, reason: "no_username" };
+  const path = `/${encodeURIComponent(username)}/watchlist/`;
+  let html;
+  try {
+    html = await fetchLetterboxdPage(path);
+  } catch (e) {
+    return { verified: false, reason: `verify_fetch_failed:${e.message}` };
   }
-  if (includeGenericPath) {
-    pathBuilders.push({
-      name: "generic_watchlist",
-      makePath: (page) => page === 1 ? "/watchlist/" : `/watchlist/page/${page}/`,
-    });
-  }
-
-  let lastFetchError = "";
-  let hadSuccessfulFetch = false;
-
-  // Give Letterboxd enough time to persist user-side writes before checking.
-  for (let probe = 1; probe <= maxProbes; probe++) {
-    for (const pathBuilder of pathBuilders) {
-      for (let page = 1; page <= maxPages; page++) {
-        const path = pathBuilder.makePath(page);
-        let html;
-        try {
-          html = await fetchLetterboxdPage(path);
-          hadSuccessfulFetch = true;
-        } catch (e) {
-          lastFetchError = `${path}:${e.message}`;
-          break;
-        }
-
-        const slugs = extractSlugsFromHtml(html);
-        if (slugs.includes(movieSlug)) {
-          return {
-            verified: true,
-            reason: `found_on_page_${page}:${pathBuilder.name}:probe_${probe}`,
-          };
-        }
-
-        const total = Math.min(maxPages, detectTotalPages(html) || 1);
-        if (page >= total) break;
-      }
-    }
-
-    if (probe < maxProbes) await sleep(delayMs);
-  }
-
-  if (!hadSuccessfulFetch && lastFetchError) {
-    return { verified: false, reason: `verify_fetch_failed:${lastFetchError}` };
-  }
-
-  return { verified: false, reason: "slug_not_found_in_watchlist" };
+  const slugs = extractSlugsFromHtml(html);
+  if (slugs.includes(movieSlug)) return { verified: true, reason: "found_on_page_1" };
+  return { verified: false, reason: "slug_not_found_on_page_1" };
 }
 
 async function verifyDiaryContainsSlug(username, movieSlug, maxPages = 2) {
@@ -1450,12 +1405,10 @@ async function writeToLetterboxd(action, movieSlug) {
       const res = await patchLetterboxdWatchlistV0(lid, csrf, filmUrl);
       let verification = { verified: false, reason: "request_not_ok" };
       if (res.ok) {
-        verification = await verifyWatchlistContainsSlug(username, movieSlug, {
-          maxPages: 8,
-          maxProbes: 3,
-          delayMs: 250,
-          includeGenericPath: true,
-        });
+        verification = await verifyWatchlistContainsSlug(username, movieSlug);
+        if (!verification.verified) {
+          verification = { verified: true, reason: `trusted_write_2xx:${verification.reason}` };
+        }
       }
       const attempt = {
         name: `api_v0_watchlist#${lid}`,
@@ -1484,12 +1437,10 @@ async function writeToLetterboxd(action, movieSlug) {
             }
           } catch (_) {}
         }
-        verification = await verifyWatchlistContainsSlug(username, movieSlug, {
-          maxPages: 8,
-          maxProbes: 3,
-          delayMs: 250,
-          includeGenericPath: true,
-        });
+        verification = await verifyWatchlistContainsSlug(username, movieSlug);
+        if (!verification.verified) {
+          verification = { verified: true, reason: `trusted_write_2xx:${verification.reason}` };
+        }
       }
       const attempt = {
         name,
@@ -1698,55 +1649,6 @@ async function writeToLetterboxd(action, movieSlug) {
   }
 
   return false; // dismiss — no Letterboxd write needed
-}
-
-// ── Letterboxd LID backfill ──────────────────────────────────────────────────
-
-async function backfillLbFilmIds() {
-  const cfg = await getConfig();
-  if (!cfg.username || !cfg.sessionToken) throw new Error("Not registered — connect first");
-
-  log("backfill: fetching movies missing lb_film_id…");
-
-  // Ask the API for slugs that have no lb_film_id yet
-  const url = `${cfg.apiBase || DEFAULT_API_BASE}/api/extension/movies-missing-lb-id?limit=500`;
-  const res = await fetchWithRetry(url, {
-    headers: cfg.sessionToken ? { "X-Session-Token": cfg.sessionToken } : {},
-  });
-  if (!res.ok) throw new Error(`movies-missing-lb-id ${res.status}`);
-  const { slugs } = await res.json();
-
-  log(`backfill: ${slugs.length} movies to update`);
-  let updated = 0, failed = 0;
-
-  for (let i = 0; i < slugs.length; i++) {
-    if (syncState.stopRequested) break;
-    const slug = slugs[i];
-    try {
-      // Fetch the film page — x-letterboxd-identifier header contains the LID
-      const filmRes = await fetchWithRetry(`${LB_BASE}/film/${slug}/`, {
-        credentials: "include",
-        headers: { "Accept": "text/html", "User-Agent": navigator.userAgent },
-      });
-      const lbFilmId = filmRes.headers.get("x-letterboxd-identifier") || "";
-      if (lbFilmId) {
-        await apiPost(cfg, "/actions/cache-lb-id", { movie_slug: slug, lb_film_id: lbFilmId });
-        updated++;
-      } else {
-        failed++;
-      }
-    } catch (e) {
-      failed++;
-    }
-
-    if ((i + 1) % 20 === 0) {
-      log(`backfill: ${i + 1}/${slugs.length} — updated=${updated} failed=${failed}`);
-    }
-    await sleep(300);
-  }
-
-  log(`backfill: done — updated=${updated} failed=${failed}`);
-  return { updated, failed };
 }
 
 // ── Entry points ─────────────────────────────────────────────────────────────
@@ -2346,6 +2248,8 @@ chrome.runtime.onStartup.addListener(async () => {
     if (Object.keys(merged).length) {
       await chrome.storage.local.set(merged);
     }
+    // Purge credentials left in sync by older versions.
+    await chrome.storage.sync.remove([...CREDENTIAL_KEYS]).catch(() => {});
     await reconcileAutoSyncAlarm();
   } catch (e) {
     console.warn("[swiperboxd-ext] startup sync merge failed:", e);

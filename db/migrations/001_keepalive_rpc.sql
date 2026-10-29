@@ -45,12 +45,16 @@ CREATE INDEX IF NOT EXISTS idx_keepalive_pinged_at ON public.keepalive_logs(ping
 ALTER TABLE public.keepalive_logs ENABLE ROW LEVEL SECURITY;
 
 -- Allow all to select and insert
-CREATE POLICY IF NOT EXISTS "Allow keepalive for all"
-    ON public.keepalive_logs
-    FOR ALL
-    TO anon, authenticated
-    USING (true)
-    WITH CHECK (true);
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_policies
+    WHERE schemaname = 'public' AND tablename = 'keepalive_logs' AND policyname = 'Allow keepalive for all'
+  ) THEN
+    CREATE POLICY "Allow keepalive for all" ON public.keepalive_logs
+      FOR ALL TO anon, authenticated USING (true) WITH CHECK (true);
+  END IF;
+END $$;
 
 -- Grant permissions
 GRANT SELECT, INSERT ON public.keepalive_logs TO anon;

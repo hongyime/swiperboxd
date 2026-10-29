@@ -19,32 +19,51 @@
         <p>Discover movies from your Letterboxd lists</p>
       </div>
 
-      <div class="setup-steps">
-        <div class="setup-step">
-          <span class="step-num">1</span>
-          <div class="step-body">
-            <strong>Sign in to Letterboxd</strong>
-            <span>Open <a href="https://letterboxd.com" target="_blank" rel="noopener">letterboxd.com</a> in this browser and log in to your account.</span>
-          </div>
-        </div>
-        <div class="setup-step">
-          <span class="step-num">2</span>
-          <div class="step-body">
-            <strong>Load the Chrome extension</strong>
-            <span>In Chrome go to <code>chrome://extensions</code> → enable Developer mode → Load unpacked → select the <code>extension/</code> folder. Click the extension icon and press <em>Connect</em>.</span>
-          </div>
-        </div>
-        <div class="setup-step">
-          <span class="step-num">3</span>
-          <div class="step-body">
-            <strong>Come back here and click Connect below</strong>
-            <span>The extension shares your session with this page automatically — no copy-pasting needed.</span>
-          </div>
-        </div>
+      <div id="setup-ext-pill" class="ext-status-pill hidden">
+        <span>●</span> Chrome extension active · 2-way sync ready
       </div>
 
+      <form id="public-login-form" class="auth-form" style="max-width:420px;width:100%">
+        <input id="public-username-input" type="text" placeholder="Letterboxd username (e.g. davidehrlich)" required autocomplete="username" />
+        <button type="submit" id="public-connect-btn" class="btn-primary" style="width:100%">Start Swiping →</button>
+      </form>
+
+      <div class="setup-divider"><span>or</span></div>
+
+      <button id="setup-connect-btn" class="btn-secondary" style="max-width:420px;width:100%">Connect via Extension</button>
+
+      <button type="button" id="import-csv-link-setup" class="btn-text" style="margin-top:0.25rem">Import Letterboxd export CSV / ZIP</button>
+      <input type="file" id="csv-file-input" accept=".csv,.zip" class="hidden" />
+      <div id="import-dropzone" class="import-dropzone" role="button" tabindex="0">Drop Letterboxd export (.zip or .csv) here — or click to browse</div>
+
       <div id="setup-error" class="error-msg hidden" style="max-width:420px;width:100%;text-align:center"></div>
-      <button id="setup-connect-btn" class="btn-primary" style="max-width:420px;width:100%">Connect via extension →</button>
+
+      <details class="setup-details" style="max-width:420px;width:100%;color:var(--text-secondary);font-size:12px;margin-top:0.5rem">
+        <summary style="cursor:pointer;text-align:center">How to use the Chrome extension</summary>
+        <div class="setup-steps" style="margin-top:0.75rem">
+          <div class="setup-step">
+            <span class="step-num">1</span>
+            <div class="step-body">
+              <strong>Sign in to Letterboxd</strong>
+              <span>Open <a href="https://letterboxd.com" target="_blank" rel="noopener">letterboxd.com</a> in Chrome.</span>
+            </div>
+          </div>
+          <div class="setup-step">
+            <span class="step-num">2</span>
+            <div class="step-body">
+              <strong>Load extension</strong>
+              <span>Go to <code>chrome://extensions</code> → Developer mode → Load unpacked → select <code>extension/</code>.</span>
+            </div>
+          </div>
+          <div class="setup-step">
+            <span class="step-num">3</span>
+            <div class="step-body">
+              <strong>Sync both ways</strong>
+              <span>Swipes and watchlist updates sync automatically with Letterboxd!</span>
+            </div>
+          </div>
+        </div>
+      </details>
     </div>
 
     <!-- ==================== DISCOVERY SCREEN ==================== -->
@@ -67,6 +86,9 @@
           <input id="list-search-input" class="list-search-input" type="text" placeholder="Search lists…" />
         </div>
         <div class="profile-options" id="profile-options"></div>
+        <button id="import-csv-btn-menu" class="btn-text" style="width:100%;padding:10px 14px;text-align:left;border-top:1px solid rgba(255,255,255,0.1);color:var(--text-secondary);display:flex;align-items:center;gap:6px;cursor:pointer">
+          <span>📂</span> Import Letterboxd CSV / ZIP
+        </button>
       </div>
 
       <!-- Fullscreen poster area -->

@@ -16,3 +16,9 @@ def encrypt_session_cookie(session_cookie: str, master_key: str) -> str:
 def decrypt_session_cookie(token: str, master_key: str) -> str:
     fernet = Fernet(_derive_fernet_key(master_key))
     return fernet.decrypt(token.encode("utf-8")).decode("utf-8")
+
+
+def decrypt_session_token(token: str, master_key: str, ttl_seconds: int = 30 * 86400) -> str:
+    """Decrypt a client session token, rejecting tokens older than ttl_seconds."""
+    fernet = Fernet(_derive_fernet_key(master_key))
+    return fernet.decrypt(token.encode("utf-8"), ttl=ttl_seconds).decode("utf-8")

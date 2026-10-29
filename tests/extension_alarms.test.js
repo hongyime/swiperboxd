@@ -25,7 +25,7 @@ async function worker({ enabled = true, period = 15 } = {}) {
         .filter(key => Object.hasOwn(values, key)).map(key => [key, clone(values[key])]));
     },
     async set(value) { Object.assign(values, clone(value)); },
-    async remove(key) { delete values[key]; },
+    async remove(key) { (Array.isArray(key) ? key : [key]).forEach(k => delete values[k]); },
   });
   const context = vm.createContext({
     console: { log() {}, warn() {}, error() {} }, URL,
@@ -56,10 +56,38 @@ async function worker({ enabled = true, period = 15 } = {}) {
   // Observe the real message/alarm dispatch without running collection.
   vm.runInContext('runSync = async (options = {}) => { recordSync(options); return { ok: true }; };', context);
   await new Promise(resolve => setImmediate(resolve));
-  return { now, alarms, local, changes, hooks, syncs,
+  return { now, alarms, local, synced, changes, hooks, syncs,
     message: payload => new Promise(resolve => hooks.message(payload, {}, value => resolve(clone(value)))),
-    setRunning: value => vm.runInContext(`syncState.running = ${Boolean(value)};`, context) };
+    setRunning: value => vm.runInContext(`syncState.running = ${Boolean(value)};`, context),
+    verify: async (username, movieSlug, opts, html) => {
+      vm.runInContext('globalThis.__verifyPaths = [];', context);
+      vm.runInContext(`globalThis.__verifyHtml = ${JSON.stringify(html)};`, context);
+      vm.runInContext('fetchLetterboxdPage = async (path) => { globalThis.__verifyPaths.push(path); return globalThis.__verifyHtml; };', context);
+      const result = await vm.runInContext(
+        `verifyWatchlistContainsSlug(${JSON.stringify(username)}, ${JSON.stringify(movieSlug)}, ${JSON.stringify(opts || {})})`,
+        context,
+      );
+      return { result: clone(result), paths: clone(vm.runInContext('globalThis.__verifyPaths.slice()', context)) };
+    } };
 }
+
+test('watchlist verification fetches page 1 once and finds the slug', async () => {
+  const w = await worker();
+  const bigOpts = { maxPages: 8, maxProbes: 3, includeGenericPath: true };
+  const { result, paths } = await w.verify('u', 'target', bigOpts, '<li data-film-slug="target"></li>');
+  assert.deepEqual(paths, ['/u/watchlist/']);
+  assert.equal(result.verified, true);
+  assert.equal(result.reason, 'found_on_page_1');
+});
+
+test('watchlist verification fetches page 1 once and reports a miss', async () => {
+  const w = await worker();
+  const bigOpts = { maxPages: 8, maxProbes: 3, includeGenericPath: true };
+  const { result, paths } = await w.verify('u', 'target', bigOpts, '<li data-film-slug="other"></li>');
+  assert.deepEqual(paths, ['/u/watchlist/']);
+  assert.equal(result.verified, false);
+  assert.equal(result.reason, 'slug_not_found_on_page_1');
+});
 
 test('enabling automatic sync schedules six hours and preserves an existing correct deadline', async () => {
   const w = await worker({ enabled: false, period: null });
@@ -114,4 +142,81 @@ test('disabling automatic sync cancels a queued alarm and keeps manual full sync
   assert.equal((await w.message({ type: 'START_SYNC', syncWatchlist: true, syncDiary: true,
     discoverLists: true, fillLists: true })).ok, true);
   assert.deepEqual(w.syncs, [{ syncWatchlist: true, syncDiary: true, discoverLists: true, fillLists: true }]);
+});
+
+test('auth credentials land in storage.local and never in storage.sync', async () => {
+  const w = await worker();
+  const response = await w.message({
+    type: 'SWIPERBOXD_AUTH',
+    apiBase: 'https://swiperboxd.vercel.app',
+    username: 'alice',
+    sessionToken: 'secret-token',
+  });
+  assert.equal(response.ok, true);
+  assert.equal(w.synced.sessionToken, undefined);
+  assert.equal(w.synced.username, undefined);
+  assert.equal(w.synced.apiBase, undefined);
+  assert.equal(w.local.sessionToken, 'secret-token');
+  assert.equal(w.local.username, 'alice');
+  assert.equal(w.local.apiBase, 'https://swiperboxd.vercel.app');
+});
+
+test('non-secret preferences still sync across devices', async () => {
+  const w = await worker();
+  await w.message({ type: 'SET_AUTO_SYNC', value: true });
+  assert.equal(w.synced.autoSync, true);
+  assert.equal(w.local.autoSync, true);
+});
+
+test('startup merge purges legacy credentials from storage.sync', async () => {
+  const w = await worker();
+  w.synced.username = 'legacy-user';
+  w.synced.sessionToken = 'legacy-token';
+  w.synced.apiBase = 'https://legacy.example';
+  await w.hooks.startup();
+  assert.equal(w.synced.username, undefined);
+  assert.equal(w.synced.sessionToken, undefined);
+  assert.equal(w.synced.apiBase, undefined);
+  assert.equal(w.local.sessionToken, 'fixture-token');
+});
+
+function contentScript() {
+  const sent = [];
+  const listeners = {};
+  const window = {
+    location: { href: 'https://swiperboxd.vercel.app/', origin: 'https://swiperboxd.vercel.app' },
+    addEventListener(type, callback) { listeners[type] = callback; },
+    postMessage() {},
+  };
+  const context = vm.createContext({
+    console: { log() {}, warn() {}, error() {} },
+    setTimeout, clearTimeout, Date,
+    chrome: {
+      runtime: {
+        lastError: undefined,
+        sendMessage(message, callback) { sent.push(clone(message)); if (callback) callback({ ok: true }); },
+      },
+    },
+    window,
+  });
+  vm.runInContext(readFileSync(new URL('../extension/content.js', import.meta.url), 'utf8'), context);
+  return { sent, message: event => listeners.message({ source: window, ...event }) };
+}
+
+test('content script drops auth messages from untrusted origins', () => {
+  const c = contentScript();
+  c.message({ origin: 'https://evil.example', data: { type: 'SWIPERBOXD_AUTH', username: 'u', sessionToken: 'secret' } });
+  c.message({ origin: 'https://evil.example', data: { type: 'SWIPERBOXD_GET_AUTH', requestId: 'r1' } });
+  assert.deepEqual(c.sent, []);
+});
+
+test('content script forwards auth messages from trusted app origins', () => {
+  const c = contentScript();
+  c.message({ origin: 'https://swiperboxd.vercel.app', data: { type: 'SWIPERBOXD_AUTH', username: 'u', sessionToken: 'secret' } });
+  assert.equal(c.sent.length, 1);
+  assert.equal(c.sent[0].type, 'SWIPERBOXD_AUTH');
+  assert.equal(c.sent[0].sessionToken, 'secret');
+  c.message({ origin: 'http://localhost:3000', data: { type: 'SWIPERBOXD_GET_AUTH', requestId: 'r1' } });
+  assert.equal(c.sent.length, 2);
+  assert.equal(c.sent[1].type, 'GET_WEBAPP_AUTH');
 });

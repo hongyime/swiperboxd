@@ -3,6 +3,11 @@
 
 const CONTENT_LOG_PREFIX = "[swiperboxd-ext/content]";
 
+const TRUSTED_ORIGINS = new Set(["https://swiperboxd.vercel.app", "https://swiperboxd.hong-yi.me"]);
+function isTrustedOrigin(origin) {
+  return TRUSTED_ORIGINS.has(origin) || /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin || "");
+}
+
 function contentLog(message, meta) {
   if (meta !== undefined) console.log(`${CONTENT_LOG_PREFIX} ${message}`, meta);
   else console.log(`${CONTENT_LOG_PREFIX} ${message}`);
@@ -55,9 +60,9 @@ function normalizeRuntimeError(rawMessage, fallback = 'Extension runtime error')
 
 /**
  * Robust wrapper for chrome.runtime.sendMessage that handles 
- * context invalidation and disconnect errors gracefully.
+ * context invalidation, worker sleep/dormancy, and disconnect errors gracefully.
  */
-function safeSendMessage(message, callback) {
+function safeSendMessage(message, callback, attempt = 1, maxAttempts = 3) {
   const requestId = message.requestId || 'unknown';
 
   if (typeof chrome === "undefined" || !chrome.runtime || !chrome.runtime.sendMessage) {
@@ -71,8 +76,21 @@ function safeSendMessage(message, callback) {
     chrome.runtime.sendMessage(message, (response) => {
       if (chrome.runtime.lastError) {
         const mapped = normalizeRuntimeError(chrome.runtime.lastError.message);
+        // If the service worker is waking up or port closed, retry before failing
+        if (
+          attempt < maxAttempts &&
+          (mapped.code === 'receiving_end_missing' || mapped.code === 'message_port_closed')
+        ) {
+          const delay = attempt * 250;
+          contentLog(`Worker waking up (${mapped.code}); retrying attempt ${attempt + 1}/${maxAttempts} in ${delay}ms`, { requestId });
+          setTimeout(() => {
+            safeSendMessage(message, callback, attempt + 1, maxAttempts);
+          }, delay);
+          return;
+        }
+
         if (!(message.type === 'PING' && mapped.code === 'receiving_end_missing')) {
-          contentLog("Runtime error:", { requestId, error: mapped });
+          contentLog("Runtime error:", { requestId, error: mapped, attempt });
         }
         if (callback) callback({ ok: false, error: mapped.message, errorCode: mapped.code });
         return;
@@ -82,8 +100,14 @@ function safeSendMessage(message, callback) {
     return true;
   } catch (e) {
     const mapped = normalizeRuntimeError(e.message);
+    if (attempt < maxAttempts && (mapped.code === 'receiving_end_missing' || mapped.code === 'message_port_closed')) {
+      setTimeout(() => {
+        safeSendMessage(message, callback, attempt + 1, maxAttempts);
+      }, attempt * 250);
+      return false;
+    }
     if (message.type !== 'PING') {
-      contentLog("Exception in sendMessage:", { requestId, error: mapped });
+      contentLog("Exception in sendMessage:", { requestId, error: mapped, attempt });
     }
     if (callback) callback({ ok: false, error: mapped.message, errorCode: mapped.code });
     return false;
@@ -105,6 +129,7 @@ window.addEventListener("message", (event) => {
 
   // Webapp requesting auth state from extension
   if (data.type === "SWIPERBOXD_GET_AUTH") {
+    if (!isTrustedOrigin(event.origin)) return;
     contentLog("auth request received", {
       requestId: data.requestId || null,
       sentAt: data.sentAt || null,
@@ -129,6 +154,7 @@ window.addEventListener("message", (event) => {
 
   // Forward auth credentials to service worker
   if (data.type === "SWIPERBOXD_AUTH") {
+    if (!isTrustedOrigin(event.origin)) return;
     if (!data.username || !data.sessionToken) return;
     safeSendMessage({
       type: "SWIPERBOXD_AUTH",

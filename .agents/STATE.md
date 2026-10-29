@@ -1,5 +1,12 @@
 # Current work
 
+## 2026-10-29 — Swiperboxd hardening landed
+
+Landed the 20-issue hardening plan (`swiperboxd-hardening`) as 22 commits (`07b4528` baseline .. `1f47c57`) on `main`. Fixes: revoke `exec_sql` + new RPCs `EXECUTE` **from PUBLIC** (the anon key can no longer run SQL; per-role revoke does not override the default PUBLIC grant), extension register derives the username server-side via the proxy chain (no username impersonation), cron accepts GET + `Authorization: Bearer`, `/lists/*` GETs are read-only, path-based list/watchlist pagination, deck uses one bounded-sample RPC, atomic membership replace, insert-only list batches, DB-backed rate limits + ingest lease, 30-day token TTL with legacy tokens rejected, extension credentials kept in `storage.local` + origin-gated postMessage, page-1 write verification, authenticated `/ingest/progress`, lazy Scrape.do probe, honest catalog pagination, dead queue/qstash/rate-limiter code + ad-hoc scripts deleted, migration 001 syntax fixed, and `app.py` split into routers/workers (1590→408 lines).
+
+Verified: 133 Python tests passed (2 live-service skips), 21 Node tests, and a 25-check live TestClient QA matrix. Final verification wave F1 plan-compliance, F2 code/security, F3 manual QA, F4 ideal-state — all APPROVE. NOT pushed; no PR opened. Unrelated Antigravity WIP was snapshotted as baseline `07b4528` and left intact. Next: review/merge the 22 commits. Non-blocking follow-ups: GET `/deck` still performs one bounded `users` upsert via `resolve_user_id`; `keep_alive_ping` remains anon-callable SECURITY DEFINER (pre-existing).
+
+
 2026-09-15: Reduce redundant list-deck reads on `perf/list-deck-reads`. Read saved memberships once and exclude seen slugs before metadata queries; include-seen requests skip unused history. Required history failures return a retryable 503 instead of an unfiltered deck. Preserve the full eligible shuffle pool, 20-card response, stored records, schema, provider schedules and extension behavior. Eight of ten new regression cases fail against main; all 99 Python tests now pass (five optional live-service skips), along with 11 Node checks and dependency/compile checks. The local Chromium runner exceeded its 240-second deadline; hosted browser, Build and Vercel checks remain release gates. Previous config PR #103 is merged at 4f8aa703; its application bytes match existing production 0fe8fa9f, while its maintenance-only production build was rate-limited.
 
 2026-09-15: Reconcile config PR #103 on its existing `chore/config-sync-34864413485-1` branch. Retain main's setup-python v7 and labeler v7 instead of the generated v6 downgrades. Keep the shallow, fail-closed LFS index guard. Application source, dependencies, records and extension behavior are unchanged. Local checks pass: 89 Python tests (five optional live-service skips), 11 Node tests, 13 Chromium cases, dependency compatibility, compilation and heartbeat configuration. The LFS workflow is byte-identical to source PR #51's ten successful hosted Linux fixtures. Required Build/Vercel checks and exact production verification remain release gates. Resume details: `.agents/handoffs/swiper-config-20260915.json`.
@@ -51,3 +58,31 @@
 ## Privacy maintenance - 2026-09-27
 
 Remove the optional personal security contact while retaining private vulnerability-reporting guidance. The narrow documentation patch is prepared from the current default branch; staged whitespace and the inherited identity hook are publication checks. Application behavior is unchanged.
+
+## Session resumption & onboarding - 2026-10-29
+
+Synchronized repository with origin/main (dependency and workflow updates to 5a5f9a0). Verified test suites: 99 Python tests passed (5 live-service skips) via uv/pytest, 11 Node web tests passed. Clean working tree. Completed /grill-me alignment:
+- Objective: Ground-up elimination of user experience and test suite flakiness.
+- Public Username Onboarding: Simple single-input onboarding ("Enter Letterboxd username" + "Start Swiping") generating public session tokens, removing mandatory extension dependency.
+- Resilient Sync: Instant deck presentation from selected lists; non-blocking background public RSS/watchlist ingestion; optional Letterboxd CSV/ZIP file dropzone on setup and in header.
+- Extension Bridge Hardening: Resilient auto-reconnect, service worker wake-up retry with backoff, and local localStorage swipe write-back queue (`pending_lb_sync`).
+- Test Suite Stabilization: Migrate web state/race logic to fast Node tests (<1s); optimize browser_refresh.py with a shared Chromium instance and event-driven waits (<15s).
+
+Phase 1 completed:
+- Added `POST /auth/public-session` (generating encrypted public user session tokens).
+- Added `POST /ingest/public-sync` with Letterboxd RSS syndication parsing (`extract_slugs_from_rss`, `pull_rss_diary_slugs`).
+- Verified swipe actions and sync status for public user sessions.
+- All 100 Python tests pass (5 live-service skips).
+
+Phase 2 completed:
+- Hardened extension content script with `safeSendMessage` service worker wake-up retry and exponential backoff.
+- Implemented `createSyncQueueStore` in `src/web/state.js` for optimistic buffering and deduplication of pending Letterboxd writes.
+- Implemented `parseLetterboxdCsv` and `slugifyTitle` for Letterboxd CSV/ZIP file parsing.
+- Verified with 14 Node web unit tests passing (253ms).
+
+Phase 3 & Phase 4 completed:
+- Redesigned `index.html` setup screen with direct Letterboxd username entry, extension auto-detection pill, and CSV import link.
+- Added CSV drag-and-drop / file selector in setup and header dropdown menu.
+- Updated `app.js` with public session management, non-blocking background RSS sync, optimistic card swiping, and automated write-back queue draining.
+- Re-tested full browser refresh suite: all 13 Playwright Chromium cases passed in 17.96s (reduced from timeouts).
+- Local verification complete: 100 Python tests passed (5 live-service skips), 14 Node web tests passed (129ms), 13 Playwright browser tests passed (17.96s), Python compilation check passed. Working tree clean and verified.

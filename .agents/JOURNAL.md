@@ -27,3 +27,11 @@
 2026-09-15: Filter seen slugs before list-deck metadata reads and reuse one saved membership snapshot. Keep the complete eligible shuffle pool and stored data. History lookup failures must remain retryable, with no unfiltered fallback. Use real PostgREST client fixtures over synthetic HTTP; no provider collection or live database writes for validation.
 
 - 2026-09-27: Remove the optional personal security contact and preserve private reporting guidance through a reviewed maintenance pull request.
+- 2026-10-29: Establish architecture and flakiness overhaul: add standalone public username onboarding with background public RSS/watchlist fetch and optional Letterboxd CSV/ZIP import; make Chrome extension optional with resilient auto-reconnecting bridge and queued write-back; optimize browser tests into fast Node unit checks and a shared Chromium runner.
+
+## 2026-10-29 — pagination path fix (finding #5)
+- Lists + watchlist now use `.../page/N/` paths; Letterboxd ignores `?page=` (always returns page 1).
+- Lists gained a no-new-slug break so a redirect back to page 1 cannot burn the 20-page cap. 20-page cap unchanged; `pull_source_slugs` untouched.
+- New `tests/test_pagination_paths.py`; suite 132 passed / 5 skipped. Commit e0e4d06.
+
+- 2026-10-29: Landed `swiperboxd-hardening` — 20 fixes + app.py split, 22 commits (`07b4528..1f47c57`), 133 Py / 21 Node green, F1-F4 approve. Key security correction: `REVOKE EXECUTE ... FROM PUBLIC` (per-role revoke leaves the default PUBLIC grant intact); RPC revokes re-grant `service_role` so `run_migrations` still works.

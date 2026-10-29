@@ -225,6 +225,40 @@ body {
 }
 .btn-text:hover { color: var(--text-primary); }
 
+.ext-status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.35rem 0.75rem;
+  border-radius: 999px;
+  background: rgba(0, 210, 106, 0.15);
+  border: 1px solid rgba(0, 210, 106, 0.3);
+  color: var(--accent-green);
+  font-size: 0.8rem;
+  font-weight: 500;
+}
+
+.setup-divider {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  max-width: 420px;
+  margin: 0.25rem 0;
+  color: var(--text-secondary);
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.setup-divider::before,
+.setup-divider::after {
+  content: '';
+  flex: 1;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+.setup-divider span {
+  padding: 0 0.75rem;
+}
+
 .error-msg, .success-msg {
   padding: 0.65rem 1rem;
   border-radius: var(--radius-sm);
@@ -677,4 +711,32 @@ body {
   opacity: 0.4;
   pointer-events: none;
   filter: grayscale(100%);
+}
+
+/* Letterboxd export import dropzone */
+.import-dropzone {
+  max-width: 420px;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 0.9rem 1rem;
+  border: 1px dashed rgba(255, 255, 255, 0.25);
+  border-radius: var(--radius-md);
+  color: var(--text-secondary);
+  font-size: 0.82rem;
+  text-align: center;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease, color 0.15s ease;
+}
+
+.import-dropzone:hover,
+.import-dropzone:focus-visible {
+  outline: none;
+  border-color: var(--text-primary);
+  color: var(--text-primary);
+}
+
+.import-dropzone.dragover {
+  border-color: var(--accent-pink);
+  background: rgba(233, 69, 96, 0.12);
+  color: var(--text-primary);
 }

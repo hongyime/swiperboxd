@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import json
 import os
 import time
 
 from fastapi.testclient import TestClient
 
 from src.api.app import app
+from src.api.security import encrypt_session_cookie
 
 
 def _require_env(name: str) -> str:
@@ -34,11 +36,17 @@ def main() -> int:
     assert profiles.status_code == 200, profiles.text
 
     user_id = "smoke-user"
+    ingest_headers = {
+        "X-Session-Token": encrypt_session_cookie(
+            json.dumps({"u": user_id, "c": "smoke"}),
+            os.environ["MASTER_ENCRYPTION_KEY"],
+        )
+    }
     ingest = client.post("/ingest/start", json={"user_id": user_id, "source": "trending", "depth_pages": 2})
     assert ingest.status_code == 200, ingest.text
     deadline = time.time() + 3
     while time.time() < deadline:
-        progress = client.get("/ingest/progress", params={"user_id": user_id})
+        progress = client.get("/ingest/progress", params={"user_id": user_id}, headers=ingest_headers)
         assert progress.status_code == 200, progress.text
         payload = progress.json()
         if payload.get("progress") == 100 and not payload.get("running"):

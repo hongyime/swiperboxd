@@ -70,7 +70,8 @@ Copy `.env.template` to `.env` and configure the following variables:
 |----------|----------|-------------|
 | `SUPABASE_URL` | Yes | Your Supabase project URL (e.g., `https://xxx.supabase.co`) |
 | `SUPABASE_SERVICE_ROLE_KEY` | Yes | Supabase service role key (bypasses RLS for server-side writes) |
-| `VERCEL_CRON_SECRET` | Yes | Shared secret for protecting cron endpoints (generate a random string) |
+| `CRON_SECRET` | Yes | Shared secret for cron endpoints. Vercel provides this automatically for Vercel Cron and sends it as `Authorization: Bearer <secret>`. |
+| `VERCEL_CRON_SECRET` | No | Local/dev fallback for the cron secret when `CRON_SECRET` is not set. |
 
 ### Optional Variables
 
@@ -90,7 +91,8 @@ MASTER_ENCRYPTION_KEY=your-fernet-key-here
 # Production (Supabase)
 SUPABASE_URL=https://your-project.supabase.co
 SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
-VERCEL_CRON_SECRET=your-random-secret-string
+CRON_SECRET=your-random-secret-string
+VERCEL_CRON_SECRET=your-random-secret-string  # optional local fallback
 
 # Optional
 SCRAPER_BACKEND=http
@@ -328,7 +330,7 @@ pytest tests/ --cov=src --cov-report=html
 
 3. **Configure Cron Jobs:**
    - Vercel automatically reads `vercel.json` for cron configuration
-   - Ensure `VERCEL_CRON_SECRET` is set in environment variables
+   - Vercel automatically provides `CRON_SECRET` to cron invocations and sends it as `Authorization: Bearer <secret>`; no extra header is needed. Set `VERCEL_CRON_SECRET` only as a local/dev fallback.
    - Cron jobs will run at:
      - **02:00 UTC:** Refresh list catalog
      - **04:00 UTC:** Sync all users' watchlist/diary
@@ -460,7 +462,7 @@ This section covers what's been implemented for production stability:
    MASTER_ENCRYPTION_KEY=<generated-key>
    SUPABASE_URL=<your-url>
    SUPABASE_SERVICE_ROLE_KEY=<your-key>
-   VERCEL_CRON_SECRET=<random-secret>
+   CRON_SECRET=<random-secret>
    APP_ENV=production
    ```
 
