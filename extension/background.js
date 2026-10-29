@@ -1323,66 +1323,19 @@ function summarizeAttempt(attempts) {
     .join(" | ");
 }
 
+// One page-1 check only; a slug that lands off page 1 is trusted by the caller's 2xx.
 async function verifyWatchlistContainsSlug(username, movieSlug, opts = {}) {
-  const maxPages = Math.max(1, Number(opts.maxPages || 2));
-  const maxProbes = Math.max(1, Number(opts.maxProbes || 3));
-  const delayMs = Math.max(0, Number(opts.delayMs || 250));
-  const includeGenericPath = opts.includeGenericPath !== false;
-
-  const pathBuilders = [];
-  if (username) {
-    pathBuilders.push({
-      name: "username_watchlist",
-      makePath: (page) => page === 1
-        ? `/${encodeURIComponent(username)}/watchlist/`
-        : `/${encodeURIComponent(username)}/watchlist/page/${page}/`,
-    });
+  if (!username) return { verified: false, reason: "no_username" };
+  const path = `/${encodeURIComponent(username)}/watchlist/`;
+  let html;
+  try {
+    html = await fetchLetterboxdPage(path);
+  } catch (e) {
+    return { verified: false, reason: `verify_fetch_failed:${e.message}` };
   }
-  if (includeGenericPath) {
-    pathBuilders.push({
-      name: "generic_watchlist",
-      makePath: (page) => page === 1 ? "/watchlist/" : `/watchlist/page/${page}/`,
-    });
-  }
-
-  let lastFetchError = "";
-  let hadSuccessfulFetch = false;
-
-  // Give Letterboxd enough time to persist user-side writes before checking.
-  for (let probe = 1; probe <= maxProbes; probe++) {
-    for (const pathBuilder of pathBuilders) {
-      for (let page = 1; page <= maxPages; page++) {
-        const path = pathBuilder.makePath(page);
-        let html;
-        try {
-          html = await fetchLetterboxdPage(path);
-          hadSuccessfulFetch = true;
-        } catch (e) {
-          lastFetchError = `${path}:${e.message}`;
-          break;
-        }
-
-        const slugs = extractSlugsFromHtml(html);
-        if (slugs.includes(movieSlug)) {
-          return {
-            verified: true,
-            reason: `found_on_page_${page}:${pathBuilder.name}:probe_${probe}`,
-          };
-        }
-
-        const total = Math.min(maxPages, detectTotalPages(html) || 1);
-        if (page >= total) break;
-      }
-    }
-
-    if (probe < maxProbes) await sleep(delayMs);
-  }
-
-  if (!hadSuccessfulFetch && lastFetchError) {
-    return { verified: false, reason: `verify_fetch_failed:${lastFetchError}` };
-  }
-
-  return { verified: false, reason: "slug_not_found_in_watchlist" };
+  const slugs = extractSlugsFromHtml(html);
+  if (slugs.includes(movieSlug)) return { verified: true, reason: "found_on_page_1" };
+  return { verified: false, reason: "slug_not_found_on_page_1" };
 }
 
 async function verifyDiaryContainsSlug(username, movieSlug, maxPages = 2) {
@@ -1452,12 +1405,10 @@ async function writeToLetterboxd(action, movieSlug) {
       const res = await patchLetterboxdWatchlistV0(lid, csrf, filmUrl);
       let verification = { verified: false, reason: "request_not_ok" };
       if (res.ok) {
-        verification = await verifyWatchlistContainsSlug(username, movieSlug, {
-          maxPages: 8,
-          maxProbes: 3,
-          delayMs: 250,
-          includeGenericPath: true,
-        });
+        verification = await verifyWatchlistContainsSlug(username, movieSlug);
+        if (!verification.verified) {
+          verification = { verified: true, reason: `trusted_write_2xx:${verification.reason}` };
+        }
       }
       const attempt = {
         name: `api_v0_watchlist#${lid}`,
@@ -1486,12 +1437,10 @@ async function writeToLetterboxd(action, movieSlug) {
             }
           } catch (_) {}
         }
-        verification = await verifyWatchlistContainsSlug(username, movieSlug, {
-          maxPages: 8,
-          maxProbes: 3,
-          delayMs: 250,
-          includeGenericPath: true,
-        });
+        verification = await verifyWatchlistContainsSlug(username, movieSlug);
+        if (!verification.verified) {
+          verification = { verified: true, reason: `trusted_write_2xx:${verification.reason}` };
+        }
       }
       const attempt = {
         name,

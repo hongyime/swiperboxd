@@ -58,8 +58,36 @@ async function worker({ enabled = true, period = 15 } = {}) {
   await new Promise(resolve => setImmediate(resolve));
   return { now, alarms, local, synced, changes, hooks, syncs,
     message: payload => new Promise(resolve => hooks.message(payload, {}, value => resolve(clone(value)))),
-    setRunning: value => vm.runInContext(`syncState.running = ${Boolean(value)};`, context) };
+    setRunning: value => vm.runInContext(`syncState.running = ${Boolean(value)};`, context),
+    verify: async (username, movieSlug, opts, html) => {
+      vm.runInContext('globalThis.__verifyPaths = [];', context);
+      vm.runInContext(`globalThis.__verifyHtml = ${JSON.stringify(html)};`, context);
+      vm.runInContext('fetchLetterboxdPage = async (path) => { globalThis.__verifyPaths.push(path); return globalThis.__verifyHtml; };', context);
+      const result = await vm.runInContext(
+        `verifyWatchlistContainsSlug(${JSON.stringify(username)}, ${JSON.stringify(movieSlug)}, ${JSON.stringify(opts || {})})`,
+        context,
+      );
+      return { result: clone(result), paths: clone(vm.runInContext('globalThis.__verifyPaths.slice()', context)) };
+    } };
 }
+
+test('watchlist verification fetches page 1 once and finds the slug', async () => {
+  const w = await worker();
+  const bigOpts = { maxPages: 8, maxProbes: 3, includeGenericPath: true };
+  const { result, paths } = await w.verify('u', 'target', bigOpts, '<li data-film-slug="target"></li>');
+  assert.deepEqual(paths, ['/u/watchlist/']);
+  assert.equal(result.verified, true);
+  assert.equal(result.reason, 'found_on_page_1');
+});
+
+test('watchlist verification fetches page 1 once and reports a miss', async () => {
+  const w = await worker();
+  const bigOpts = { maxPages: 8, maxProbes: 3, includeGenericPath: true };
+  const { result, paths } = await w.verify('u', 'target', bigOpts, '<li data-film-slug="other"></li>');
+  assert.deepEqual(paths, ['/u/watchlist/']);
+  assert.equal(result.verified, false);
+  assert.equal(result.reason, 'slug_not_found_on_page_1');
+});
 
 test('enabling automatic sync schedules six hours and preserves an existing correct deadline', async () => {
   const w = await worker({ enabled: false, period: null });
