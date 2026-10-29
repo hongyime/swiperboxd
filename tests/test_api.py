@@ -316,12 +316,30 @@ def test_ingest_progress_returns_error_details(monkeypatch):
     assert response.status_code == 200
 
     time.sleep(0.15)
-    progress = client.get("/ingest/progress", params={"user_id": "u-ingest-error"})
+    progress = client.get("/ingest/progress", params={"user_id": "u-ingest-error"},
+                          headers=_auth_headers("u-ingest-error"))
     assert progress.status_code == 200
     payload = progress.json()
     assert payload["progress"] == -1
     assert payload["error"]["code"] == "ingest_worker_failed"
     assert "upstream exploded" in payload["error"]["reason"]
+
+
+def test_ingest_progress_requires_session():
+    response = client.get("/ingest/progress", params={"user_id": "testuser"})
+    assert response.status_code == 401
+
+
+def test_ingest_progress_rejects_other_user_identity():
+    response = client.get("/ingest/progress", params={"user_id": "victim"}, headers=_NEW_FORMAT_HEADERS)
+    assert response.status_code == 403
+    assert response.json()["code"] == "user_id_mismatch"
+
+
+def test_ingest_progress_is_private_and_not_cached():
+    response = client.get("/ingest/progress", params={"user_id": "testuser"}, headers=_NEW_FORMAT_HEADERS)
+    assert response.status_code == 200
+    assert "no-store" in response.headers["Cache-Control"]
 
 
 def test_ingest_rate_limit():

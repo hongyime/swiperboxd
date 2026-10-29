@@ -238,12 +238,21 @@ def verify_session(x_session_token: str = Header(..., alias="X-Session-Token")) 
     return data.get("u", "")
 
 
-def verify_extension_user(verified_user: str = Depends(verify_session)) -> str:
+def verify_extension_user(
+    request: Request,
+    x_session_token: str | None = Header(default=None, alias="X-Session-Token"),
+) -> str:
     """Require a session token that resolves to a concrete username.
 
     Extension endpoints should never accept API-key style shared auth or
-    legacy anonymous session payloads.
+    legacy anonymous session payloads. The read-only progress probe answers a
+    missing token with 401 rather than FastAPI's 422 so unauthenticated callers
+    get a uniform auth failure.
     """
+    if not x_session_token:
+        status_code = 401 if request.url.path == "/ingest/progress" else 422
+        raise HTTPException(status_code=status_code, detail={"code": "invalid_extension_session"})
+    verified_user = verify_session(x_session_token)
     if not verified_user:
         raise HTTPException(status_code=401, detail={"code": "invalid_extension_session"})
     return verified_user
@@ -847,16 +856,19 @@ async def start_ingest(
 
 
 @app.get("/ingest/progress")
-def ingest_progress(user_id: str = Query(min_length=1)):
-    """Get ingest progress for a user."""
-    return {
+def ingest_progress(user_id: str = Query(min_length=1), verified_user: str = Depends(verify_extension_user)):
+    """Get ingest progress for the authenticated extension user."""
+    headers = {"Cache-Control": "private, no-store"}
+    if user_id != verified_user:
+        raise HTTPException(status_code=403, detail={"code": "user_id_mismatch"}, headers=headers)
+    return JSONResponse({
         "status": "ok",
         "user_id": user_id,
         "progress": store.get_ingest_progress(user_id),
         # Progress 0/partial means a worker holds the ingest claim; -1 and 100 are terminal.
         "running": store.get_ingest_progress(user_id) not in (-1, 100),
         "error": store.get_ingest_error(user_id),
-    }
+    }, headers=headers)
 
 
 @app.get("/discovery/deck")
