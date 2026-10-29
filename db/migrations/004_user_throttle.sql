@@ -39,7 +39,7 @@ begin
   update public.user_throttle set ingest_running_at = null where user_id = p_user_id;
 end; $$;
 
-revoke execute on function public.throttle_claim(text, text, double precision) from anon, authenticated;
+revoke execute on function public.throttle_claim(text, text, double precision) from public, anon, authenticated;
 grant execute on function public.throttle_claim(text, text, double precision) to service_role;
-revoke execute on function public.throttle_release(text) from anon, authenticated;
+revoke execute on function public.throttle_release(text) from public, anon, authenticated;
 grant execute on function public.throttle_release(text) to service_role;

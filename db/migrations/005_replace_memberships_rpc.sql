@@ -13,5 +13,5 @@ begin
 end;
 $$;
 
-revoke execute on function public.replace_list_memberships_atomic(text, jsonb) from anon, authenticated;
+revoke execute on function public.replace_list_memberships_atomic(text, jsonb) from public, anon, authenticated;
 grant execute on function public.replace_list_memberships_atomic(text, jsonb) to service_role;

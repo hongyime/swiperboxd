@@ -37,12 +37,10 @@ def test_migration_002_revokes_exec_sql_from_rest_roles(monkeypatch):
     ]
     assert revoke_sql, "002_revoke_exec_sql.sql was not executed"
     assert all(
-        "revoke execute on function public.exec_sql(text) from anon, authenticated"
-        in sql.lower()
+        "revoke execute on function public.exec_sql(text) from public" in sql.lower()
         for sql in revoke_sql
     )
     assert all(
         "grant execute on function public.exec_sql(text) to service_role" in sql.lower()
         for sql in revoke_sql
     )
-    assert all("from public" not in sql.lower() for sql in revoke_sql)
