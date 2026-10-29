@@ -1651,55 +1651,6 @@ async function writeToLetterboxd(action, movieSlug) {
   return false; // dismiss — no Letterboxd write needed
 }
 
-// ── Letterboxd LID backfill ──────────────────────────────────────────────────
-
-async function backfillLbFilmIds() {
-  const cfg = await getConfig();
-  if (!cfg.username || !cfg.sessionToken) throw new Error("Not registered — connect first");
-
-  log("backfill: fetching movies missing lb_film_id…");
-
-  // Ask the API for slugs that have no lb_film_id yet
-  const url = `${cfg.apiBase || DEFAULT_API_BASE}/api/extension/movies-missing-lb-id?limit=500`;
-  const res = await fetchWithRetry(url, {
-    headers: cfg.sessionToken ? { "X-Session-Token": cfg.sessionToken } : {},
-  });
-  if (!res.ok) throw new Error(`movies-missing-lb-id ${res.status}`);
-  const { slugs } = await res.json();
-
-  log(`backfill: ${slugs.length} movies to update`);
-  let updated = 0, failed = 0;
-
-  for (let i = 0; i < slugs.length; i++) {
-    if (syncState.stopRequested) break;
-    const slug = slugs[i];
-    try {
-      // Fetch the film page — x-letterboxd-identifier header contains the LID
-      const filmRes = await fetchWithRetry(`${LB_BASE}/film/${slug}/`, {
-        credentials: "include",
-        headers: { "Accept": "text/html", "User-Agent": navigator.userAgent },
-      });
-      const lbFilmId = filmRes.headers.get("x-letterboxd-identifier") || "";
-      if (lbFilmId) {
-        await apiPost(cfg, "/actions/cache-lb-id", { movie_slug: slug, lb_film_id: lbFilmId });
-        updated++;
-      } else {
-        failed++;
-      }
-    } catch (e) {
-      failed++;
-    }
-
-    if ((i + 1) % 20 === 0) {
-      log(`backfill: ${i + 1}/${slugs.length} — updated=${updated} failed=${failed}`);
-    }
-    await sleep(300);
-  }
-
-  log(`backfill: done — updated=${updated} failed=${failed}`);
-  return { updated, failed };
-}
-
 // ── Entry points ─────────────────────────────────────────────────────────────
 
 async function ensureConfig() {

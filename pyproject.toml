@@ -10,8 +10,6 @@ dependencies = [
   "httpx>=0.28.1",
   "beautifulsoup4>=4.15.0",
   "supabase>=2.31.0",
-  "redis>=7.4.0",
-  "requests>=2.34.2",
   "python-dotenv>=1.2.2",
   "PyJWT>=2.15.0"
 ]
