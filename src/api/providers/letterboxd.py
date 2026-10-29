@@ -410,12 +410,12 @@ class HttpLetterboxdScraper:
     def pull_watchlist_slugs(self, session_cookie: str, username: str | None = None, max_pages: int = 50) -> set[str]:
         """Pull film slugs from the authenticated user's watchlist."""
         slugs: set[str] = set()
-        path = f"/{username}/watchlist/" if username else "/watchlist/"
-        url = f"{self.base_url}{path}"
-        print(f"[scraper] watchlist: starting fetch url={url} max_pages={max_pages} cookie_len={len(session_cookie or '')}", flush=True)
+        base_path = f"/{username}/watchlist/" if username else "/watchlist/"
+        print(f"[scraper] watchlist: starting fetch base_path={base_path} max_pages={max_pages} cookie_len={len(session_cookie or '')}", flush=True)
         for page in range(1, max_pages + 1):
+            url = f"{self.base_url}{base_path}" if page == 1 else f"{self.base_url}{base_path}page/{page}/"
             try:
-                resp = self._fetch(url, params={"page": page}, session_cookie=session_cookie)
+                resp = self._fetch(url, session_cookie=session_cookie)
                 print(f"[scraper] watchlist: page={page} status={resp.status_code} body_len={len(resp.text)}", flush=True)
             except RuntimeError as exc:
                 print(f"[scraper] watchlist: page={page} fetch failed: {exc} — stopping pagination", flush=True)
@@ -716,10 +716,12 @@ class HttpLetterboxdScraper:
         slugs: list[str] = []
         seen: set[str] = set()
         max_pages = 20
+        base = list_url.rstrip("/")
 
         for page_num in range(1, max_pages + 1):
+            page_url = f"{base}/" if page_num == 1 else f"{base}/page/{page_num}/"
             try:
-                response = self._fetch(list_url, params={"page": page_num})
+                response = self._fetch(page_url)
                 if response.status_code == 404:
                     break
 
@@ -743,10 +745,14 @@ class HttpLetterboxdScraper:
                 if not page_slugs:
                     break  # no more films on this page
 
+                before = len(seen)
                 for slug in page_slugs:
                     if slug and slug not in seen:
                         seen.add(slug)
                         slugs.append(slug)
+                # A redirect back to page 1 or a stale repeat adds nothing new.
+                if len(seen) == before:
+                    break
 
             except Exception as exc:
                 print(f"[lists] error fetching list slugs list_id={list_id} page={page_num}: {exc}", flush=True)
