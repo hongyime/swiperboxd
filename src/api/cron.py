@@ -199,30 +199,20 @@ async def sync_users_cron(
 
         try:
             slugs = scraper.pull_watchlist_slugs(cookie, username=username, max_pages=max_pages)
-            added = 0
-            for slug in slugs:
-                try:
-                    store.add_watchlist(user_id, slug)
-                    added += 1
-                except Exception as exc:
-                    user_stats["errors"].append(f"wl {slug}: {exc}")
-            user_stats["watchlist"] = added
-            print(f"  watchlist: scraped={len(slugs)} added={added}", flush=True)
+            result = store.batch_add_watchlist(user_id, list(slugs))
+            user_stats["watchlist"] = result.get("added", 0)
+            user_stats["errors"].extend(result.get("errors") or [])
+            print(f"  watchlist: scraped={len(slugs)} added={user_stats['watchlist']}", flush=True)
         except Exception as exc:
             user_stats["errors"].append(f"watchlist fetch: {type(exc).__name__}: {exc}")
             print(f"  watchlist failed: {exc}", flush=True)
 
         try:
             slugs = scraper.pull_diary_slugs(cookie, username=username, max_pages=max_pages)
-            added = 0
-            for slug in slugs:
-                try:
-                    store.add_diary(user_id, slug)
-                    added += 1
-                except Exception as exc:
-                    user_stats["errors"].append(f"diary {slug}: {exc}")
-            user_stats["diary"] = added
-            print(f"  diary: scraped={len(slugs)} added={added}", flush=True)
+            result = store.batch_add_diary(user_id, list(slugs))
+            user_stats["diary"] = result.get("added", 0)
+            user_stats["errors"].extend(result.get("errors") or [])
+            print(f"  diary: scraped={len(slugs)} added={user_stats['diary']}", flush=True)
         except Exception as exc:
             user_stats["errors"].append(f"diary fetch: {type(exc).__name__}: {exc}")
             print(f"  diary failed: {exc}", flush=True)

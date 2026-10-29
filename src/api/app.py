@@ -1421,20 +1421,11 @@ def _run_user_history_sync(
             session_cookie, username=username, max_pages=max_watchlist_pages
         )
         print(f"[ingest/sync] watchlist scraper returned {len(live_watchlist)} slugs", flush=True)
-        stored = 0
-        failed = 0
-        for slug in live_watchlist:
-            try:
-                store.add_watchlist(user_id, slug)
-                all_slugs.add(slug)
-                stored += 1
-            except Exception as slug_exc:
-                failed += 1
-                print(f"[ingest/sync] watchlist slug failed: {slug}: {slug_exc}", flush=True)
-        sync_stats["watchlist_count"] = stored
-        if failed:
-            sync_stats["errors"].append(f"watchlist: {failed}/{len(live_watchlist)} slugs failed to store")
-        print(f"[ingest/sync] watchlist stored: {stored} ok, {failed} failed for user_id={user_id}", flush=True)
+        result = store.batch_add_watchlist(user_id, list(live_watchlist))
+        all_slugs.update(live_watchlist)
+        sync_stats["watchlist_count"] = result.get("added", len(live_watchlist))
+        sync_stats["errors"].extend(result.get("errors") or [])
+        print(f"[ingest/sync] watchlist stored: {sync_stats['watchlist_count']} slugs for user_id={user_id}", flush=True)
     except Exception as exc:
         msg = f"watchlist fetch failed: {type(exc).__name__}: {exc}"
         print(f"[ingest/sync] ERROR: {msg}", flush=True)
@@ -1448,20 +1439,11 @@ def _run_user_history_sync(
             session_cookie, username=username, max_pages=max_diary_pages
         )
         print(f"[ingest/sync] diary scraper returned {len(live_diary)} slugs", flush=True)
-        stored = 0
-        failed = 0
-        for slug in live_diary:
-            try:
-                store.add_diary(user_id, slug)
-                all_slugs.add(slug)
-                stored += 1
-            except Exception as slug_exc:
-                failed += 1
-                print(f"[ingest/sync] diary slug failed: {slug}: {slug_exc}", flush=True)
-        sync_stats["diary_count"] = stored
-        if failed:
-            sync_stats["errors"].append(f"diary: {failed}/{len(live_diary)} slugs failed to store")
-        print(f"[ingest/sync] diary stored: {stored} ok, {failed} failed for user_id={user_id}", flush=True)
+        result = store.batch_add_diary(user_id, list(live_diary))
+        all_slugs.update(live_diary)
+        sync_stats["diary_count"] = result.get("added", len(live_diary))
+        sync_stats["errors"].extend(result.get("errors") or [])
+        print(f"[ingest/sync] diary stored: {sync_stats['diary_count']} slugs for user_id={user_id}", flush=True)
     except Exception as exc:
         msg = f"diary fetch failed: {type(exc).__name__}: {exc}"
         print(f"[ingest/sync] ERROR: {msg}", flush=True)
@@ -1470,11 +1452,15 @@ def _run_user_history_sync(
     store.set_ingest_progress(user_id, 70)
 
     # NEW: Fetch metadata for all collected slugs
-    if all_slugs:
-        print(f"[ingest/sync] fetching metadata for {len(all_slugs)} movies...", flush=True)
-        missing = [slug for slug in all_slugs if not store.get_movie(slug)]
-        print(f"[ingest/sync] {len(missing)} movies need metadata", flush=True)
-        
+    if all_slugs and os.getenv("VERCEL"):
+        # Catalog is seed-populated on Vercel; scraping here would blow the timeout.
+        print("[ingest/sync] VERCEL set — skipping metadata scrape", flush=True)
+    elif all_slugs:
+        existing = store.get_movies_by_slugs(list(all_slugs))
+        missing = [slug for slug in all_slugs if slug not in existing]
+        missing = missing[:50]
+        print(f"[ingest/sync] {len(missing)} movies need metadata (capped at 50)", flush=True)
+
         if missing:
             try:
                 movies = scraper.metadata_for_slugs(missing)
