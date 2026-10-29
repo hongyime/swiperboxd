@@ -81,6 +81,10 @@ class Store(Protocol):
 
     def allow_scrape_request(self, user_id: str, min_interval_seconds: float = 1.0) -> tuple[bool, float]: ...
 
+    def claim_ingest(self, user_id: str) -> bool: ...
+
+    def release_ingest(self, user_id: str) -> None: ...
+
     def record_genre_preference(self, user_id: str, genres: list[str]) -> None: ...
 
     def get_genre_weights(self, user_id: str) -> dict[str, int]: ...
@@ -270,6 +274,17 @@ class InMemoryStore:
                 return False, min_interval_seconds - delta
             self.last_scrape_at[user_id] = now
             return True, 0.0
+
+    def claim_ingest(self, user_id: str) -> bool:
+        with self.lock:
+            if user_id in self.ingest_running:
+                return False
+            self.ingest_running.add(user_id)
+            return True
+
+    def release_ingest(self, user_id: str) -> None:
+        with self.lock:
+            self.ingest_running.discard(user_id)
 
     def record_genre_preference(self, user_id: str, genres: list[str]) -> None:
         with self.lock:
@@ -806,26 +821,38 @@ class SupabaseStore:
         return dict(error) if error else None
 
     def should_rate_limit(self, user_id: str, lock_ms: int = 500) -> tuple[bool, int]:
-        """Check if user should be rate-limited (in-memory only)."""
-        now = time.time() * 1000
-        with self.lock:
-            previous = self.last_action_at.get(user_id, 0)
-            delta = now - previous
-            if delta < lock_ms:
-                return True, int(lock_ms - delta)
-            self.last_action_at[user_id] = now
+        """Atomically claim a swipe slot in the database."""
+        response = self.client.rpc("throttle_claim", {
+            "p_user_id": user_id,
+            "p_column": "last_action_at",
+            "p_window_seconds": lock_ms / 1000.0,
+        }).execute()
+        if response.data:
             return False, 0
+        return True, int(lock_ms)
 
     def allow_scrape_request(self, user_id: str, min_interval_seconds: float = 1.0) -> tuple[bool, float]:
-        """Check if user should be allowed to scrape (in-memory only)."""
-        now = time.time()
-        with self.lock:
-            previous = self.last_scrape_at.get(user_id, 0.0)
-            delta = now - previous
-            if delta < min_interval_seconds:
-                return False, min_interval_seconds - delta
-            self.last_scrape_at[user_id] = now
+        """Atomically claim a scrape slot in the database."""
+        response = self.client.rpc("throttle_claim", {
+            "p_user_id": user_id,
+            "p_column": "last_scrape_at",
+            "p_window_seconds": float(min_interval_seconds),
+        }).execute()
+        if response.data:
             return True, 0.0
+        return False, float(min_interval_seconds)
+
+    def claim_ingest(self, user_id: str) -> bool:
+        """Atomically claim the ingest lease; stale after 120 s."""
+        response = self.client.rpc("throttle_claim", {
+            "p_user_id": user_id,
+            "p_column": "ingest_running_at",
+            "p_window_seconds": 120.0,
+        }).execute()
+        return bool(response.data)
+
+    def release_ingest(self, user_id: str) -> None:
+        self.client.rpc("throttle_release", {"p_user_id": user_id}).execute()
 
     def record_genre_preference(self, user_id: str, genres: list[str]) -> None:
         """Record user's genre preferences in Supabase."""

@@ -824,11 +824,9 @@ async def start_ingest(
         print(f"[ingest] rate limited for user, retry_after={retry_after:.1f}s", flush=True)
         raise HTTPException(status_code=429, detail={"code": "scrape_rate_limited", "retry_after": retry_after})
 
-    with store.lock:
-        if payload.user_id in store.ingest_running:
-            print("[ingest] already running, skipping duplicate start", flush=True)
-            return {"status": "already_running", "user_id": payload.user_id}
-        store.ingest_running.add(payload.user_id)
+    if not store.claim_ingest(payload.user_id):
+        print("[ingest] already running, skipping duplicate start", flush=True)
+        return {"status": "already_running", "user_id": payload.user_id}
 
     store.set_ingest_error(payload.user_id, None)
     store.set_ingest_progress(payload.user_id, 0)
@@ -865,7 +863,7 @@ async def start_ingest(
             store.set_ingest_progress(payload.user_id, -1)
             sync_stats["errors"].append(str(exc))
         finally:
-            store.ingest_running.discard(payload.user_id)
+            store.release_ingest(payload.user_id)
 
         # Always include current DB counts so the UI can render cards even when
         # the live scrape failed (expected on Vercel — Letterboxd blocks AWS IPs).
@@ -912,7 +910,8 @@ def ingest_progress(user_id: str = Query(min_length=1)):
         "status": "ok",
         "user_id": user_id,
         "progress": store.get_ingest_progress(user_id),
-        "running": user_id in store.ingest_running,
+        # Progress 0/partial means a worker holds the ingest claim; -1 and 100 are terminal.
+        "running": store.get_ingest_progress(user_id) not in (-1, 100),
         "error": store.get_ingest_error(user_id),
     }
 
@@ -1433,7 +1432,7 @@ def _run_user_history_sync(
         print(f"[ingest/sync] WARNING: {msg}", flush=True)
         sync_stats["errors"].append(msg)
         store.set_ingest_progress(user_id, 100)
-        store.ingest_running.discard(user_id)
+        store.release_ingest(user_id)
         return sync_stats
 
     all_slugs = set()
@@ -1517,7 +1516,7 @@ def _run_user_history_sync(
                 sync_stats["errors"].append(msg)
 
     store.set_ingest_progress(user_id, 100)
-    store.ingest_running.discard(user_id)
+    store.release_ingest(user_id)
     print(
         f"[ingest/sync] DONE for {username}: "
         f"watchlist={sync_stats['watchlist_count']} diary={sync_stats['diary_count']} "
@@ -1627,4 +1626,4 @@ def _run_ingest_worker(
         store.set_ingest_error(user_id, {"code": "ingest_worker_failed", "reason": str(exc)})
         print(f"[ingest] worker_error user_id={user_id} error={exc}", flush=True)
     finally:
-        store.ingest_running.discard(user_id)
+        store.release_ingest(user_id)
