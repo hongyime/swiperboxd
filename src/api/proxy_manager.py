@@ -334,7 +334,7 @@ class ProxyManager:
         tokens = [t.strip() for t in raw.split(",") if t.strip()]
         if not tokens:
             return
-        probe = os.getenv("SCRAPEDO_PROBE_ON_STARTUP", "true").lower() != "false"
+        probe = os.getenv("SCRAPEDO_PROBE_ON_STARTUP", "false").lower() != "false"
         try:
             self._scrape_do = ScrapeDoKeyPool(tokens, probe=probe)
         except Exception as e:
