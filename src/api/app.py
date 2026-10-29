@@ -18,7 +18,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from pydantic import BaseModel, Field
 
-from .security import decrypt_session_cookie, encrypt_session_cookie
+from .security import decrypt_session_cookie, decrypt_session_token, encrypt_session_cookie
 from .providers.letterboxd import HttpLetterboxdScraper, MockLetterboxdScraper
 from .database import is_supabase_configured, run_migrations
 from .store import normalize_movie_record
@@ -220,23 +220,22 @@ def _extract_username_from_cookie(session_cookie: str) -> str | None:
 def verify_session(x_session_token: str = Header(..., alias="X-Session-Token")) -> str:
     """Decrypt X-Session-Token and return the verified username.
 
-    New token format: Fernet(json.dumps({"u": username, "c": session_cookie}))
-    Old token format: Fernet(raw_session_cookie)  — returns "" for backward compat.
+    Tokens are Fernet(json.dumps({"u": username, "c": session_cookie})) with a
+    30-day TTL. Legacy non-JSON tokens are rejected.
     """
     master_key = os.getenv("MASTER_ENCRYPTION_KEY")
     if not master_key:
         raise HTTPException(status_code=500, detail={"code": "server_misconfigured"})
     try:
-        raw = decrypt_session_cookie(x_session_token, master_key)
+        raw = decrypt_session_token(x_session_token, master_key)
     except Exception:
         raise HTTPException(status_code=401, detail={"code": "invalid_session"})
 
     try:
         data = json.loads(raw)
-        return data.get("u", "")
     except (json.JSONDecodeError, ValueError):
-        # Old-format token (raw cookie string) — identity unknown, allow through
-        return ""
+        raise HTTPException(status_code=401, detail={"code": "invalid_session"})
+    return data.get("u", "")
 
 
 def verify_extension_user(verified_user: str = Depends(verify_session)) -> str:

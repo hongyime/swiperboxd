@@ -20,10 +20,13 @@ from src.api.security import decrypt_session_cookie, encrypt_session_cookie
 
 client = TestClient(app)
 
-# Old-format token (raw cookie string) — exercises the backward-compat path in
-# verify_session where json.loads fails and verified_user returns "".
-_TEST_SESSION = encrypt_session_cookie("session::testuser", os.environ["MASTER_ENCRYPTION_KEY"])
-_AUTH_HEADERS = {"X-Session-Token": _TEST_SESSION}
+def _auth_headers(user: str) -> dict:
+    """Fresh identity-bound token for a specific user (keeps per-test isolation)."""
+    token = encrypt_session_cookie(
+        json.dumps({"u": user, "c": "fake-cookie"}),
+        os.environ["MASTER_ENCRYPTION_KEY"],
+    )
+    return {"X-Session-Token": token}
 
 # New-format token (JSON payload) — exercises the identity binding guard.
 # verified_user will be "testuser" when this token is decrypted.
@@ -32,6 +35,8 @@ _NEW_FORMAT_SESSION = encrypt_session_cookie(
     os.environ["MASTER_ENCRYPTION_KEY"],
 )
 _NEW_FORMAT_HEADERS = {"X-Session-Token": _NEW_FORMAT_SESSION}
+# Default identity-bound token used by tests that operate as "testuser".
+_AUTH_HEADERS = _NEW_FORMAT_HEADERS
 
 
 def test_encrypt_roundtrip():
@@ -106,7 +111,7 @@ def test_profiles_and_discovery_deck():
     assert profiles.status_code == 200
     assert "gold-standard" in profiles.json()["profiles"]
 
-    client.post("/ingest/start", headers=_AUTH_HEADERS, json={"user_id": "u1", "source": "trending", "depth_pages": 2})
+    client.post("/ingest/start", headers=_auth_headers("u1"), json={"user_id": "u1", "source": "trending", "depth_pages": 2})
     time.sleep(0.35)
     deck = client.get("/discovery/deck", params={"user_id": "u1", "profile": "gold-standard"})
     assert deck.status_code == 200
@@ -114,7 +119,7 @@ def test_profiles_and_discovery_deck():
 
 
 def test_discovery_details():
-    client.post("/ingest/start", headers=_AUTH_HEADERS, json={"user_id": "u2", "source": "trending", "depth_pages": 2})
+    client.post("/ingest/start", headers=_auth_headers("u2"), json={"user_id": "u2", "source": "trending", "depth_pages": 2})
     time.sleep(0.35)
     details = client.get("/discovery/details", params={"slug": "film-c"})
     assert details.status_code == 200
@@ -286,7 +291,7 @@ def test_ingest_progress_returns_error_details(monkeypatch):
 
     response = client.post(
         "/ingest/start",
-        headers=_AUTH_HEADERS,
+        headers=_auth_headers("u-ingest-error"),
         json={"user_id": "u-ingest-error", "source": "trending", "depth_pages": 1},
     )
     assert response.status_code == 200
@@ -301,21 +306,23 @@ def test_ingest_progress_returns_error_details(monkeypatch):
 
 
 def test_ingest_rate_limit():
-    first = client.post("/ingest/start", headers=_AUTH_HEADERS, json={"user_id": "u-rate", "source": "trending", "depth_pages": 1})
+    headers = _auth_headers("u-rate")
+    first = client.post("/ingest/start", headers=headers, json={"user_id": "u-rate", "source": "trending", "depth_pages": 1})
     assert first.status_code == 200
-    second = client.post("/ingest/start", headers=_AUTH_HEADERS, json={"user_id": "u-rate", "source": "trending", "depth_pages": 1})
+    second = client.post("/ingest/start", headers=headers, json={"user_id": "u-rate", "source": "trending", "depth_pages": 1})
     assert second.status_code == 429
 
 
 def test_swipe_has_sync_lock():
-    client.post("/ingest/start", headers=_AUTH_HEADERS, json={"user_id": "u-lock", "source": "trending", "depth_pages": 2})
+    headers = _auth_headers("u-lock")
+    client.post("/ingest/start", headers=headers, json={"user_id": "u-lock", "source": "trending", "depth_pages": 2})
     time.sleep(0.35)
 
     payload = {"user_id": "u-lock", "movie_slug": "film-a", "action": "dismiss"}
-    first = client.post("/actions/swipe", headers=_AUTH_HEADERS, json=payload)
+    first = client.post("/actions/swipe", headers=headers, json=payload)
     assert first.status_code == 200
 
-    second = client.post("/actions/swipe", headers=_AUTH_HEADERS, json=payload)
+    second = client.post("/actions/swipe", headers=headers, json=payload)
     assert second.status_code == 429
     assert second.json()["code"] == "sync_lock"
 
@@ -334,6 +341,28 @@ def test_guarded_endpoints_reject_invalid_token():
     bad_headers = {"X-Session-Token": "not-a-valid-token"}
     r = client.post("/ingest/start", headers=bad_headers, json={"user_id": "x", "source": "trending", "depth_pages": 1})
     assert r.status_code == 401
+
+
+def test_expired_token_is_rejected():
+    """Tokens older than the 30-day TTL must not authenticate."""
+    from datetime import datetime, timedelta, timezone
+    from cryptography.fernet import Fernet
+    from fastapi import HTTPException
+    from src.api.app import verify_session
+    from src.api.security import _derive_fernet_key
+
+    key = os.environ["MASTER_ENCRYPTION_KEY"]
+    fernet = Fernet(_derive_fernet_key(key))
+    stale_ts = (datetime.now(timezone.utc) - timedelta(days=31)).timestamp()
+    payload = json.dumps({"u": "testuser", "c": "fake-cookie"}).encode("utf-8")
+    expired = fernet.encrypt_at_time(payload, int(stale_ts)).decode("utf-8")
+
+    with pytest.raises(HTTPException) as exc:
+        verify_session(expired)
+    assert exc.value.status_code == 401
+
+    fresh = encrypt_session_cookie(payload.decode("utf-8"), key)
+    assert verify_session(fresh) == "testuser"
 
 
 def test_identity_binding_rejects_mismatched_user_id():
@@ -366,14 +395,16 @@ def test_identity_binding_passes_matching_user_id():
     assert r.json()["status"] in {"queued", "already_running"}
 
 
-def test_identity_binding_bypass_for_old_format_token():
-    """Old-format token returns verified_user="" — any user_id must be accepted (backward compat)."""
+def test_old_format_token_is_rejected():
+    """Legacy non-JSON tokens no longer authenticate."""
+    legacy = encrypt_session_cookie("session::testuser", os.environ["MASTER_ENCRYPTION_KEY"])
     r = client.post(
         "/ingest/start",
-        headers=_AUTH_HEADERS,
+        headers={"X-Session-Token": legacy},
         json={"user_id": "any-random-user", "source": "trending", "depth_pages": 1},
     )
-    assert r.status_code == 200
+    assert r.status_code == 401
+    assert r.json()["code"] == "invalid_session"
 
 
 def test_resilience_helpers():
