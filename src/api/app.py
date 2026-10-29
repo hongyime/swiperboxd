@@ -543,13 +543,11 @@ def list_deck(
                 headers={"Cache-Control": "private, no-store"},
             ) from exc
     seen = watchlist | diary | exclusions
-    eligible_slugs = [slug for slug in movie_slugs if slug not in seen]
 
     try:
-        movies_by_slug = store.get_movies_by_slugs(eligible_slugs)
-        movies = [movies_by_slug[slug] for slug in eligible_slugs if slug in movies_by_slug]
+        movies = store.get_deck_movies(list_id, seen, sample_size=200)
     except Exception as exc:
-        print(f"[deck] failed to load movies from store: {exc}", flush=True)
+        print(f"[deck] failed to load deck movies from store: {exc}", flush=True)
         raise HTTPException(status_code=500, detail={"code": "store_error", "reason": str(exc)})
 
     movies = [m for m in movies if m and m.get("slug") not in seen]

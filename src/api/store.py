@@ -125,6 +125,10 @@ class Store(Protocol):
 
     def get_movies_by_slugs(self, slugs: list[str]) -> dict[str, dict]: ...
 
+    def get_deck_movies(
+        self, list_id: str, seen: set[str] | list[str], sample_size: int = 200
+    ) -> list[dict]: ...
+
 
 @dataclass
 class InMemoryStore:
@@ -447,6 +451,20 @@ class InMemoryStore:
                 for slug in slugs
                 if slug in self.movies
             }
+
+    def get_deck_movies(
+        self, list_id: str, seen: set[str] | list[str], sample_size: int = 200
+    ) -> list[dict]:
+        """Return a random sample of unseen list movies (in-memory)."""
+        seen_slugs = set(seen)
+        with self.lock:
+            movies = [
+                normalize_movie_record(self.movies[slug])
+                for slug in self.list_memberships.get(list_id, [])
+                if slug not in seen_slugs and slug in self.movies
+            ]
+        random.shuffle(movies)
+        return movies[:sample_size]
 
     def cleanup_expired_progress(self, ttl_seconds: float = 3600.0) -> int:
         """Remove ingest progress entries older than TTL. Returns count removed."""
@@ -829,6 +847,16 @@ class SupabaseStore:
                 if row.get("slug"):
                     results[row["slug"]] = normalize_movie_record(row)
         return results
+
+    def get_deck_movies(
+        self, list_id: str, seen: set[str] | list[str], sample_size: int = 200
+    ) -> list[dict]:
+        """Fetch a random unseen sample of a list's movies in one query."""
+        resp = self.client.rpc(
+            "deck_sample",
+            {"p_list_id": list_id, "p_seen": list(seen), "p_sample_size": sample_size},
+        ).execute()
+        return [normalize_movie_record(row) for row in (resp.data or [])]
 
     def set_ingest_progress(self, user_id: str, value: int) -> None:
         """Set ingest progress (in-memory only - for performance)."""
