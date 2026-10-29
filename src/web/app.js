@@ -1,4 +1,4 @@
-import { createSuppressionStore, createSyncQueueStore, parseLetterboxdCsv } from './state.js';
+import { createSuppressionStore, createSyncQueueStore, parseLetterboxdCsv, parseLetterboxdZip } from './state.js';
 import { createReadLane } from './read-requests.js';
 
 const catalogueReads = createReadLane();
@@ -404,6 +404,33 @@ function initAuth() {
     if (file) handleCsvUpload(file);
     e.target.value = '';
   });
+
+  const dropzone = $('#import-dropzone');
+  if (dropzone) {
+    const openPicker = () => $('#csv-file-input')?.click();
+    dropzone.addEventListener('click', openPicker);
+    dropzone.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        openPicker();
+      }
+    });
+    for (const type of ['dragenter', 'dragover']) {
+      dropzone.addEventListener(type, (e) => {
+        e.preventDefault();
+        dropzone.classList.add('dragover');
+      });
+    }
+    for (const type of ['dragleave', 'dragend']) {
+      dropzone.addEventListener(type, () => dropzone.classList.remove('dragover'));
+    }
+    dropzone.addEventListener('drop', (e) => {
+      e.preventDefault();
+      dropzone.classList.remove('dragover');
+      const file = e.dataTransfer?.files?.[0];
+      if (file) handleCsvUpload(file);
+    });
+  }
   $('#setup-connect-btn')?.addEventListener('click', connectViaExtension);
   $('#logout-btn')?.addEventListener('click', () => {
     accountVersion++;
@@ -599,31 +626,53 @@ async function handleCsvUpload(file) {
   }
   showToast(`Parsing ${file.name}…`);
   try {
-    const text = await file.text();
-    const slugs = parseLetterboxdCsv(text);
-    if (!slugs.length) {
-      showToast('No film slugs found in CSV. Make sure it is a Letterboxd export.');
-      return;
-    }
     const lowerName = file.name.toLowerCase();
-    const isWatchlist = lowerName.includes('watchlist');
-    const table = isWatchlist ? 'watchlist' : 'diary';
+    const imports = [];
+    if (lowerName.endsWith('.zip')) {
+      const entries = await parseLetterboxdZip(await file.arrayBuffer());
+      for (const entry of entries) {
+        const name = entry.name.toLowerCase();
+        const table = name.includes('watchlist') ? 'watchlist' : name.includes('diary') ? 'diary' : null;
+        if (!table) continue;
+        const slugs = parseLetterboxdCsv(entry.text);
+        if (slugs.length) imports.push({ table, slugs });
+      }
+      if (!imports.length) {
+        showToast('No film slugs found in ZIP. Make sure it is a Letterboxd export.');
+        return;
+      }
+    } else {
+      const slugs = parseLetterboxdCsv(await file.text());
+      if (!slugs.length) {
+        showToast('No film slugs found in CSV. Make sure it is a Letterboxd export.');
+        return;
+      }
+      imports.push({ table: lowerName.includes('watchlist') ? 'watchlist' : 'diary', slugs });
+    }
 
     const chunkSize = 500;
-    for (let i = 0; i < slugs.length; i += chunkSize) {
-      const chunk = slugs.slice(i, i + chunkSize);
-      await api(`/api/extension/batch/${table}`, {
-        method: 'POST',
-        sessionToken: state.encryptedSession,
-        body: {
-          user_id: state.username,
-          slugs: chunk,
-          page: Math.floor(i / chunkSize) + 1,
-          total_pages: Math.ceil(slugs.length / chunkSize)
-        }
-      });
+    const counts = { watchlist: 0, diary: 0 };
+    for (const { table, slugs } of imports) {
+      for (let i = 0; i < slugs.length; i += chunkSize) {
+        const chunk = slugs.slice(i, i + chunkSize);
+        await api(`/api/extension/batch/${table}`, {
+          method: 'POST',
+          sessionToken: state.encryptedSession,
+          body: {
+            user_id: state.username,
+            slugs: chunk,
+            page: Math.floor(i / chunkSize) + 1,
+            total_pages: Math.ceil(slugs.length / chunkSize)
+          }
+        });
+      }
+      counts[table] += slugs.length;
     }
-    showToast(`Imported ${slugs.length} films into your ${table}!`);
+    const summary = [
+      counts.watchlist ? `${counts.watchlist} watchlist` : null,
+      counts.diary ? `${counts.diary} diary` : null,
+    ].filter(Boolean).join(' / ');
+    showToast(`Imported ${summary} from ${file.name}!`);
     state.hasSynced = true;
     state.syncStatusKnown = true;
     if (state.selectedListId) {
@@ -631,7 +680,7 @@ async function handleCsvUpload(file) {
     }
   } catch (err) {
     console.error('[csv-upload]', err);
-    showToast(`CSV import error: ${err.message || 'Check file format'}`);
+    showToast(`Import error: ${err.message || 'Check file format'}`);
   }
 }
 

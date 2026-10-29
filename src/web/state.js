@@ -165,3 +165,62 @@ export function parseLetterboxdCsv(csvText) {
 
   return slugs;
 }
+
+async function inflateRaw(bytes) {
+  const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
+  return new Uint8Array(await new Response(stream).arrayBuffer());
+}
+
+/**
+ * Extract CSV entries from a Letterboxd export ZIP (browser + Node).
+ * Supports stored (method 0) and deflate (method 8) entries.
+ * Returns [{ name, text }] for *.csv entries; [] on invalid input.
+ */
+export async function parseLetterboxdZip(arrayBuffer) {
+  try {
+    const bytes = new Uint8Array(arrayBuffer);
+    if (bytes.length < 22) return [];
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+
+    // Locate the End Of Central Directory record (scan back up to 64 KiB for the comment).
+    let eocd = -1;
+    const minEocd = bytes.length - 22;
+    const maxScan = Math.max(0, minEocd - 0xffff);
+    for (let i = minEocd; i >= maxScan; i--) {
+      if (view.getUint32(i, true) === 0x06054b50) { eocd = i; break; }
+    }
+    if (eocd === -1) return [];
+
+    const entryCount = view.getUint16(eocd + 10, true);
+    let offset = view.getUint32(eocd + 16, true);
+    const decoder = new TextDecoder();
+    const entries = [];
+
+    for (let n = 0; n < entryCount; n++) {
+      if (offset + 46 > bytes.length || view.getUint32(offset, true) !== 0x02014b50) break;
+      const method = view.getUint16(offset + 10, true);
+      const compressedSize = view.getUint32(offset + 20, true);
+      const nameLen = view.getUint16(offset + 28, true);
+      const extraLen = view.getUint16(offset + 30, true);
+      const commentLen = view.getUint16(offset + 32, true);
+      const localOffset = view.getUint32(offset + 42, true);
+      const name = decoder.decode(bytes.subarray(offset + 46, offset + 46 + nameLen));
+      offset += 46 + nameLen + extraLen + commentLen;
+
+      if (!/\.csv$/i.test(name) || (method !== 0 && method !== 8)) continue;
+      if (localOffset + 30 > bytes.length || view.getUint32(localOffset, true) !== 0x04034b50) continue;
+      const lhNameLen = view.getUint16(localOffset + 26, true);
+      const lhExtraLen = view.getUint16(localOffset + 28, true);
+      const dataStart = localOffset + 30 + lhNameLen + lhExtraLen;
+      const dataEnd = dataStart + compressedSize;
+      if (dataEnd > bytes.length) continue;
+
+      const raw = bytes.subarray(dataStart, dataEnd);
+      const data = method === 0 ? raw : await inflateRaw(raw);
+      entries.push({ name, text: decoder.decode(data) });
+    }
+    return entries;
+  } catch {
+    return [];
+  }
+}

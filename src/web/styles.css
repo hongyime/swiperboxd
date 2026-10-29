@@ -712,3 +712,31 @@ body {
   pointer-events: none;
   filter: grayscale(100%);
 }
+
+/* Letterboxd export import dropzone */
+.import-dropzone {
+  max-width: 420px;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 0.9rem 1rem;
+  border: 1px dashed rgba(255, 255, 255, 0.25);
+  border-radius: var(--radius-md);
+  color: var(--text-secondary);
+  font-size: 0.82rem;
+  text-align: center;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease, color 0.15s ease;
+}
+
+.import-dropzone:hover,
+.import-dropzone:focus-visible {
+  outline: none;
+  border-color: var(--text-primary);
+  color: var(--text-primary);
+}
+
+.import-dropzone.dragover {
+  border-color: var(--accent-pink);
+  background: rgba(233, 69, 96, 0.12);
+  color: var(--text-primary);
+}

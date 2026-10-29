@@ -32,8 +32,9 @@
 
       <button id="setup-connect-btn" class="btn-secondary" style="max-width:420px;width:100%">Connect via Extension</button>
 
-      <button type="button" id="import-csv-link-setup" class="btn-text" style="margin-top:0.25rem">Import Letterboxd export CSV</button>
-      <input type="file" id="csv-file-input" accept=".csv" class="hidden" />
+      <button type="button" id="import-csv-link-setup" class="btn-text" style="margin-top:0.25rem">Import Letterboxd export CSV / ZIP</button>
+      <input type="file" id="csv-file-input" accept=".csv,.zip" class="hidden" />
+      <div id="import-dropzone" class="import-dropzone" role="button" tabindex="0">Drop Letterboxd export (.zip or .csv) here — or click to browse</div>
 
       <div id="setup-error" class="error-msg hidden" style="max-width:420px;width:100%;text-align:center"></div>
 
@@ -86,7 +87,7 @@
         </div>
         <div class="profile-options" id="profile-options"></div>
         <button id="import-csv-btn-menu" class="btn-text" style="width:100%;padding:10px 14px;text-align:left;border-top:1px solid rgba(255,255,255,0.1);color:var(--text-secondary);display:flex;align-items:center;gap:6px;cursor:pointer">
-          <span>📂</span> Import Letterboxd CSV
+          <span>📂</span> Import Letterboxd CSV / ZIP
         </button>
       </div>
 

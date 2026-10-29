@@ -7,8 +7,11 @@ import {
   createSyncQueueStore,
   getIngestPollingState,
   parseLetterboxdCsv,
+  parseLetterboxdZip,
   slugifyTitle,
 } from '../src/web/state.js';
+
+import { deflateRawSync } from 'node:zlib';
 
 test('ingest polling state maps progress to statuses', () => {
   assert.deepEqual(getIngestPollingState(100), { status: 'completed' });
@@ -88,4 +91,103 @@ test('parseLetterboxdCsv extracts slugs from Letterboxd export CSVs', () => {
 
   assert.deepEqual(parseLetterboxdCsv(''), []);
   assert.deepEqual(parseLetterboxdCsv('invalid data'), []);
+});
+
+const CRC_TABLE = (() => {
+  const table = new Int32Array(256);
+  for (let n = 0; n < 256; n++) {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    table[n] = c;
+  }
+  return table;
+})();
+
+function crc32(buf) {
+  let crc = -1;
+  for (let i = 0; i < buf.length; i++) crc = (crc >>> 8) ^ CRC_TABLE[(crc ^ buf[i]) & 0xff];
+  return (crc ^ -1) >>> 0;
+}
+
+function buildZip(entries) {
+  const encoder = new TextEncoder();
+  const parts = [];
+  const centrals = [];
+  let offset = 0;
+
+  for (const entry of entries) {
+    const nameBytes = encoder.encode(entry.name);
+    const crc = crc32(entry.data);
+    const payload = entry.method === 8 ? deflateRawSync(entry.data) : entry.data;
+
+    const local = Buffer.alloc(30);
+    local.writeUInt32LE(0x04034b50, 0);
+    local.writeUInt16LE(20, 4);
+    local.writeUInt16LE(0x0800, 6);
+    local.writeUInt16LE(entry.method, 8);
+    local.writeUInt32LE(crc, 14);
+    local.writeUInt32LE(payload.length, 18);
+    local.writeUInt32LE(entry.data.length, 22);
+    local.writeUInt16LE(nameBytes.length, 26);
+    parts.push(local, nameBytes, payload);
+
+    const central = Buffer.alloc(46);
+    central.writeUInt32LE(0x02014b50, 0);
+    central.writeUInt16LE(20, 4);
+    central.writeUInt16LE(20, 6);
+    central.writeUInt16LE(0x0800, 8);
+    central.writeUInt16LE(entry.method, 10);
+    central.writeUInt32LE(crc, 16);
+    central.writeUInt32LE(payload.length, 20);
+    central.writeUInt32LE(entry.data.length, 24);
+    central.writeUInt16LE(nameBytes.length, 28);
+    central.writeUInt32LE(offset, 42);
+    centrals.push(central, nameBytes);
+
+    offset += 30 + nameBytes.length + payload.length;
+  }
+
+  const centralSize = centrals.reduce((sum, part) => sum + part.length, 0);
+  const eocd = Buffer.alloc(22);
+  eocd.writeUInt32LE(0x06054b50, 0);
+  eocd.writeUInt16LE(entries.length, 8);
+  eocd.writeUInt16LE(entries.length, 10);
+  eocd.writeUInt32LE(centralSize, 12);
+  eocd.writeUInt32LE(offset, 16);
+
+  return Buffer.concat([...parts, ...centrals, eocd]);
+}
+
+function toArrayBuffer(buf) {
+  return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
+}
+
+const WATCHLIST_CSV = 'Date,Name,Year,Letterboxd URI\n2024-03-01,"Dune: Part Two",2024,https://letterboxd.com/film/dune-part-two/\n';
+const DIARY_CSV = 'Date,Name,Year,Letterboxd URI\n2024-01-10,"Oppenheimer",2023,https://letterboxd.com/film/oppenheimer/\n';
+
+test('parseLetterboxdZip extracts stored CSV entries', async () => {
+  const zip = buildZip([
+    { name: 'watchlist.csv', method: 0, data: new TextEncoder().encode(WATCHLIST_CSV) },
+    { name: 'diary.csv', method: 0, data: new TextEncoder().encode(DIARY_CSV) },
+    { name: 'notes.txt', method: 0, data: new TextEncoder().encode('ignored\n') },
+  ]);
+  const entries = await parseLetterboxdZip(toArrayBuffer(zip));
+  assert.deepEqual(entries.map(entry => entry.name), ['watchlist.csv', 'diary.csv']);
+  assert.deepEqual(parseLetterboxdCsv(entries.find(entry => entry.name === 'watchlist.csv').text), ['dune-part-two']);
+  assert.deepEqual(parseLetterboxdCsv(entries.find(entry => entry.name === 'diary.csv').text), ['oppenheimer']);
+});
+
+test('parseLetterboxdZip extracts deflate CSV entries', async () => {
+  const zip = buildZip([
+    { name: 'diary.csv', method: 8, data: new TextEncoder().encode(DIARY_CSV) },
+  ]);
+  const entries = await parseLetterboxdZip(toArrayBuffer(zip));
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0].name, 'diary.csv');
+  assert.deepEqual(parseLetterboxdCsv(entries[0].text), ['oppenheimer']);
+});
+
+test('parseLetterboxdZip returns [] for invalid input', async () => {
+  assert.deepEqual(await parseLetterboxdZip(new ArrayBuffer(0)), []);
+  assert.deepEqual(await parseLetterboxdZip(toArrayBuffer(Buffer.from('not a zip'))), []);
 });
