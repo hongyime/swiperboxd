@@ -946,13 +946,10 @@ class SupabaseStore:
                 seen.add(slug)
                 deduped.append(slug)
 
-        self.client.table("list_memberships").delete().eq("list_id", list_id).execute()
-        if deduped:
-            rows = [
-                {"list_id": list_id, "movie_slug": slug, "position": i}
-                for i, slug in enumerate(deduped)
-            ]
-            self.client.table("list_memberships").insert(rows).execute()
+        self.client.rpc(
+            "replace_list_memberships_atomic",
+            {"p_list_id": list_id, "p_slugs": deduped},
+        ).execute()
 
     def get_list_memberships(self, list_id: str) -> list[str]:
         response = (

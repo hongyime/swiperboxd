@@ -32,7 +32,8 @@ def test_migration_002_revokes_exec_sql_from_rest_roles(monkeypatch):
     revoke_sql = [
         params["sql"]
         for name, params in fake.calls
-        if name == "exec_sql" and "revoke execute" in params["sql"].lower()
+        if name == "exec_sql"
+        and "revoke execute on function public.exec_sql(text)" in params["sql"].lower()
     ]
     assert revoke_sql, "002_revoke_exec_sql.sql was not executed"
     assert all(
