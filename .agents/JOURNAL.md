@@ -33,3 +33,5 @@
 - Lists + watchlist now use `.../page/N/` paths; Letterboxd ignores `?page=` (always returns page 1).
 - Lists gained a no-new-slug break so a redirect back to page 1 cannot burn the 20-page cap. 20-page cap unchanged; `pull_source_slugs` untouched.
 - New `tests/test_pagination_paths.py`; suite 132 passed / 5 skipped. Commit e0e4d06.
+
+- 2026-10-29: Landed `swiperboxd-hardening` — 20 fixes + app.py split, 22 commits (`07b4528..1f47c57`), 133 Py / 21 Node green, F1-F4 approve. Key security correction: `REVOKE EXECUTE ... FROM PUBLIC` (per-role revoke leaves the default PUBLIC grant intact); RPC revokes re-grant `service_role` so `run_migrations` still works.
