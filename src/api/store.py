@@ -105,7 +105,9 @@ class Store(Protocol):
 
     def get_list_summary(self, list_id: str) -> dict | None: ...
 
-    def get_lists(self) -> list[dict]: ...
+    def get_lists(
+        self, offset: int = 0, limit: int = 50, q: str | None = None
+    ) -> list[dict]: ...
 
     def delete_list(self, list_id: str) -> None: ...
 
@@ -343,10 +345,24 @@ class InMemoryStore:
             summary = self.list_summaries.get(list_id)
         return dict(summary) if summary else None
 
-    def get_lists(self) -> list[dict]:
+    def get_lists(
+        self, offset: int = 0, limit: int = 50, q: str | None = None
+    ) -> list[dict]:
         with self.lock:
-            summaries = list(self.list_summaries.values())
-        return [dict(summary) for summary in summaries]
+            items = [dict(summary) for summary in self.list_summaries.values()]
+        if q:
+            q_lower = q.lower()
+            items = [
+                item for item in items
+                if q_lower in (item.get("title") or "").lower()
+                or q_lower in (item.get("description") or "").lower()
+            ]
+        items.sort(key=lambda item: (
+            not item.get("is_official", False),
+            -(item.get("like_count") or 0),
+            item.get("title") or "",
+        ))
+        return items[offset:offset + limit]
 
     def replace_list_memberships(self, list_id: str, movie_slugs: list[str]) -> None:
         with self.lock:
@@ -957,8 +973,19 @@ class SupabaseStore:
         response = self.client.table("list_summaries").select("*").eq("list_id", list_id).execute()
         return response.data[0] if response.data else None
 
-    def get_lists(self) -> list[dict]:
-        response = self.client.table("list_summaries").select("*").execute()
+    def get_lists(
+        self, offset: int = 0, limit: int = 50, q: str | None = None
+    ) -> list[dict]:
+        query = self.client.table("list_summaries").select("*")
+        if q:
+            query = query.or_(f"title.ilike.%{q}%,description.ilike.%{q}%")
+        response = (
+            query.order("is_official", desc=True)
+            .order("like_count", desc=True)
+            .order("title")
+            .range(offset, offset + limit - 1)
+            .execute()
+        )
         return list(response.data)
 
     def delete_list(self, list_id: str) -> None:

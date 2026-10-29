@@ -465,19 +465,15 @@ def extension_user_history(
 
 
 @app.get("/lists/catalog")
-def list_catalog(q: str | None = None, page: int = Query(default=1, ge=1)):
+def list_catalog(
+    q: str | None = None,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=500),
+):
     """Return lists from Supabase. Data is populated by the Chrome extension sync."""
-    items = store.get_lists()
-    
-    # Apply search filter if query provided
-    if q:
-        q_lower = q.lower()
-        items = [
-            item for item in items
-            if q_lower in item.get("title", "").lower() or 
-               q_lower in item.get("description", "").lower()
-        ]
-    
+    offset = (page - 1) * page_size
+    items = store.get_lists(offset=offset, limit=page_size, q=q)
+
     # Add is_ready flag based on whether the list is fully scraped
     # Allow a small margin (0.95) for slight discrepancies between listed and actual count
     for item in items:
@@ -485,13 +481,6 @@ def list_catalog(q: str | None = None, page: int = Query(default=1, ge=1)):
         scraped = item.get("scraped_film_count", 0)
         item["is_ready"] = (film_count == 0) or (scraped >= film_count * 0.95)
 
-    # Sort: official first, then by like count, then by title
-    items.sort(key=lambda item: (
-        not item.get("is_official", False),
-        -item.get("like_count", 0),
-        item.get("title", "")
-    ))
-    
     return {
         "status": "ok",
         "query": q or "",
