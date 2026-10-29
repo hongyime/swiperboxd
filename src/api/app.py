@@ -1319,9 +1319,7 @@ async def extension_batch_list_movies(
         if payload.replace_memberships:
             store.replace_list_memberships(payload.list_id, payload.slugs)
         else:
-            existing_slugs = set(store.get_list_memberships(payload.list_id))
-            merged = list(existing_slugs) + [s for s in payload.slugs if s not in existing_slugs]
-            store.replace_list_memberships(payload.list_id, merged)
+            store.add_list_memberships(payload.list_id, payload.slugs)
     except Exception as exc:
         raise HTTPException(status_code=500, detail={"code": "membership_write_failed", "reason": str(exc)}) from exc
 

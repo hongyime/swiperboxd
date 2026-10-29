@@ -117,6 +117,8 @@ class Store(Protocol):
 
     def replace_list_memberships(self, list_id: str, movie_slugs: list[str]) -> None: ...
 
+    def add_list_memberships(self, list_id: str, movie_slugs: list[str]) -> None: ...
+
     def get_list_memberships(self, list_id: str) -> list[str]: ...
 
     def batch_add_watchlist(self, user_id: str, slugs: list[str]) -> dict: ...
@@ -387,6 +389,18 @@ class InMemoryStore:
                     seen.add(slug)
                     deduped.append(slug)
             self.list_memberships[list_id] = deduped
+
+    def add_list_memberships(self, list_id: str, movie_slugs: list[str]) -> None:
+        with self.lock:
+            existing = self.list_memberships.get(list_id, [])
+            seen = set(existing)
+            added = []
+            for slug in movie_slugs:
+                if slug and slug not in seen:
+                    seen.add(slug)
+                    added.append(slug)
+            if added:
+                self.list_memberships[list_id] = list(existing) + added
 
     def get_list_memberships(self, list_id: str) -> list[str]:
         with self.lock:
@@ -1049,6 +1063,26 @@ class SupabaseStore:
         self.client.rpc(
             "replace_list_memberships_atomic",
             {"p_list_id": list_id, "p_slugs": deduped},
+        ).execute()
+
+    def add_list_memberships(self, list_id: str, movie_slugs: list[str]) -> None:
+        deduped = list(dict.fromkeys(slug for slug in movie_slugs if slug))
+        # position is NOT NULL, so the current rows must be read once to offset it.
+        existing = self.get_list_memberships(list_id)
+        existing_set = set(existing)
+        new = [slug for slug in deduped if slug not in existing_set]
+        if not new:
+            return
+
+        start = len(existing)
+        self.client.table("list_memberships").upsert(
+            [
+                {"list_id": list_id, "movie_slug": slug, "position": start + i}
+                for i, slug in enumerate(new)
+            ],
+            on_conflict="list_id,movie_slug",
+            ignore_duplicates=True,
+            returning="minimal",
         ).execute()
 
     def get_list_memberships(self, list_id: str) -> list[str]:
