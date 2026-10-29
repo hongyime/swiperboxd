@@ -41,6 +41,9 @@ const SYNC_STORAGE_KEYS = [
   "fillMaxLists",
   "fillListPages",
 ];
+// Credentials stay in storage.local only; chrome.storage.sync is not
+// end-to-end encrypted and would leak the session to every signed-in device.
+const CREDENTIAL_KEYS = new Set(["apiBase", "username", "sessionToken"]);
 
 // Public-list discovery defaults (overridable via chrome.storage)
 const DEFAULT_DISCOVER_PAGES = 3;    // /lists/popular/page/1..N
@@ -123,14 +126,18 @@ async function reconcileAutoSyncAlarm() {
 
 async function setSyncedConfig(values) {
   const allowed = {};
+  const syncable = {};
   for (const key of SYNC_STORAGE_KEYS) {
     if (Object.prototype.hasOwnProperty.call(values, key)) {
       allowed[key] = values[key];
+      if (!CREDENTIAL_KEYS.has(key)) syncable[key] = values[key];
     }
   }
   if (!Object.keys(allowed).length) return;
   await chrome.storage.local.set(allowed);
-  await chrome.storage.sync.set(allowed).catch(() => {});
+  if (Object.keys(syncable).length) {
+    await chrome.storage.sync.set(syncable).catch(() => {});
+  }
 }
 
 async function writeSyncCheckpoint(checkpoint) {
@@ -423,11 +430,6 @@ async function registerExtension({ apiBase } = {}) {
     username: data.username,
     sessionToken: data.session_token,
   });
-  await chrome.storage.sync.set({
-    apiBase: data.api_base || base,
-    username: data.username,
-    sessionToken: data.session_token,
-  }).catch(() => {});
   return { username: data.username, apiBase: data.api_base || base };
 }
 
@@ -2346,6 +2348,8 @@ chrome.runtime.onStartup.addListener(async () => {
     if (Object.keys(merged).length) {
       await chrome.storage.local.set(merged);
     }
+    // Purge credentials left in sync by older versions.
+    await chrome.storage.sync.remove([...CREDENTIAL_KEYS]).catch(() => {});
     await reconcileAutoSyncAlarm();
   } catch (e) {
     console.warn("[swiperboxd-ext] startup sync merge failed:", e);

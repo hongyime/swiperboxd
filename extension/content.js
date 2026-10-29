@@ -3,6 +3,11 @@
 
 const CONTENT_LOG_PREFIX = "[swiperboxd-ext/content]";
 
+const TRUSTED_ORIGINS = new Set(["https://swiperboxd.vercel.app", "https://swiperboxd.hong-yi.me"]);
+function isTrustedOrigin(origin) {
+  return TRUSTED_ORIGINS.has(origin) || /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin || "");
+}
+
 function contentLog(message, meta) {
   if (meta !== undefined) console.log(`${CONTENT_LOG_PREFIX} ${message}`, meta);
   else console.log(`${CONTENT_LOG_PREFIX} ${message}`);
@@ -124,6 +129,7 @@ window.addEventListener("message", (event) => {
 
   // Webapp requesting auth state from extension
   if (data.type === "SWIPERBOXD_GET_AUTH") {
+    if (!isTrustedOrigin(event.origin)) return;
     contentLog("auth request received", {
       requestId: data.requestId || null,
       sentAt: data.sentAt || null,
@@ -148,6 +154,7 @@ window.addEventListener("message", (event) => {
 
   // Forward auth credentials to service worker
   if (data.type === "SWIPERBOXD_AUTH") {
+    if (!isTrustedOrigin(event.origin)) return;
     if (!data.username || !data.sessionToken) return;
     safeSendMessage({
       type: "SWIPERBOXD_AUTH",
