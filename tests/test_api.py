@@ -235,7 +235,25 @@ def test_extension_batch_movies_persists_lb_film_id():
     assert movie["lb_film_id"] == "123456"
 
 
+def _seed_official_best_picture():
+    import src.api.app as app_module
+
+    slugs = ["film-c", "film-d", "film-e", "film-a"]
+    app_module.store.upsert_list_summary({
+        "list_id": "official-best-picture",
+        "slug": "official-best-picture",
+        "url": "https://letterboxd.com/official/list/best-picture/",
+        "title": "Oscar-winning films: Best Picture",
+        "film_count": len(slugs),
+        "is_official": True,
+    })
+    app_module.store.replace_list_memberships("official-best-picture", slugs)
+    for slug in slugs:
+        app_module.store.upsert_movie({"slug": slug, "title": slug})
+
+
 def test_list_detail_returns_preview():
+    _seed_official_best_picture()
     response = client.get("/lists/official-best-picture")
     assert response.status_code == 200
     payload = response.json()
@@ -245,6 +263,7 @@ def test_list_detail_returns_preview():
 
 
 def test_list_deck_returns_movies():
+    _seed_official_best_picture()
     response = client.get("/lists/official-best-picture/deck", params={"user_id": "list-user"})
     assert response.status_code == 200
     payload = response.json()

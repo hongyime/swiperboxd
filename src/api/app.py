@@ -493,34 +493,9 @@ def list_catalog(
 def list_detail(list_id: str):
     summary = store.get_list_summary(list_id)
     if not summary:
-        try:
-            discovered = scraper.discover_site_lists(page=1)
-            for entry in discovered:
-                store.upsert_list_summary(entry.__dict__)
-        except Exception as exc:
-            print(f"[list_detail] discover_site_lists failed: {exc}", flush=True)
-        summary = store.get_list_summary(list_id)
-
-    if not summary:
         raise HTTPException(status_code=404, detail={"code": "list_not_found"})
 
-    movie_slugs: list[str] = []
-    try:
-        movie_slugs = scraper.fetch_list_movie_slugs(list_id, list_url=summary.get("url")) or []
-    except Exception as exc:
-        print(f"[list_detail] scrape failed for {list_id}: {exc} — falling back to cache", flush=True)
-
-    if movie_slugs:
-        try:
-            store.replace_list_memberships(list_id, movie_slugs)
-            try:
-                store.update_list_scrape_count(list_id, len(movie_slugs))
-            except Exception as exc:
-                print(f"[list_detail] update_list_scrape_count skipped: {exc}", flush=True)
-        except Exception as exc:
-            print(f"[list_detail] replace_list_memberships failed: {exc}", flush=True)
-    else:
-        movie_slugs = store.get_list_memberships(list_id)
+    movie_slugs = store.get_list_memberships(list_id)
 
     preview = [store.get_movie(slug) for slug in movie_slugs[:4]]
     preview = [movie for movie in preview if movie]
@@ -542,27 +517,6 @@ def list_deck(
     if not summary:
         raise HTTPException(status_code=404, detail={"code": "list_not_found"})
 
-    movie_slugs: list[str] = []
-    # On Vercel, use the stored extension data without starting a live scrape.
-    # Only scrape on long-running servers.
-    if not os.getenv("VERCEL"):
-        try:
-            movie_slugs = scraper.fetch_list_movie_slugs(list_id, list_url=summary.get("url")) or []
-        except Exception as exc:
-            print(f"[deck] scrape failed for {list_id}: {exc} — falling back to cache", flush=True)
-
-        if movie_slugs:
-            try:
-                store.replace_list_memberships(list_id, movie_slugs)
-                try:
-                    store.update_list_scrape_count(list_id, len(movie_slugs))
-                except Exception as exc:
-                    print(f"[deck] update_list_scrape_count skipped: {exc}", flush=True)
-            except Exception as exc:
-                print(f"[deck] replace_list_memberships failed: {exc}", flush=True)
-
-    # Read the saved memberships once. If a local scrape could not be saved,
-    # the deck must still use retained membership order and metadata.
     try:
         movie_slugs = store.get_list_memberships(list_id)
     except Exception as exc:

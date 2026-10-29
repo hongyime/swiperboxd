@@ -133,19 +133,41 @@ def test_missing_metadata_keeps_remaining_order_and_selection(deck_client):
     assert [row["slug"] for row in response.json()["results"]] == expected[::-1]
 
 
-def test_local_scrape_write_failure_uses_retained_memberships(deck_client, monkeypatch):
+def test_non_vercel_deck_reads_do_not_scrape_or_write(deck_client, monkeypatch):
     client, state = deck_client
     monkeypatch.delenv("VERCEL")
-    monkeypatch.setattr(api_module.scraper, "fetch_list_movie_slugs", lambda *a, **kw: ["not-saved"])
-
-    def cannot_write(*args):
-        raise RuntimeError("Synthetic write unavailable")
-
-    monkeypatch.setattr(api_module.store, "replace_list_memberships", cannot_write)
+    monkeypatch.setattr(api_module.store, "replace_list_memberships",
+                        lambda *a, **kw: pytest.fail("deck read must not write"))
+    monkeypatch.setattr(api_module.store, "upsert_list_summary",
+                        lambda *a, **kw: pytest.fail("deck read must not write"))
     response = get_deck(client)
     assert response.status_code == 200
-    assert "not-saved" not in state["metadata_slugs"]
     assert state["metadata_slugs"] == state["slugs"][100:]
+
+
+def test_list_detail_and_deck_never_write_on_get(monkeypatch):
+    store = api_module.store
+    slugs = ["film-c", "film-d", "film-e", "film-a"]
+    store.upsert_list_summary({"list_id": "readonly-list", "title": "Read only", "film_count": 4})
+    store.replace_list_memberships("readonly-list", slugs)
+
+    def boom(*args, **kwargs):
+        raise AssertionError("GET must not write to the store")
+
+    monkeypatch.setattr(store, "replace_list_memberships", boom)
+    monkeypatch.setattr(store, "upsert_list_summary", boom)
+    monkeypatch.setattr(store, "update_list_scrape_count", boom)
+    with TestClient(api_module.app) as client:
+        detail = client.get("/lists/readonly-list")
+        deck = client.get("/lists/readonly-list/deck", params={"user_id": "testuser"})
+        missing = client.get("/lists/missing-readonly-list")
+
+    assert detail.status_code == 200
+    assert detail.json()["movie_slugs"] == slugs
+    assert deck.status_code == 200
+    assert len(deck.json()["results"]) <= 20
+    assert missing.status_code == 404
+    assert missing.json()["code"] == "list_not_found"
 
 
 def test_membership_failure_does_not_return_a_partial_deck(deck_client):
