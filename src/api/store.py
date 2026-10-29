@@ -49,17 +49,19 @@ def normalize_movie_record(movie: dict) -> dict:
 class Store(Protocol):
     """Store protocol defining the interface for state persistence."""
 
+    def resolve_user_id(self, user_id: str) -> str: ...
+
     def add_exclusion(self, user_id: str, slug: str) -> None: ...
 
-    def get_exclusions(self, user_id: str) -> set[str]: ...
+    def get_exclusions(self, user_id: str, _user_id: str | None = None) -> set[str]: ...
 
     def add_watchlist(self, user_id: str, slug: str) -> None: ...
 
-    def get_watchlist(self, user_id: str) -> set[str]: ...
+    def get_watchlist(self, user_id: str, _user_id: str | None = None) -> set[str]: ...
 
     def add_diary(self, user_id: str, slug: str) -> None: ...
 
-    def get_diary(self, user_id: str) -> set[str]: ...
+    def get_diary(self, user_id: str, _user_id: str | None = None) -> set[str]: ...
 
     def get_sync_status(self, user_id: str) -> dict[str, bool | int]: ...
 
@@ -87,9 +89,11 @@ class Store(Protocol):
 
     def record_genre_preference(self, user_id: str, genres: list[str]) -> None: ...
 
-    def get_genre_weights(self, user_id: str) -> dict[str, int]: ...
+    def get_genre_weights(self, user_id: str, _user_id: str | None = None) -> dict[str, int]: ...
 
-    def weighted_shuffle(self, user_id: str, movies: list[dict]) -> list[dict]: ...
+    def weighted_shuffle(
+        self, user_id: str, movies: list[dict], _user_id: str | None = None
+    ) -> list[dict]: ...
 
     def save_user_session(self, username: str, encrypted_session: str) -> None: ...
 
@@ -182,6 +186,10 @@ class InMemoryStore:
                     out.append(dict(summary))
         return out
 
+    def resolve_user_id(self, user_id: str) -> str:
+        """In-memory store keys on the username, so the id is the username."""
+        return user_id
+
     def add_exclusion(self, user_id: str, slug: str) -> None:
         """Add a movie to user's exclusion list."""
         with self.lock:
@@ -197,17 +205,17 @@ class InMemoryStore:
         with self.lock:
             self.diary.setdefault(user_id, set()).add(slug)
 
-    def get_exclusions(self, user_id: str) -> set[str]:
+    def get_exclusions(self, user_id: str, _user_id: str | None = None) -> set[str]:
         """Get user's exclusion list (movies to skip)."""
         with self.lock:
             return set(self.exclusions.get(user_id, set()))
 
-    def get_watchlist(self, user_id: str) -> set[str]:
+    def get_watchlist(self, user_id: str, _user_id: str | None = None) -> set[str]:
         """Get user's watchlist (saved to watch)."""
         with self.lock:
             return set(self.watchlist.get(user_id, set()))
 
-    def get_diary(self, user_id: str) -> set[str]:
+    def get_diary(self, user_id: str, _user_id: str | None = None) -> set[str]:
         """Get user's diary (already watched films)."""
         with self.lock:
             return set(self.diary.get(user_id, set()))
@@ -294,12 +302,14 @@ class InMemoryStore:
             for genre in genres:
                 bucket[genre] = bucket.get(genre, 0) + 1
 
-    def get_genre_weights(self, user_id: str) -> dict[str, int]:
+    def get_genre_weights(self, user_id: str, _user_id: str | None = None) -> dict[str, int]:
         """Get user's genre weights from in-memory store."""
         with self.lock:
             return dict(self.genre_weights.get(user_id, {}))
 
-    def weighted_shuffle(self, user_id: str, movies: list[dict]) -> list[dict]:
+    def weighted_shuffle(
+        self, user_id: str, movies: list[dict], _user_id: str | None = None
+    ) -> list[dict]:
         with self.lock:
             weights = self.genre_weights.get(user_id, {})
 
@@ -516,23 +526,29 @@ class SupabaseStore:
                 counts[f"{table}_count"] = count
         return {"has_synced": any(counts.values()), **counts}
 
+    def resolve_user_id(self, user_id: str) -> str:
+        """Resolve the database user id for a Letterboxd username."""
+        return self._get_or_create_user_id(user_id)
+
     def _get_or_create_user_id(self, letterboxd_username: str) -> str:
-        """Get user ID from Supabase or create new user."""
-        # Try to find existing user by letterboxd_username
-        response = self.client.table("users").select("id").eq("letterboxd_username", letterboxd_username).execute()
-
+        """Get or create the user row atomically in a single upsert."""
+        response = (
+            self.client.table("users")
+            .upsert({"letterboxd_username": letterboxd_username}, on_conflict="letterboxd_username")
+            .select("id")
+            .execute()
+        )
         if response.data:
-            print(f"[store] found existing user id={response.data[0]['id']} for {letterboxd_username}", flush=True)
             return response.data[0]["id"]
-
-        # Create new user
-        print(f"[store] creating new user for {letterboxd_username}", flush=True)
-        new_user = self.client.table("users").insert({
-            "letterboxd_username": letterboxd_username
-        }).execute()
-
-        print(f"[store] created user id={new_user.data[0]['id']} for {letterboxd_username}", flush=True)
-        return new_user.data[0]["id"]
+        # Defensive fallback only if the upsert returned no row.
+        row = (
+            self.client.table("users")
+            .select("id")
+            .eq("letterboxd_username", letterboxd_username)
+            .limit(1)
+            .execute()
+        )
+        return row.data[0]["id"]
 
     def save_user_session(self, username: str, encrypted_session: str) -> None:
         """Store encrypted session in Supabase users table."""
@@ -642,9 +658,9 @@ class SupabaseStore:
             print(f"[store] ERROR: exclusion insert failed for {slug}: {e}", flush=True)
             raise
 
-    def get_exclusions(self, user_id: str) -> set[str]:
+    def get_exclusions(self, user_id: str, _user_id: str | None = None) -> set[str]:
         """Get user's exclusion list from Supabase."""
-        actual_user_id = self._get_or_create_user_id(user_id)
+        actual_user_id = _user_id or self.resolve_user_id(user_id)
         response = self.client.table("exclusions").select("movie_slug").eq("user_id", actual_user_id).execute()
         return {row["movie_slug"] for row in response.data}
 
@@ -684,9 +700,9 @@ class SupabaseStore:
             print(f"[store] ERROR: watchlist insert failed for {slug}: {e}", flush=True)
             raise
 
-    def get_watchlist(self, user_id: str) -> set[str]:
+    def get_watchlist(self, user_id: str, _user_id: str | None = None) -> set[str]:
         """Get user's watchlist from Supabase."""
-        actual_user_id = self._get_or_create_user_id(user_id)
+        actual_user_id = _user_id or self.resolve_user_id(user_id)
         response = self.client.table("watchlist").select("movie_slug").eq("user_id", actual_user_id).execute()
         print(f"[store] get_watchlist: {len(response.data)} slugs for user_id={actual_user_id}", flush=True)
         return {row["movie_slug"] for row in response.data}
@@ -727,9 +743,9 @@ class SupabaseStore:
             print(f"[store] ERROR: diary insert failed for {slug}: {e}", flush=True)
             raise
 
-    def get_diary(self, user_id: str) -> set[str]:
+    def get_diary(self, user_id: str, _user_id: str | None = None) -> set[str]:
         """Get user's diary from Supabase."""
-        actual_user_id = self._get_or_create_user_id(user_id)
+        actual_user_id = _user_id or self.resolve_user_id(user_id)
         response = self.client.table("diary").select("movie_slug").eq("user_id", actual_user_id).execute()
         print(f"[store] get_diary: {len(response.data)} slugs for user_id={actual_user_id}", flush=True)
         return {row["movie_slug"] for row in response.data}
@@ -888,15 +904,17 @@ class SupabaseStore:
             except Exception as e:
                 print(f"[store] genre_preference upsert failed for {genre}: {e}", flush=True)
 
-    def get_genre_weights(self, user_id: str) -> dict[str, int]:
+    def get_genre_weights(self, user_id: str, _user_id: str | None = None) -> dict[str, int]:
         """Get user's genre weights from Supabase."""
-        actual_user_id = self._get_or_create_user_id(user_id)
+        actual_user_id = _user_id or self.resolve_user_id(user_id)
         response = self.client.table("genre_preferences").select("genre", "score").eq("user_id", actual_user_id).execute()
         return {row["genre"]: int(row["score"]) for row in response.data}
 
-    def weighted_shuffle(self, user_id: str, movies: list[dict]) -> list[dict]:
+    def weighted_shuffle(
+        self, user_id: str, movies: list[dict], _user_id: str | None = None
+    ) -> list[dict]:
         """Shuffle movies with genre bias using persisted genre weights."""
-        weights = self.get_genre_weights(user_id)
+        weights = self.get_genre_weights(user_id, _user_id=_user_id)
 
         if not weights:
             random.shuffle(movies)

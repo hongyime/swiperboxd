@@ -24,7 +24,8 @@ def deck_client(monkeypatch):
     def respond(request):
         table = request.url.path.rsplit("/", 1)[-1]
         state["requests"].append((request.method, table))
-        assert request.method == "GET", "A deck read must preserve retained records"
+        assert request.method == "GET" or (request.method == "POST" and table == "users"), \
+            "A deck read may only upsert the user id"
         if table == state["fail"]:
             return httpx.Response(503, json={"message": "Synthetic unavailable store",
                                             "code": "fixture", "details": None, "hint": None})
@@ -48,7 +49,7 @@ def deck_client(monkeypatch):
             raise AssertionError(f"Unexpected table: {table}")
         return httpx.Response(200, json=rows)
 
-    def shuffle(user_id, movies):
+    def shuffle(user_id, movies, _user_id=None):
         state["shuffle_input"] = [movie["slug"] for movie in movies]
         return list(reversed(movies))
 

@@ -529,11 +529,13 @@ def list_deck(
 
     # Filter out movies the user has already watchlisted, logged, or dismissed
     watchlist, diary, exclusions = set(), set(), set()
+    uid = None
     if not include_seen:
         try:
-            watchlist = store.get_watchlist(user_id)
-            diary = store.get_diary(user_id)
-            exclusions = store.get_exclusions(user_id)
+            uid = store.resolve_user_id(user_id)
+            watchlist = store.get_watchlist(user_id, _user_id=uid)
+            diary = store.get_diary(user_id, _user_id=uid)
+            exclusions = store.get_exclusions(user_id, _user_id=uid)
         except Exception as exc:
             raise HTTPException(
                 status_code=503,
@@ -552,7 +554,7 @@ def list_deck(
 
     movies = [m for m in movies if m and m.get("slug") not in seen]
     try:
-        movies = store.weighted_shuffle(user_id, movies)
+        movies = store.weighted_shuffle(user_id, movies, _user_id=uid)
     except Exception as exc:
         print(f"[deck] weighted_shuffle failed: {exc} — using unshuffled", flush=True)
         import random as _random
