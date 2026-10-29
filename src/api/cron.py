@@ -20,10 +20,10 @@ CRON_SECRET = os.getenv("CRON_SECRET") or os.getenv("VERCEL_CRON_SECRET")
 
 def _require_cron_secret(authorization: str | None) -> None:
     secret = os.getenv("CRON_SECRET") or os.getenv("VERCEL_CRON_SECRET")
-    token = ""
+    provided = None
     if authorization and authorization.lower().startswith("bearer "):
-        token = authorization[7:].strip()
-    if not secret or token != secret:
+        provided = authorization[7:].strip()
+    if not secret or provided != secret:
         raise HTTPException(status_code=403, detail="Unauthorized: Invalid cron secret")
 
 
