@@ -12,13 +12,18 @@ from .security import decrypt_session_cookie
 
 router = APIRouter()
 
-# Cron secret to prevent unauthorized access
-# Set VERCEL_CRON_SECRET in environment variables
-CRON_SECRET = os.getenv("VERCEL_CRON_SECRET")
+# Cron secret to prevent unauthorized access. Vercel auto-provides CRON_SECRET
+# and sends it as `Authorization: Bearer <secret>`; VERCEL_CRON_SECRET is the
+# local/dev fallback.
+CRON_SECRET = os.getenv("CRON_SECRET") or os.getenv("VERCEL_CRON_SECRET")
 
 
-def _require_cron_secret(x_cron_secret: str | None) -> None:
-    if not CRON_SECRET or x_cron_secret != CRON_SECRET:
+def _require_cron_secret(authorization: str | None) -> None:
+    secret = os.getenv("CRON_SECRET") or os.getenv("VERCEL_CRON_SECRET")
+    token = ""
+    if authorization and authorization.lower().startswith("bearer "):
+        token = authorization[7:].strip()
+    if not secret or token != secret:
         raise HTTPException(status_code=403, detail="Unauthorized: Invalid cron secret")
 
 
@@ -32,8 +37,10 @@ def _get_store():
     return InMemoryStore()
 
 
-@router.post("/refresh-lists")
-async def refresh_lists_cron(x_cron_secret: str = Header(...)):
+@router.api_route("/refresh-lists", methods=["GET", "POST"])
+async def refresh_lists_cron(
+    authorization: str | None = Header(default=None, alias="Authorization"),
+):
     """Vercel Chron cron job endpoint to refresh Letterboxd lists.
 
     Protected by VERCEL_CRON_SECRET header to ensure only authorized calls.
@@ -41,7 +48,7 @@ async def refresh_lists_cron(x_cron_secret: str = Header(...)):
     Returns:
         JSON response with refresh stats
     """
-    _require_cron_secret(x_cron_secret)
+    _require_cron_secret(authorization)
 
     scraper = HttpLetterboxdScraper()
     store = _get_store()
@@ -150,9 +157,9 @@ def _decrypt_user_session(encrypted_session: str) -> str | None:
         return raw or None
 
 
-@router.post("/sync-users")
+@router.api_route("/sync-users", methods=["GET", "POST"])
 async def sync_users_cron(
-    x_cron_secret: str = Header(...),
+    authorization: str | None = Header(default=None, alias="Authorization"),
     max_users: int = 25,
     max_pages: int = 5,
 ):
@@ -161,7 +168,7 @@ async def sync_users_cron(
     the extension is the reliable channel, but we keep this as best-effort so
     the catalog stays fresh when a given proxy tier does make it through.
     """
-    _require_cron_secret(x_cron_secret)
+    _require_cron_secret(authorization)
 
     scraper = HttpLetterboxdScraper()
     store = _get_store()
@@ -234,9 +241,9 @@ async def sync_users_cron(
     }
 
 
-@router.post("/backfill-scrapes")
+@router.api_route("/backfill-scrapes", methods=["GET", "POST"])
 async def backfill_scrapes_cron(
-    x_cron_secret: str = Header(...),
+    authorization: str | None = Header(default=None, alias="Authorization"),
     max_movies: int = 60,
     max_lists: int = 10,
 ):
@@ -246,7 +253,7 @@ async def backfill_scrapes_cron(
     
     This is now a cleanup job, not the primary metadata source.
     """
-    _require_cron_secret(x_cron_secret)
+    _require_cron_secret(authorization)
 
     scraper = HttpLetterboxdScraper()
     store = _get_store()
