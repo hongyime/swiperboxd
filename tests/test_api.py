@@ -68,6 +68,34 @@ def test_auth_session_endpoint(monkeypatch):
     assert body["encrypted_session_cookie"]
 
 
+def test_register_ignores_supplied_username_without_valid_cookie(monkeypatch):
+    import src.api.app as app_module
+
+    def _reject(*args, **kwargs):
+        raise RuntimeError("session_expired_or_invalid")
+
+    monkeypatch.setattr(app_module, "_validate_letterboxd_session", _reject)
+    response = client.post(
+        "/api/extension/register",
+        json={"letterboxd_session_cookie": "x", "username": "victim"},
+    )
+    assert response.status_code in {401, 422}
+    assert "session_token" not in response.json()
+
+
+def test_register_derives_username_server_side(monkeypatch):
+    import src.api.app as app_module
+
+    monkeypatch.setattr(app_module, "_validate_letterboxd_session", lambda *args, **kwargs: None)
+    monkeypatch.setattr(app_module, "_extract_username_from_cookie", lambda *args, **kwargs: "derived")
+    response = client.post(
+        "/api/extension/register",
+        json={"letterboxd_session_cookie": "x", "username": "attacker"},
+    )
+    assert response.status_code == 200
+    assert response.json()["username"] == "derived"
+
+
 def test_public_session_endpoint_and_swipes():
     # 1. Invalid username checks
     bad_res = client.post("/auth/public-session", json={"username": "bad user!"})

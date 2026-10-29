@@ -125,12 +125,19 @@ def _matches_profile(profile: str, movie: dict) -> bool:
         return False
 
 
-def _validate_letterboxd_session(username: str, session_cookie: str) -> None:
+def _validate_letterboxd_session(
+    username: str,
+    session_cookie: str,
+    fetch: Callable[..., object] | None = None,
+) -> None:
     """Validate a Letterboxd session cookie by hitting the settings page (auth-gated).
 
     Uses letterboxd.user.CURRENT as the cookie name. A valid cookie gets a 200
     on /settings/ and contains the 'signed-in' body class. An invalid one gets 
     redirected to /sign-in/ OR receives a 200 OK that actually contains the sign-in page.
+
+    When *fetch* is given it performs the request instead of a direct httpx call
+    (used to route through the scraper's proxy tier chain on IP-blocked hosts).
 
     Raises RuntimeError if the cookie is invalid or the request fails.
     """
@@ -138,27 +145,31 @@ def _validate_letterboxd_session(username: str, session_cookie: str) -> None:
     base_url = os.getenv("TARGET_PLATFORM_BASE_URL", "https://letterboxd.com").rstrip("/")
     url = f"{base_url}/settings/"
     try:
-        with _httpx.Client(
-            cookies={_SESSION_COOKIE_NAME: session_cookie},
-            timeout=15.0,
-            follow_redirects=True,
-        ) as client:
-            resp = client.get(url)
-            print(f"[auth] settings check status={resp.status_code} url={url}", flush=True)
-            
-            if "sign in" in resp.text.lower() and '<body class="signed-in"' not in resp.text:
-                print(f"[auth] soft redirect to sign-in detected", flush=True)
-                raise RuntimeError("session_expired_or_invalid")
-                
-            if resp.status_code == 200:
-                pass  # authenticated
-            else:
-                raise RuntimeError(f"unexpected_status: {resp.status_code}")
+        if fetch is not None:
+            resp = fetch(url, session_cookie=session_cookie)
+        else:
+            with _httpx.Client(
+                cookies={_SESSION_COOKIE_NAME: session_cookie},
+                timeout=15.0,
+                follow_redirects=True,
+            ) as client:
+                resp = client.get(url)
+        print(f"[auth] settings check status={resp.status_code} url={url}", flush=True)
+
+        if "sign in" in resp.text.lower() and '<body class="signed-in"' not in resp.text:
+            print(f"[auth] soft redirect to sign-in detected", flush=True)
+            raise RuntimeError("session_expired_or_invalid")
+
+        if resp.status_code != 200:
+            raise RuntimeError(f"unexpected_status: {resp.status_code}")
     except _httpx.RequestError as exc:
         raise RuntimeError(f"network_error: {exc}") from exc
 
 
-def _extract_username_from_cookie(session_cookie: str) -> str | None:
+def _extract_username_from_cookie(
+    session_cookie: str,
+    fetch: Callable[..., object] | None = None,
+) -> str | None:
     """Fetch the Letterboxd settings page with the given cookie and parse out the
     signed-in username. Returns None if the cookie is invalid or parsing fails.
 
@@ -168,19 +179,25 @@ def _extract_username_from_cookie(session_cookie: str) -> str | None:
       • `<a class="navitem account" href="/<username>/" ...>`
       • `<meta name="twitter:creator" content="@<username>">`
     We try each in order.
+
+    When *fetch* is given it performs the request instead of a direct httpx call
+    (used to route through the scraper's proxy tier chain on IP-blocked hosts).
     """
     import re as _re
     import httpx as _httpx
     base_url = os.getenv("TARGET_PLATFORM_BASE_URL", "https://letterboxd.com").rstrip("/")
     url = f"{base_url}/settings/"
     try:
-        with _httpx.Client(
-            cookies={_SESSION_COOKIE_NAME: session_cookie},
-            timeout=15.0,
-            follow_redirects=False,
-        ) as client:
-            resp = client.get(url)
-    except _httpx.RequestError as exc:
+        if fetch is not None:
+            resp = fetch(url, session_cookie=session_cookie)
+        else:
+            with _httpx.Client(
+                cookies={_SESSION_COOKIE_NAME: session_cookie},
+                timeout=15.0,
+                follow_redirects=False,
+            ) as client:
+                resp = client.get(url)
+    except Exception as exc:  # includes the scraper's RuntimeError("all_tiers_failed")
         print(f"[auth] username extraction network error: {exc}", flush=True)
         return None
 
@@ -1075,21 +1092,26 @@ def extension_register(payload: ExtensionRegisterRequest, request: Request):
     if not master_key:
         raise HTTPException(status_code=500, detail={"code": "missing_master_key"})
 
-    if payload.username:
-        username = payload.username
-    else:
-        try:
-            _validate_letterboxd_session("", payload.letterboxd_session_cookie)
-        except Exception as exc:
-            raise HTTPException(status_code=401, detail={"code": "invalid_letterboxd_cookie", "reason": str(exc)}) from exc
+    # payload.username is ignored on purpose: trusting it was an account takeover.
+    # Route through the scraper proxy chain when available (Vercel IPs are blocked).
+    fetcher = getattr(scraper, "_fetch", None)
+    try:
+        _validate_letterboxd_session("", payload.letterboxd_session_cookie, fetch=fetcher)
+    except Exception as exc:
+        reason = str(exc)
+        if "all_tiers_failed" in reason or "network_error" in reason:
+            reason = f"proxy_unavailable: {reason}"
+        raise HTTPException(
+            status_code=401,
+            detail={"code": "invalid_letterboxd_cookie", "reason": reason},
+        ) from exc
 
-        username = _extract_username_from_cookie(payload.letterboxd_session_cookie)
-        if not username:
-            raise HTTPException(
-                status_code=422,
-                detail={"code": "username_unresolved", "message": "could not parse username from Letterboxd response"},
-            )
-
+    username = _extract_username_from_cookie(payload.letterboxd_session_cookie, fetch=fetcher)
+    if not username:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "username_unresolved", "message": "could not parse username from Letterboxd response"},
+        )
     token_payload = json.dumps({"u": username, "c": payload.letterboxd_session_cookie})
     encrypted = encrypt_session_cookie(token_payload, master_key)
 
