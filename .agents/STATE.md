@@ -1,5 +1,9 @@
 # Current work
 
+## 2026-11-12 — reliability hardening verification
+
+Completed the requested reliability fixes without live writes: DB-backed ingest progress/error migration, membership placeholder preconditions, randomized bounded discovery, 200-row membership writes, read-before-create users, Store-owned backfill lookup, time-bounded cron work, honest migrations, direct pytest path, dependency cleanup, and timezone-aware timestamps. Existing `return true` message handling and batched history sync were confirmed and regression-tested. Final verification: 146 Python passed (2 optional live-service skips), 25 Node passed, compilation and `git diff --check` passed. Independent review issues were resolved. No production scraping, migrations, or live writes ran.
+
 ## 2026-10-29 — Swiperboxd hardening landed
 
 Landed the 20-issue hardening plan (`swiperboxd-hardening`) as 22 commits (`07b4528` baseline .. `1f47c57`) on `main`. Fixes: revoke `exec_sql` + new RPCs `EXECUTE` **from PUBLIC** (the anon key can no longer run SQL; per-role revoke does not override the default PUBLIC grant), extension register derives the username server-side via the proxy chain (no username impersonation), cron accepts GET + `Authorization: Bearer`, `/lists/*` GETs are read-only, path-based list/watchlist pagination, deck uses one bounded-sample RPC, atomic membership replace, insert-only list batches, DB-backed rate limits + ingest lease, 30-day token TTL with legacy tokens rejected, extension credentials kept in `storage.local` + origin-gated postMessage, page-1 write verification, authenticated `/ingest/progress`, lazy Scrape.do probe, honest catalog pagination, dead queue/qstash/rate-limiter code + ad-hoc scripts deleted, migration 001 syntax fixed, and `app.py` split into routers/workers (1590→408 lines).

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+from datetime import datetime, timezone
 from fastapi import APIRouter, Header, HTTPException
 from typing import Literal
 
@@ -160,8 +161,6 @@ def _decrypt_user_session(encrypted_session: str) -> str | None:
 @router.api_route("/sync-users", methods=["GET", "POST"])
 async def sync_users_cron(
     authorization: str | None = Header(default=None, alias="Authorization"),
-    max_users: int = 25,
-    max_pages: int = 5,
 ):
     """Iterate every user with a stored Letterboxd session and refresh their
     watchlist + diary. Runs from Vercel even though Letterboxd may 403 AWS IPs —
@@ -170,7 +169,7 @@ async def sync_users_cron(
     """
     _require_cron_secret(authorization)
 
-    scraper = HttpLetterboxdScraper()
+    scraper = HttpLetterboxdScraper(timeout_seconds=2.0)
     store = _get_store()
 
     try:
@@ -179,8 +178,11 @@ async def sync_users_cron(
         print(f"[cron/sync-users] failed to load sessions: {exc}", flush=True)
         raise HTTPException(status_code=500, detail={"code": "sessions_unavailable", "reason": str(exc)})
 
-    sessions = sessions[:max_users]
-    print(f"[cron/sync-users] processing {len(sessions)} users (max_pages={max_pages})", flush=True)
+    if sessions:
+        sessions.sort(key=lambda entry: entry.get("user_id") or entry.get("username") or "")
+        sessions = [sessions[datetime.now(timezone.utc).toordinal() % len(sessions)]]
+    max_pages = 1
+    print(f"[cron/sync-users] processing {len(sessions)} user (max_pages={max_pages})", flush=True)
 
     per_user = []
     for idx, entry in enumerate(sessions, 1):
@@ -234,8 +236,7 @@ async def sync_users_cron(
 @router.api_route("/backfill-scrapes", methods=["GET", "POST"])
 async def backfill_scrapes_cron(
     authorization: str | None = Header(default=None, alias="Authorization"),
-    max_movies: int = 60,
-    max_lists: int = 10,
+    max_movies: int = 1,
 ):
     """Backfill ONLY:
     1. Old placeholder movies (from before metadata-during-sync fix)
@@ -245,8 +246,12 @@ async def backfill_scrapes_cron(
     """
     _require_cron_secret(authorization)
 
-    scraper = HttpLetterboxdScraper()
+    scraper = HttpLetterboxdScraper(timeout_seconds=2.0)
     store = _get_store()
+
+    # One page fetch can take up to the provider timeout, so keep scheduled
+    # cleanup to one film and leave multi-page list scraping to the extension.
+    max_movies = 1
 
     # ── Movies: Only placeholders (legacy cleanup) ────────────────────────
     movie_stats = {"targeted": 0, "fetched": 0, "failed": 0}
@@ -277,31 +282,7 @@ async def backfill_scrapes_cron(
             movie_stats["failed"] += len(placeholder_slugs)
             print(f"[cron/backfill] movie scrape failed: {exc}", flush=True)
 
-    # ── Lists: Under-scraped only ──────────────────────────────────────────
-    list_stats = {"targeted": 0, "scraped": 0, "failed": 0}
-    try:
-        lists = store.get_underscraped_lists(limit=max_lists)
-    except Exception as exc:
-        print(f"[cron/backfill] underscraped query failed: {exc}", flush=True)
-        lists = []
-    list_stats["targeted"] = len(lists)
-    for lst in lists:
-        list_id = lst.get("list_id")
-        if not list_id:
-            continue
-        try:
-            slugs = scraper.fetch_list_movie_slugs(list_id, list_url=lst.get("url"))
-            if slugs:
-                store.replace_list_memberships(list_id, slugs)
-                store.update_list_scrape_count(list_id, len(slugs))
-                list_stats["scraped"] += 1
-                print(f"  list={list_id} scraped={len(slugs)}", flush=True)
-            else:
-                list_stats["failed"] += 1
-                print(f"  list={list_id} returned no slugs", flush=True)
-        except Exception as exc:
-            list_stats["failed"] += 1
-            print(f"  list={list_id} failed: {exc}", flush=True)
+    list_stats = {"targeted": 0, "scraped": 0, "failed": 0, "extension_owned": True}
 
     print(f"[cron/backfill] DONE movies={movie_stats} lists={list_stats}", flush=True)
     return {"status": "ok", "movies": movie_stats, "lists": list_stats}

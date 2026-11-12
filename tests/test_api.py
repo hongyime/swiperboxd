@@ -263,6 +263,32 @@ def test_extension_batch_movies_persists_lb_film_id():
     assert movie["lb_film_id"] == "123456"
 
 
+def test_extension_movies_needing_backfill_works_without_supabase():
+    import src.api.app as app_module
+
+    app_module.store.upsert_movie({"slug": "needs-backfill", "title": "Needs Backfill"})
+    response = client.get("/api/extension/movies-needing-backfill", headers=_NEW_FORMAT_HEADERS)
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "ok"
+    assert "needs-backfill" in payload["slugs"]
+
+
+def test_extension_sync_status_clears_a_previous_error():
+    import src.api.app as app_module
+
+    app_module.store.set_ingest_error("testuser", {"code": "extension_error", "reason": "old"})
+    response = client.post(
+        "/api/extension/sync-status",
+        headers=_NEW_FORMAT_HEADERS,
+        json={"user_id": "testuser", "phase": "complete"},
+    )
+
+    assert response.status_code == 200
+    assert app_module.store.get_ingest_error("testuser") is None
+
+
 def _seed_official_best_picture():
     import src.api.app as app_module
 

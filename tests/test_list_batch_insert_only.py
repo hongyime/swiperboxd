@@ -20,22 +20,30 @@ class _FakeResponse:
 
 
 class _FakeUpsert:
-    def __init__(self, client, rows, kwargs):
+    def __init__(self, client, table, rows, kwargs):
         self.client = client
+        self.table = table
         self.rows = rows
         self.kwargs = kwargs
 
+    def select(self, *_columns):
+        return self
+
     def execute(self):
-        self.client.upserts.append((self.rows, self.kwargs))
+        if self.table == "movies":
+            self.client.movie_upserts.append((self.rows, self.kwargs))
+        else:
+            self.client.upserts.append((self.rows, self.kwargs))
         return _FakeResponse(self.rows)
 
 
 class _FakeTable:
-    def __init__(self, client):
+    def __init__(self, client, table):
         self.client = client
+        self.table = table
 
     def upsert(self, rows, **kwargs):
-        return _FakeUpsert(self.client, rows, kwargs)
+        return _FakeUpsert(self.client, self.table, rows, kwargs)
 
     def delete(self):
         self.client.delete_calls += 1
@@ -45,11 +53,12 @@ class _FakeTable:
 class _FakeClient:
     def __init__(self):
         self.upserts = []
+        self.movie_upserts = []
         self.delete_calls = 0
 
     def table(self, name):
-        assert name == "list_memberships"
-        return _FakeTable(self)
+        assert name in {"movies", "list_memberships"}
+        return _FakeTable(self, name)
 
 
 def test_add_list_memberships_upserts_only_new_rows(monkeypatch):
@@ -68,6 +77,7 @@ def test_add_list_memberships_upserts_only_new_rows(monkeypatch):
     assert kwargs["ignore_duplicates"] is True
     assert kwargs["returning"] == "minimal"
     assert client.delete_calls == 0
+    assert [row["slug"] for row in client.movie_upserts[0][0]] == ["b", "a", "c"]
 
 
 def test_add_list_memberships_skips_upsert_when_all_exist(monkeypatch):
@@ -80,6 +90,19 @@ def test_add_list_memberships_skips_upsert_when_all_exist(monkeypatch):
 
     assert client.upserts == []
     assert client.delete_calls == 0
+    assert [row["slug"] for row in client.movie_upserts[0][0]] == ["a", "b"]
+
+
+def test_add_list_memberships_chunks_large_writes(monkeypatch):
+    client = _FakeClient()
+    monkeypatch.setattr("src.api.store.get_supabase_client", lambda: client)
+    store = SupabaseStore()
+    monkeypatch.setattr(store, "get_list_memberships", lambda _list_id: [])
+
+    store.add_list_memberships("lst", [f"film-{index}" for index in range(500)])
+
+    assert len(client.upserts) == 3
+    assert all(len(rows) <= 200 for rows, _kwargs in client.upserts)
 
 
 client = TestClient(app)
