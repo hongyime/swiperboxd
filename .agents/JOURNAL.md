@@ -1,6 +1,7 @@
 # Decisions
 
 - 2026-11-12: Persist Supabase ingest progress and errors in `user_throttle` via migration 006; scheduled cron intentionally handles one user/one page and one metadata item, while the extension owns multi-page list scraping to avoid serverless timeouts and partial-list replacement.
+- 2026-11-12: Released reliability hardening through PR #189. Merge commit `2a29167` passed Build, Vercel, dependency, Bandit, Semgrep, TruffleHog, and branch-guard checks; production deployment `dpl_CukdFNpPLzTbEk3S2w8XZPfmkeLo` is READY and its allowed production health endpoint returned 200.
 
 - 2026-09-11: Use database conflict handling for immutable extension membership and placeholder inserts, avoiding read-before-write races. Preserve the existing `added` response meaning (accepted nonblank input entries), rather than representing it as a new-row count.
 - 2026-09-11: Release b2d4124 passed all five hosted workflows and exact production deployment/public-route verification. Keep the post-release handoff notes for the next source commit to avoid an extra documentation-only Vercel build. The cryptography advisory remains a separate, uncompleted dependency follow-up.
