@@ -2,7 +2,7 @@
 
 ## 2026-11-12 — reliability hardening verification
 
-Completed the requested reliability fixes without live writes: DB-backed ingest progress/error migration, membership placeholder preconditions, randomized bounded discovery, 200-row membership writes, read-before-create users, Store-owned backfill lookup, time-bounded cron work, honest migrations, direct pytest path, dependency cleanup, and timezone-aware timestamps. Existing `return true` message handling and batched history sync were confirmed and regression-tested. Final verification: 146 Python passed (2 optional live-service skips), 25 Node passed, compilation and `git diff --check` passed. Independent review issues were resolved. No production scraping, migrations, or live writes ran.
+Completed and released the requested reliability fixes: DB-backed ingest progress/error migration, membership placeholder preconditions, randomized bounded discovery, 200-row membership writes, read-before-create users, Store-owned backfill lookup, time-bounded cron work, honest migrations, direct pytest path, dependency cleanup, and timezone-aware timestamps. Existing `return true` message handling and batched history sync were confirmed and regression-tested. Final local verification: 146 Python passed (2 optional live-service skips), 25 Node passed, compilation and `git diff --check` passed. PR #189 merged as `2a29167`; all hosted Build/Vercel/security checks passed; production deployment `dpl_CukdFNpPLzTbEk3S2w8XZPfmkeLo` is READY and `/health` returned 200 with `SupabaseStore`. No production scraping, migrations, or data writes ran.
 
 ## 2026-10-29 — Swiperboxd hardening landed
 
