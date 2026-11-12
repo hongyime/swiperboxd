@@ -2,6 +2,8 @@
 
 from pathlib import Path
 
+import pytest
+
 from src.api import database
 
 MIGRATION = Path(__file__).parent.parent / "db" / "migrations" / "002_revoke_exec_sql.sql"
@@ -44,3 +46,20 @@ def test_migration_002_revokes_exec_sql_from_rest_roles(monkeypatch):
         "grant execute on function public.exec_sql(text) to service_role" in sql.lower()
         for sql in revoke_sql
     )
+
+
+class _FailingResponse:
+    def execute(self):
+        raise RuntimeError("migration failed")
+
+
+class _FailingClient:
+    def rpc(self, _name, _params):
+        return _FailingResponse()
+
+
+def test_run_migrations_propagates_database_failures(monkeypatch):
+    monkeypatch.setattr(database, "get_supabase_client", lambda: _FailingClient())
+
+    with pytest.raises(RuntimeError, match="migration failed"):
+        database.run_migrations()

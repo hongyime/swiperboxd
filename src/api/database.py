@@ -75,15 +75,9 @@ def run_migrations() -> None:
         migration_name = migration_file.name
         print(f"📝 Running migration: {migration_name}")
         
-        try:
-            # Requires a custom `exec_sql(sql TEXT)` RPC function in Supabase.
-            # Create it once via the Supabase SQL editor:
-            #   create or replace function exec_sql(sql text) returns void
-            #   language plpgsql security definer as $$ begin execute sql; end; $$;
-            client.rpc('exec_sql', {'sql': sql}).execute()
-            print(f"[migrate] completed: {migration_name}")
-        except Exception as e:
-            print(
-                f"[migrate] error on {migration_name}: {e}\n"
-                "  Hint: ensure the exec_sql(sql TEXT) RPC function exists in Supabase."
-            )
+        # Requires a custom `exec_sql(sql TEXT)` RPC function in Supabase.
+        # Create it once via the Supabase SQL editor:
+        #   create or replace function exec_sql(sql text) returns void
+        #   language plpgsql security definer as $$ begin execute sql; end; $$;
+        client.rpc('exec_sql', {'sql': sql}).execute()
+        print(f"[migrate] completed: {migration_name}")

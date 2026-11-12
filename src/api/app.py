@@ -25,9 +25,9 @@ from .store import normalize_movie_record
 from .cron import router as cron_router
 
 PROFILES = {
-    "gold-standard": lambda m: m["rating"] >= 4.5,
-    "hidden-gems": lambda m: m["rating"] >= 4.0 and m["popularity"] <= 50,
-    "fresh-picks": lambda m: m["rating"] >= 3.8,
+    "gold-standard": {"min_rating": 4.5, "max_popularity": None},
+    "hidden-gems": {"min_rating": 4.0, "max_popularity": 50},
+    "fresh-picks": {"min_rating": 3.8, "max_popularity": None},
 }
 
 # src/api/app.py → parent = src/api, parent.parent = src, / "web" = src/web
@@ -119,7 +119,11 @@ async def http_exception_handler(request: Request, exc: HTTPException):
 def _matches_profile(profile: str, movie: dict) -> bool:
     movie = normalize_movie_record(movie)
     try:
-        return PROFILES[profile](movie)
+        filters = PROFILES[profile]
+        return (
+            movie["rating"] >= filters["min_rating"]
+            and (filters["max_popularity"] is None or movie["popularity"] <= filters["max_popularity"])
+        )
     except Exception as exc:
         print(f"[deck] skipping invalid movie slug={movie.get('slug', 'unknown')} profile={profile} error={exc}", flush=True)
         return False

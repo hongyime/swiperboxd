@@ -193,41 +193,7 @@ def extension_movies_needing_backfill(
     mode=full => core + year/director/synopsis/genres/cast/rating expected
     """
     try:
-        response = (
-            app_module.store.client.table("movies")
-            .select("slug,title,poster_url,lb_film_id,year,director,synopsis,genres,cast,rating")
-            .limit(min(5000, max(limit * 3, limit)))
-            .execute()
-        )
-        rows = response.data or []
-
-        def _missing_core(row: dict) -> bool:
-            return (
-                not (row.get("title") or "").strip()
-                or not (row.get("poster_url") or "").strip()
-                or not (row.get("lb_film_id") or "").strip()
-            )
-
-        def _missing_full(row: dict) -> bool:
-            if _missing_core(row):
-                return True
-            synopsis = (row.get("synopsis") or "").strip()
-            director = (row.get("director") or "").strip()
-            year = row.get("year")
-            genres = row.get("genres") if isinstance(row.get("genres"), list) else []
-            cast = row.get("cast") if isinstance(row.get("cast"), list) else []
-            rating = row.get("rating")
-            return (
-                not synopsis
-                or not director
-                or year in (None, "")
-                or not genres
-                or not cast
-                or rating in (None, "")
-            )
-
-        predicate = _missing_full if mode == "full" else _missing_core
-        slugs = [r["slug"] for r in rows if r.get("slug") and predicate(r)][:limit]
+        slugs = app_module.store.get_movies_needing_backfill(mode=mode, limit=limit)
     except Exception as exc:
         print(f"[extension] movies-needing-backfill failed: {exc}", flush=True)
         return {"status": "error", "slugs": [], "reason": str(exc)}
@@ -364,8 +330,13 @@ async def extension_sync_status(
         span = 45
         pct = base + int((payload.current_page / max(payload.total_pages, 1)) * span)
     app_module.store.set_ingest_progress(payload.user_id, pct)
-    if payload.phase == "error" and payload.message:
-        app_module.store.set_ingest_error(payload.user_id, {"code": "extension_error", "reason": payload.message})
+    if payload.phase == "error":
+        app_module.store.set_ingest_error(payload.user_id, {
+            "code": "extension_error",
+            "reason": payload.message or "extension sync failed",
+        })
+    else:
+        app_module.store.set_ingest_error(payload.user_id, None)
     print(
         f"[extension] sync-status user={payload.user_id} phase={payload.phase} "
         f"page={payload.current_page}/{payload.total_pages} slugs_found={payload.slugs_found} pct={pct}",

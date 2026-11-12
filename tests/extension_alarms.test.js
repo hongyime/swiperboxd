@@ -80,6 +80,11 @@ test('watchlist verification fetches page 1 once and finds the slug', async () =
   assert.equal(result.reason, 'found_on_page_1');
 });
 
+test('message listener keeps async response channels open', async () => {
+  const w = await worker();
+  assert.equal(w.hooks.message({ type: 'PING' }, {}, () => {}), true);
+});
+
 test('watchlist verification fetches page 1 once and reports a miss', async () => {
   const w = await worker();
   const bigOpts = { maxPages: 8, maxProbes: 3, includeGenericPath: true };

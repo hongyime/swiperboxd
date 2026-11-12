@@ -52,7 +52,7 @@ def test_user_gateway_timeout_keeps_batch_retryable_and_existing_rows_intact(mon
                 body = failed.json()
                 assert (body["status"], body["page"], body["total_pages"]) == ("error", 2, 3)
                 assert body["result"]["added"] == 0 and body["result"]["errors"]
-                assert requests == [("users", "POST")]
+                assert requests == [("users", "GET")]
                 assert (rest.rows("movies"), rest.rows(table)) == before
                 unavailable = False
                 retried = api.post(endpoint, headers={"X-Session-Token": token}, json=payload)
@@ -198,6 +198,18 @@ def test_large_batch_uses_bounded_posts_and_returns_only_inserted_slugs(persiste
     assert all(len(json.loads(r.content)) <= 200 for r in rest.requests)
     assert all(r.url.params["select"] == "slug" for r in rest.requests)
     assert rest.rows("updates") == []
+
+
+def test_large_membership_batch_uses_bounded_posts(persistence):
+    store, rest = persistence
+    slugs = [f"film-{i}" for i in range(500)]
+
+    result = store.batch_add_watchlist("test", slugs)
+
+    assert result["added"] == 500
+    membership_requests = [r for r in rest.requests if r.url.path.endswith("/watchlist")]
+    assert len(membership_requests) == 3
+    assert all(len(json.loads(request.content)) <= 200 for request in membership_requests)
 
 
 @pytest.mark.parametrize("table", ["watchlist", "diary"])

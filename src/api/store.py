@@ -4,6 +4,7 @@ import random
 import threading
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any, Protocol
 
 from .database import get_supabase_client
@@ -46,6 +47,27 @@ def normalize_movie_record(movie: dict) -> dict:
     }
 
 
+def _movie_needs_backfill(movie: dict, mode: str) -> bool:
+    """Return whether a movie lacks the fields requested by an extension backfill."""
+    missing_core = (
+        not (movie.get("title") or "").strip()
+        or not (movie.get("poster_url") or "").strip()
+        or not (movie.get("lb_film_id") or "").strip()
+    )
+    if mode != "full" or missing_core:
+        return missing_core
+    return (
+        not (movie.get("synopsis") or "").strip()
+        or not (movie.get("director") or "").strip()
+        or movie.get("year") in (None, "")
+        or not isinstance(movie.get("genres"), list)
+        or not movie["genres"]
+        or not isinstance(movie.get("cast"), list)
+        or not movie["cast"]
+        or movie.get("rating") in (None, "")
+    )
+
+
 class Store(Protocol):
     """Store protocol defining the interface for state persistence."""
 
@@ -69,7 +91,12 @@ class Store(Protocol):
 
     def get_movie(self, slug: str) -> dict | None: ...
 
-    def get_movies(self) -> list[dict]: ...
+    def get_movies(
+        self, min_rating: float | None = None, max_popularity: int | None = None,
+        limit: int | None = None,
+    ) -> list[dict]: ...
+
+    def get_movies_needing_backfill(self, mode: str, limit: int) -> list[str]: ...
 
     def set_ingest_progress(self, user_id: str, value: int) -> None: ...
 
@@ -244,10 +271,23 @@ class InMemoryStore:
             movie = self.movies.get(slug)
         return normalize_movie_record(movie) if movie else None
 
-    def get_movies(self) -> list[dict]:
+    def get_movies(
+        self, min_rating: float | None = None, max_popularity: int | None = None,
+        limit: int | None = None,
+    ) -> list[dict]:
         with self.lock:
             movies = list(self.movies.values())
-        return [normalize_movie_record(movie) for movie in movies]
+        normalized = [normalize_movie_record(movie) for movie in movies]
+        if min_rating is not None:
+            normalized = [movie for movie in normalized if movie["rating"] >= min_rating]
+        if max_popularity is not None:
+            normalized = [movie for movie in normalized if movie["popularity"] <= max_popularity]
+        return normalized[:limit] if limit is not None else normalized
+
+    def get_movies_needing_backfill(self, mode: str, limit: int) -> list[str]:
+        with self.lock:
+            movies = list(self.movies.values())
+        return [movie["slug"] for movie in movies if movie.get("slug") and _movie_needs_backfill(movie, mode)][:limit]
 
     def set_ingest_progress(self, user_id: str, value: int) -> None:
         with self.lock:
@@ -381,22 +421,20 @@ class InMemoryStore:
         return items[offset:offset + limit]
 
     def replace_list_memberships(self, list_id: str, movie_slugs: list[str]) -> None:
+        deduped = list(dict.fromkeys(slug for slug in movie_slugs if slug))
+        self._bulk_ensure_movies(deduped)
         with self.lock:
-            seen = set()
-            deduped = []
-            for slug in movie_slugs:
-                if slug and slug not in seen:
-                    seen.add(slug)
-                    deduped.append(slug)
             self.list_memberships[list_id] = deduped
 
     def add_list_memberships(self, list_id: str, movie_slugs: list[str]) -> None:
+        deduped = list(dict.fromkeys(slug for slug in movie_slugs if slug))
+        self._bulk_ensure_movies(deduped)
         with self.lock:
             existing = self.list_memberships.get(list_id, [])
             seen = set(existing)
             added = []
-            for slug in movie_slugs:
-                if slug and slug not in seen:
+            for slug in deduped:
+                if slug not in seen:
                     seen.add(slug)
                     added.append(slug)
             if added:
@@ -563,16 +601,26 @@ class SupabaseStore:
         return self._get_or_create_user_id(user_id)
 
     def _get_or_create_user_id(self, letterboxd_username: str) -> str:
-        """Get or create the user row atomically in a single upsert."""
-        response = (
+        """Read an existing user before creating one, handling a concurrent insert."""
+        existing = (
             self.client.table("users")
-            .upsert({"letterboxd_username": letterboxd_username}, on_conflict="letterboxd_username")
             .select("id")
+            .eq("letterboxd_username", letterboxd_username)
+            .limit(1)
             .execute()
         )
-        if response.data:
-            return response.data[0]["id"]
-        # Defensive fallback only if the upsert returned no row.
+        if existing.data:
+            return existing.data[0]["id"]
+        try:
+            created = self.client.table("users").insert(
+                {"letterboxd_username": letterboxd_username}
+            ).select("id").execute()
+            if created.data:
+                return created.data[0]["id"]
+        except Exception as insert_error:
+            race_error = insert_error
+        else:
+            race_error = None
         row = (
             self.client.table("users")
             .select("id")
@@ -580,7 +628,11 @@ class SupabaseStore:
             .limit(1)
             .execute()
         )
-        return row.data[0]["id"]
+        if row.data:
+            return row.data[0]["id"]
+        if race_error:
+            raise race_error
+        raise ValueError(f"Could not create user {letterboxd_username!r}")
 
     def save_user_session(self, username: str, encrypted_session: str) -> None:
         """Store encrypted session in Supabase users table."""
@@ -835,10 +887,39 @@ class SupabaseStore:
             return normalize_movie_record(response.data[0])
         return None
 
-    def get_movies(self) -> list[dict]:
-        """Get all movies from Supabase cache."""
-        response = self.client.table("movies").select("*").execute()
-        return [normalize_movie_record(row) for row in response.data]
+    def get_movies(
+        self, min_rating: float | None = None, max_popularity: int | None = None,
+        limit: int | None = None,
+    ) -> list[dict]:
+        """Get an optionally filtered, bounded set of movies from Supabase."""
+        if min_rating is not None and limit is not None:
+            response = self.client.rpc("discovery_sample", {
+                "p_min_rating": min_rating,
+                "p_max_popularity": max_popularity,
+                "p_sample_size": limit,
+            }).execute()
+            return [normalize_movie_record(row) for row in (response.data or [])]
+        query = self.client.table("movies").select("*")
+        if min_rating is not None:
+            query = query.gte("rating", min_rating)
+        if max_popularity is not None:
+            query = query.lte("popularity", max_popularity)
+        if limit is not None:
+            query = query.limit(limit)
+        response = query.execute()
+        return [normalize_movie_record(row) for row in (response.data or [])]
+
+    def get_movies_needing_backfill(self, mode: str, limit: int) -> list[str]:
+        response = (
+            self.client.table("movies")
+            .select("slug,title,poster_url,lb_film_id,year,director,synopsis,genres,cast,rating")
+            .limit(min(5000, max(limit * 3, limit)))
+            .execute()
+        )
+        return [
+            row["slug"] for row in (response.data or [])
+            if row.get("slug") and _movie_needs_backfill(row, mode)
+        ][:limit]
 
     def get_movies_by_slugs(self, slugs: list[str]) -> dict[str, dict]:
         """Fetch multiple movies in a single query. Returns slug→movie dict."""
@@ -873,26 +954,33 @@ class SupabaseStore:
         return [normalize_movie_record(row) for row in (resp.data or [])]
 
     def set_ingest_progress(self, user_id: str, value: int) -> None:
-        """Set ingest progress (in-memory only - for performance)."""
-        with self.lock:
-            self.ingest_progress[user_id] = -1 if value == -1 else max(0, min(100, value))
+        """Persist ingest progress so polling can use any serverless instance."""
+        progress = -1 if value == -1 else max(0, min(100, value))
+        self.client.table("user_throttle").upsert({
+            "user_id": user_id,
+            "ingest_progress": progress,
+            "ingest_progress_updated_at": datetime.now(timezone.utc).isoformat(),
+        }, on_conflict="user_id").execute()
 
     def get_ingest_progress(self, user_id: str) -> int:
-        """Get ingest progress (in-memory only)."""
-        with self.lock:
-            return self.ingest_progress.get(user_id, 0)
+        response = (self.client.table("user_throttle").select("ingest_progress")
+                    .eq("user_id", user_id).limit(1).execute())
+        rows = response.data or []
+        value = rows[0].get("ingest_progress") if rows else 0
+        return value if isinstance(value, int) and -1 <= value <= 100 else 0
 
     def set_ingest_error(self, user_id: str, error: dict | None) -> None:
-        with self.lock:
-            if error is None:
-                self.ingest_errors.pop(user_id, None)
-            else:
-                self.ingest_errors[user_id] = dict(error)
+        self.client.table("user_throttle").upsert({
+            "user_id": user_id,
+            "ingest_error": dict(error) if error else None,
+        }, on_conflict="user_id").execute()
 
     def get_ingest_error(self, user_id: str) -> dict | None:
-        with self.lock:
-            error = self.ingest_errors.get(user_id)
-        return dict(error) if error else None
+        response = (self.client.table("user_throttle").select("ingest_error")
+                    .eq("user_id", user_id).limit(1).execute())
+        rows = response.data or []
+        error = rows[0].get("ingest_error") if rows else None
+        return dict(error) if isinstance(error, dict) else None
 
     def should_rate_limit(self, user_id: str, lock_ms: int = 500) -> tuple[bool, int]:
         """Atomically claim a swipe slot in the database."""
@@ -930,10 +1018,9 @@ class SupabaseStore:
 
     def record_genre_preference(self, user_id: str, genres: list[str]) -> None:
         """Record user's genre preferences in Supabase."""
-        import datetime
         actual_user_id = self._get_or_create_user_id(user_id)
         weights = self.get_genre_weights(user_id)
-        now = datetime.datetime.utcnow().isoformat() + "Z"
+        now = datetime.now(timezone.utc).isoformat()
         for genre in genres:
             weights[genre] = weights.get(genre, 0) + 1
             try:
@@ -1060,6 +1147,8 @@ class SupabaseStore:
                 seen.add(slug)
                 deduped.append(slug)
 
+        self._bulk_ensure_movies(deduped)
+
         self.client.rpc(
             "replace_list_memberships_atomic",
             {"p_list_id": list_id, "p_slugs": deduped},
@@ -1067,6 +1156,7 @@ class SupabaseStore:
 
     def add_list_memberships(self, list_id: str, movie_slugs: list[str]) -> None:
         deduped = list(dict.fromkeys(slug for slug in movie_slugs if slug))
+        self._bulk_ensure_movies(deduped)
         # position is NOT NULL, so the current rows must be read once to offset it.
         existing = self.get_list_memberships(list_id)
         existing_set = set(existing)
@@ -1075,15 +1165,17 @@ class SupabaseStore:
             return
 
         start = len(existing)
-        self.client.table("list_memberships").upsert(
-            [
-                {"list_id": list_id, "movie_slug": slug, "position": start + i}
-                for i, slug in enumerate(new)
-            ],
-            on_conflict="list_id,movie_slug",
-            ignore_duplicates=True,
-            returning="minimal",
-        ).execute()
+        records = [
+            {"list_id": list_id, "movie_slug": slug, "position": start + i}
+            for i, slug in enumerate(new)
+        ]
+        for offset in range(0, len(records), 200):
+            self.client.table("list_memberships").upsert(
+                records[offset:offset + 200],
+                on_conflict="list_id,movie_slug",
+                ignore_duplicates=True,
+                returning="minimal",
+            ).execute()
 
     def get_list_memberships(self, list_id: str) -> list[str]:
         response = (
@@ -1140,10 +1232,11 @@ class SupabaseStore:
             actual_user_id = self._get_or_create_user_id(user_id)
             missing_metadata = self._bulk_ensure_movies(unique_slugs)
             records = [{"user_id": actual_user_id, "movie_slug": slug} for slug in unique_slugs]
-            self.client.table(table).upsert(
-                records, on_conflict="user_id,movie_slug",
-                ignore_duplicates=True, returning="minimal",
-            ).execute()
+            for start in range(0, len(records), 200):
+                self.client.table(table).upsert(
+                    records[start:start + 200], on_conflict="user_id,movie_slug",
+                    ignore_duplicates=True, returning="minimal",
+                ).execute()
             added = len(valid_slugs)
         except Exception as e:
             errors.append(f"bulk_insert_failed: {e}")

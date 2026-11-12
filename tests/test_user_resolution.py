@@ -18,8 +18,8 @@ class _FakeQuery:
         self.table = table
         self.ops = []
 
-    def upsert(self, payload, on_conflict=None):
-        self.ops.append(("upsert", payload, on_conflict))
+    def insert(self, payload):
+        self.ops.append(("insert", payload))
         return self
 
     def select(self, *columns):
@@ -35,6 +35,9 @@ class _FakeQuery:
     def execute(self):
         self.client.user_ops.extend((self.table, op) for op, *_ in self.ops)
         if self.table == "users":
+            if self.ops[0][0] == "select":
+                return _Response([{"id": "uuid-1"}] if self.client.user_exists else [])
+            self.client.user_exists = True
             return _Response([{"id": "uuid-1"}])
         return _Response([])
 
@@ -43,6 +46,7 @@ class _FakeClient:
     def __init__(self):
         self.user_table_accesses = 0
         self.user_ops = []
+        self.user_exists = True
 
     def table(self, name):
         if name == "users":
@@ -57,19 +61,26 @@ def fake_store(monkeypatch):
     return SupabaseStore(), client
 
 
-def test_get_or_create_user_id_upserts_without_select_then_insert(fake_store):
+def test_get_or_create_user_id_reads_existing_user_without_a_write(fake_store):
     store, client = fake_store
 
     result = store._get_or_create_user_id("u")
 
     assert result == "uuid-1"
     assert client.user_table_accesses == 1
-    assert [op for _, op in client.user_ops] == ["upsert", "select"]
+    assert [op for _, op in client.user_ops] == ["select"]
     assert client.user_ops[0][0] == "users"
-    assert client.user_ops[1][0] == "users"
 
 
-def test_resolve_user_id_delegates_to_atomic_upsert(fake_store):
+def test_get_or_create_user_id_inserts_only_after_a_miss(fake_store):
+    store, client = fake_store
+    client.user_exists = False
+
+    assert store._get_or_create_user_id("u") == "uuid-1"
+    assert [op for _, op in client.user_ops] == ["select", "insert", "select"]
+
+
+def test_resolve_user_id_delegates_to_user_lookup(fake_store):
     store, client = fake_store
 
     assert store.resolve_user_id("u") == "uuid-1"

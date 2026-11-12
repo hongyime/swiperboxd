@@ -109,6 +109,16 @@ def test_in_memory_store_get_movies(in_memory_store):
     assert any(m["slug"] == "film-2" for m in movies)
 
 
+def test_in_memory_store_get_movies_filters_and_limits(in_memory_store):
+    in_memory_store.upsert_movie({"slug": "eligible", "title": "Eligible", "rating": 4.5, "popularity": 50})
+    in_memory_store.upsert_movie({"slug": "too-popular", "title": "Too Popular", "rating": 4.5, "popularity": 51})
+    in_memory_store.upsert_movie({"slug": "too-low", "title": "Too Low", "rating": 4.4, "popularity": 1})
+
+    movies = in_memory_store.get_movies(min_rating=4.5, max_popularity=50, limit=1)
+
+    assert [movie["slug"] for movie in movies] == ["eligible"]
+
+
 def test_in_memory_store_ingest_progress(in_memory_store):
     """Test ingest progress tracking."""
     # Set progress

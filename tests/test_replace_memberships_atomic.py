@@ -6,6 +6,9 @@ from src.api.store import SupabaseStore
 
 
 class _FakeResponse:
+    def __init__(self, data=None):
+        self.data = data or []
+
     def execute(self):
         return self
 
@@ -19,15 +22,35 @@ class _FakeRpc:
         return _FakeResponse()
 
 
+class _FakeMovieQuery:
+    def __init__(self, client):
+        self.client = client
+        self.rows = []
+
+    def upsert(self, rows, **kwargs):
+        self.rows = rows
+        self.client.events.append(("movies", rows))
+        return self
+
+    def select(self, *_columns):
+        return self
+
+    def execute(self):
+        return _FakeResponse([{"slug": row["slug"]} for row in self.rows])
+
+
 class _FakeClient:
     def __init__(self):
         self.rpc_calls = []
+        self.events = []
 
     def rpc(self, name, params):
+        self.events.append(("rpc", name))
         return _FakeRpc(self.rpc_calls, name, params)
 
     def table(self, name):
-        raise AssertionError(f"table({name!r}) must not be used by replace_list_memberships")
+        assert name == "movies"
+        return _FakeMovieQuery(self)
 
 
 @pytest.fixture
@@ -47,6 +70,10 @@ def test_replace_list_memberships_uses_single_atomic_rpc(fake_client):
     assert name == "replace_list_memberships_atomic"
     assert params["p_list_id"] == "lst"
     assert params["p_slugs"] == ["a", "b", "c"]
+    assert fake_client.events == [
+        ("movies", [{"slug": "a", "title": "A"}, {"slug": "b", "title": "B"}, {"slug": "c", "title": "C"}]),
+        ("rpc", "replace_list_memberships_atomic"),
+    ]
 
 
 def test_replace_list_memberships_empty_input_still_one_rpc(fake_client):

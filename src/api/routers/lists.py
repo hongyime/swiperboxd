@@ -176,9 +176,10 @@ async def get_discovery_deck(
     if profile not in app_module.PROFILES:
         raise HTTPException(status_code=400, detail={"code": "invalid_profile"})
 
+    filters = app_module.PROFILES[profile]
     matched = []
     skipped_invalid = 0
-    for movie in app_module.store.get_movies():
+    for movie in app_module.store.get_movies(**filters, limit=200):
         normalized = normalize_movie_record(movie)
         before_slug = normalized.get("slug", "")
         if app_module._matches_profile(profile, normalized):
