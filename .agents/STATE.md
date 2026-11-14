@@ -2,7 +2,7 @@
 
 ## 2026-11-14 — batch ingest and genre-preference writes
 
-Verified and ready to publish: filter-pipeline membership batches, deduplicated genre upserts, focused regressions, and removal of nine obsolete `app.py` imports. `main` matches current `origin/main`; local checks pass: 148 Python (2 optional skips), 25 Node web tests, compilation, diff checks, and targeted unused-import checking.
+Published as PR #193 (`perf/batch-history-writes`) after protected `main` rejected a direct push. Filter-pipeline membership batches, deduplicated genre upserts, focused regressions, and removal of nine obsolete `app.py` imports are ready for the two required GitHub checks; merge only after they pass. Local checks: 148 Python (2 optional skips), 25 Node web tests, compilation, diff checks, and targeted unused-import checking.
 
 ## 2026-11-12 — reliability hardening verification
 
