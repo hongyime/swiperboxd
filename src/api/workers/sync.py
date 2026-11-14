@@ -140,8 +140,7 @@ def _filter_first_pipeline(
         _emit(22)
         try:
             live_watchlist = app_module.scraper.pull_watchlist_slugs(session_cookie, username=username)
-            for slug in live_watchlist:
-                app_module.store.add_watchlist(user_id, slug)
+            app_module.store.batch_add_watchlist(user_id, list(live_watchlist))
             watchlist = watchlist | live_watchlist
             print(f"[ingest] live_watchlist={len(live_watchlist)} persisted to store", flush=True)
         except Exception as exc:
@@ -149,8 +148,7 @@ def _filter_first_pipeline(
         _emit(31)
         try:
             live_diary = app_module.scraper.pull_diary_slugs(session_cookie, username=username)
-            for slug in live_diary:
-                app_module.store.add_diary(user_id, slug)
+            app_module.store.batch_add_diary(user_id, list(live_diary))
             diary = diary | live_diary
             print(f"[ingest] live_diary={len(live_diary)} persisted to store", flush=True)
         except Exception as exc:

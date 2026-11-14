@@ -1,5 +1,9 @@
 # Current work
 
+## 2026-11-14 — batch ingest and genre-preference writes
+
+Verified and ready to publish: filter-pipeline membership batches, deduplicated genre upserts, focused regressions, and removal of nine obsolete `app.py` imports. `main` matches current `origin/main`; local checks pass: 148 Python (2 optional skips), 25 Node web tests, compilation, diff checks, and targeted unused-import checking.
+
 ## 2026-11-12 — reliability hardening verification
 
 Completed and released the requested reliability fixes: DB-backed ingest progress/error migration, membership placeholder preconditions, randomized bounded discovery, 200-row membership writes, read-before-create users, Store-owned backfill lookup, time-bounded cron work, honest migrations, direct pytest path, dependency cleanup, and timezone-aware timestamps. Existing `return true` message handling and batched history sync were confirmed and regression-tested. Final local verification: 146 Python passed (2 optional live-service skips), 25 Node passed, compilation and `git diff --check` passed. PR #189 merged as `2a29167`; all hosted Build/Vercel/security checks passed; production deployment `dpl_CukdFNpPLzTbEk3S2w8XZPfmkeLo` is READY and `/health` returned 200 with `SupabaseStore`. No production scraping, migrations, or data writes ran.

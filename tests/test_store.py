@@ -2,6 +2,7 @@
 
 import os
 import time
+from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -185,6 +186,32 @@ def test_in_memory_store_record_genre_preference(in_memory_store):
     # After 2 Action votes for user1, Action films should be boosted
     # (implementation may vary, just test it doesn't crash)
     assert len(shuffled1) == 3
+
+
+def test_supabase_store_batches_deduplicated_genre_preferences(monkeypatch):
+    from src.api.store import SupabaseStore
+
+    client = MagicMock()
+    table = MagicMock()
+    query = MagicMock()
+    client.table.return_value = table
+    table.upsert.return_value = query
+    monkeypatch.setattr("src.api.store.get_supabase_client", lambda: client)
+    store = SupabaseStore()
+    monkeypatch.setattr(store, "_get_or_create_user_id", lambda user_id: "database-user")
+    monkeypatch.setattr(store, "get_genre_weights", lambda user_id: {"Action": 2})
+
+    store.record_genre_preference("user", ["Action", "Comedy", "Action"])
+
+    client.table.assert_called_once_with("genre_preferences")
+    records = table.upsert.call_args.args[0]
+    assert {record["genre"]: record["score"] for record in records} == {"Action": 4, "Comedy": 1}
+    assert len(records) == 2
+    assert table.upsert.call_args.kwargs == {"on_conflict": "user_id,genre"}
+    timestamps = {record["updated_at"] for record in records}
+    assert len(timestamps) == 1
+    assert datetime.fromisoformat(timestamps.pop()).tzinfo == timezone.utc
+    query.execute.assert_called_once_with()
 
 
 def test_in_memory_store_weighted_shuffle_no_weights(in_memory_store):

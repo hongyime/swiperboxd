@@ -1,5 +1,7 @@
 # Decisions
 
+- 2026-11-14: Use the existing membership batch APIs in the filter pipeline and one `genre_preferences` upsert per swipe; collapse duplicate genre labels to their accumulated score and retain best-effort logging on a single batch failure.
+
 - 2026-11-12: Persist Supabase ingest progress and errors in `user_throttle` via migration 006; scheduled cron intentionally handles one user/one page and one metadata item, while the extension owns multi-page list scraping to avoid serverless timeouts and partial-list replacement.
 - 2026-11-12: Released reliability hardening through PR #189. Merge commit `2a29167` passed Build, Vercel, dependency, Bandit, Semgrep, TruffleHog, and branch-guard checks; production deployment `dpl_CukdFNpPLzTbEk3S2w8XZPfmkeLo` is READY and its allowed production health endpoint returned 200.
 

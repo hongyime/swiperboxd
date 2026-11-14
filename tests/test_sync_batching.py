@@ -50,6 +50,41 @@ class _RecordingScraper:
         return []
 
 
+class _FilterPipelineStore(_RecordingStore):
+    def __init__(self):
+        super().__init__()
+        self.watchlist = {"stored-watchlist"}
+        self.diary = {"stored-diary"}
+        self.exclusions = {"excluded"}
+
+    def get_watchlist(self, user_id):
+        return self.watchlist
+
+    def get_diary(self, user_id):
+        return self.diary
+
+    def get_exclusions(self, user_id):
+        return self.exclusions
+
+    def add_watchlist(self, user_id, slug):
+        raise AssertionError("filter pipeline must batch watchlist writes")
+
+    def add_diary(self, user_id, slug):
+        raise AssertionError("filter pipeline must batch diary writes")
+
+
+class _FilterPipelineScraper(_RecordingScraper):
+    def pull_source_slugs(self, source, depth_pages):
+        return [
+            "stored-watchlist",
+            "live-watchlist",
+            "stored-diary",
+            "live-diary",
+            "excluded",
+            "candidate",
+        ]
+
+
 def _run(monkeypatch, vercel: bool, watchlist, diary, metadata_raises=False):
     store = _RecordingStore()
     scraper = _RecordingScraper(watchlist, diary, metadata_raises)
@@ -103,3 +138,19 @@ def test_user_history_sync_caps_metadata_lookups(monkeypatch):
     assert _count(store, "movies_by_slugs") == 1
     assert len(scraper.metadata_calls) == 1
     assert len(scraper.metadata_calls[0]) == 50
+
+
+def test_filter_pipeline_batches_live_history_writes(monkeypatch):
+    store = _FilterPipelineStore()
+    scraper = _FilterPipelineScraper({"live-watchlist"}, {"live-diary"})
+    monkeypatch.setattr(app_module, "store", store)
+    monkeypatch.setattr(app_module, "scraper", scraper)
+    monkeypatch.delenv("VERCEL", raising=False)
+
+    app_module._filter_first_pipeline("u", "source", 1, session_cookie="cookie", username="u")
+
+    assert _count(store, "watchlist") == 1
+    assert _count(store, "diary") == 1
+    assert set(next(call for call in store.calls if call[0] == "watchlist")[2]) == {"live-watchlist"}
+    assert set(next(call for call in store.calls if call[0] == "diary")[2]) == {"live-diary"}
+    assert scraper.metadata_calls == [["candidate"]]
