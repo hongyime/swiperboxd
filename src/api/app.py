@@ -2,9 +2,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
-import threading
-import time
 from pathlib import Path
 from typing import Callable, Literal
 
@@ -12,15 +9,15 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from pydantic import BaseModel, Field
 
-from .security import decrypt_session_cookie, decrypt_session_token, encrypt_session_cookie
+from .security import decrypt_session_token
 from .providers.letterboxd import HttpLetterboxdScraper, MockLetterboxdScraper
-from .database import is_supabase_configured, run_migrations
+from .database import is_supabase_configured
 from .store import normalize_movie_record
 from .cron import router as cron_router
 
@@ -402,9 +399,8 @@ class CacheLbIdRequest(BaseModel):
     lb_film_id: str = Field(min_length=1)
 
 
-# Split modules: handlers read shared state through this module (app_module) so
-# monkeypatching src.api.app.store/scraper affects every route.
-from .workers.sync import _run_user_history_sync, _filter_first_pipeline, _run_ingest_worker
+# Split modules: handlers and tests resolve workers through this module (app_module).
+from .workers.sync import _run_user_history_sync, _filter_first_pipeline, _run_ingest_worker  # noqa: F401
 from .routers import auth as auth_router, lists as lists_router, extension as extension_router
 
 app.include_router(auth_router.router)

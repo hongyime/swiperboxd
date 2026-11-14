@@ -1021,17 +1021,23 @@ class SupabaseStore:
         actual_user_id = self._get_or_create_user_id(user_id)
         weights = self.get_genre_weights(user_id)
         now = datetime.now(timezone.utc).isoformat()
+        records: dict[str, dict] = {}
         for genre in genres:
             weights[genre] = weights.get(genre, 0) + 1
-            try:
-                self.client.table("genre_preferences").upsert({
-                    "user_id": actual_user_id,
-                    "genre": genre,
-                    "score": weights[genre],
-                    "updated_at": now,
-                }, on_conflict="user_id,genre").execute()
-            except Exception as e:
-                print(f"[store] genre_preference upsert failed for {genre}: {e}", flush=True)
+            records[genre] = {
+                "user_id": actual_user_id,
+                "genre": genre,
+                "score": weights[genre],
+                "updated_at": now,
+            }
+        if not records:
+            return
+        try:
+            self.client.table("genre_preferences").upsert(
+                list(records.values()), on_conflict="user_id,genre"
+            ).execute()
+        except Exception as e:
+            print(f"[store] genre_preference upsert failed: {e}", flush=True)
 
     def get_genre_weights(self, user_id: str, _user_id: str | None = None) -> dict[str, int]:
         """Get user's genre weights from Supabase."""
